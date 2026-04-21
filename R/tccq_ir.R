@@ -1,9 +1,9 @@
 # tccq_ir.R - expression IR and tiny traversal helpers
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-tccq_node <- function(tag, ..., type = NULL, effect = "pure") {
+tccq_node <- function(tag, ..., type = NULL, effect = "pure", barrier = FALSE) {
   structure(
-    c(list(tag = tag, type = type, effect = effect), list(...)),
+    c(list(tag = tag, type = type, effect = effect, barrier = barrier), list(...)),
     class = c(paste0("tccq_", tag), "tccq_node")
   )
 }
@@ -33,7 +33,15 @@ tccq_ir_reduce <- function(op, x, type = tccq_type_scalar("double")) {
 }
 
 tccq_ir_boundary <- function(kind, reason, input, type, effect = "boundary") {
-  tccq_node("boundary", kind = kind, reason = reason, input = input, type = type, effect = effect)
+  tccq_ir_boundary_call(
+    api = kind,
+    name = reason,
+    args = list(input),
+    type = type,
+    effect = effect,
+    barrier = TRUE,
+    metadata = list(reason = reason)
+  )
 }
 
 tccq_ir_len <- function(x) {
@@ -110,14 +118,7 @@ tccq_ir_slice_range <- function(x, start, stop) {
   if (x$type$rank != 1L) {
     tccq_abort("x[lo:hi] currently requires a vector input")
   }
-  tccq_node(
-    "slice_range",
-    x = x,
-    start = start,
-    stop = stop,
-    type = tccq_type_vector(x$type$mode, length = NA_integer_),
-    effect = "pure"
-  )
+  tccq_ir_view1(x, start, stop, type = tccq_type_vector(x$type$mode, length = NA_integer_))
 }
 
 # Program kernel wrapper ------------------------------------------------------
@@ -217,6 +218,7 @@ tccq_ir_validate <- function(node) {
   tccq_ir_walk(node, function(n) {
     tccq_assert(!is.null(n$tag), "IR child missing tag")
     tccq_assert(!is.null(n$type), "IR node '", n$tag, "' missing type")
+    tccq_assert(!is.null(n$barrier), "IR node '", n$tag, "' missing barrier flag")
   })
 
   invisible(TRUE)

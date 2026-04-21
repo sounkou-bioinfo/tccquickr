@@ -42,7 +42,11 @@ tccq_default_passes <- function() {
     tccq_pass_effects(),
     tccq_pass_kernelize(),
     tccq_pass_fusion(),
-    tccq_pass_legality_barriers(),
+    tccq_pass_boundary_collect(),
+    tccq_pass_view_normalize(),
+    tccq_pass_boundary_materialize(),
+    tccq_pass_boundary_validate(),
+    tccq_pass_storage_plan(),
     tccq_pass_allocation_plan(),
     tccq_pass_protect_plan()
   )
@@ -76,7 +80,7 @@ tccq_pass_effects <- function() {
         if (identical(eff, "write") && n$tag %in% c("program", "kernel_program", "store_index", "store_range")) {
           return(invisible(NULL))
         }
-        if (identical(eff, "boundary")) {
+        if (eff %in% c("boundary", "r_eval")) {
           return(invisible(NULL))
         }
         tccq_abort("unsupported effect in fresh compiler: ", eff, " on node ", n$tag)
@@ -144,19 +148,67 @@ tccq_pass_fusion <- function() {
   )
 }
 
-tccq_pass_legality_barriers <- function() {
+tccq_pass_boundary_collect <- function() {
   tccq_pass(
-    name = "legality_barriers",
+    name = "boundary_collect",
     requires = "fusion_done",
+    provides = "boundaries_collected",
+    run = function(module, facts) {
+      tccq_module_with(module, boundary_context = tccq_boundary_context(module$kernel))
+    }
+  )
+}
+
+tccq_pass_view_normalize <- function() {
+  tccq_pass(
+    name = "view_normalize",
+    requires = "boundaries_collected",
+    provides = "views_normalized",
+    run = function(module, facts) {
+      module
+    }
+  )
+}
+
+tccq_pass_boundary_materialize <- function() {
+  tccq_pass(
+    name = "boundary_materialize",
+    requires = "views_normalized",
+    provides = "boundaries_materialized",
+    run = function(module, facts) {
+      module
+    }
+  )
+}
+
+tccq_pass_boundary_validate <- function() {
+  tccq_pass(
+    name = "boundary_validate",
+    requires = "boundaries_materialized",
     provides = "legality_checked",
     run = function(module, facts) {
-      if (tccq_kernel_has_boundary(module$kernel)) {
-        tccq_abort(
-          "boundary nodes are explicit legality barriers in tccq; ",
-          "later milestones may lower them, but milestone 2 refuses to compile them"
-        )
+      boundaries <- tccq_boundary_nodes(module$kernel)
+      fallback <- module$fallback %||% "hard"
+      for (node in boundaries) {
+        if (!isTRUE(tccq_boundary_supported(node, fallback = fallback))) {
+          tccq_abort(
+            "boundary node '", node$api, ":", node$name,
+            "' is not supported in fallback = '", fallback, "'"
+          )
+        }
       }
       module
+    }
+  )
+}
+
+tccq_pass_storage_plan <- function() {
+  tccq_pass(
+    name = "storage_plan",
+    requires = "legality_checked",
+    provides = "storage_plan",
+    run = function(module, facts) {
+      tccq_module_with(module, storage_plan = tccq_storage_plan(module))
     }
   )
 }
@@ -164,7 +216,7 @@ tccq_pass_legality_barriers <- function() {
 tccq_pass_allocation_plan <- function() {
   tccq_pass(
     name = "allocation_plan",
-    requires = "legality_checked",
+    requires = c("legality_checked", "storage_plan"),
     provides = "alloc_plan",
     run = function(module, facts) {
       kernel <- module$kernel

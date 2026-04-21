@@ -11,7 +11,7 @@ tccq_backend <- function(name, compile, capabilities = list()) {
 tccq_backend_source <- function() {
   tccq_backend(
     name = "source",
-    capabilities = list(c = TRUE, compile = FALSE, r_api = TRUE),
+    capabilities = list(c = TRUE, compile = FALSE, r_api = TRUE, emits_source = TRUE),
     compile = function(module, target, ctx = list()) {
       src <- target$emit(module, ctx)
       list(
@@ -28,7 +28,7 @@ tccq_backend_source <- function() {
 tccq_backend_tinycc <- function() {
   tccq_backend(
     name = "tinycc",
-    capabilities = list(c = TRUE, compile = TRUE, r_api = TRUE, in_memory = TRUE),
+    capabilities = list(c = TRUE, compile = TRUE, r_api = TRUE, in_memory = TRUE, cli = FALSE),
     compile = function(module, target, ctx = list()) {
       tccq_require_namespace("Rtinycc")
 
@@ -45,11 +45,30 @@ tccq_backend_tinycc <- function() {
         }
       }
 
+      include_paths <- ctx$include_paths %||% character()
+      if (length(include_paths)) {
+        for (path in include_paths) {
+          ffi <- Rtinycc::tcc_include(ffi, path)
+        }
+      }
+
       libraries <- ctx$libraries %||% character()
       if (length(libraries)) {
         for (lib in libraries) {
           ffi <- Rtinycc::tcc_library(ffi, lib)
         }
+      }
+
+      library_paths <- ctx$library_paths %||% character()
+      if (length(library_paths)) {
+        for (path in library_paths) {
+          ffi <- Rtinycc::tcc_library_path(ffi, path)
+        }
+      }
+
+      options <- ctx$options %||% character()
+      if (length(options)) {
+        ffi <- Rtinycc::tcc_options(ffi, options)
       }
 
       bindings <- stats::setNames(list(spec), module$entry)

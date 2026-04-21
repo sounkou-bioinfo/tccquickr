@@ -4,7 +4,7 @@
 tccq_kernel_has_boundary <- function(node) {
   found <- FALSE
   tccq_ir_walk(node, function(n) {
-    if (identical(n$tag, "boundary") || identical(n$effect %||% "pure", "boundary")) {
+    if (isTRUE(n$barrier) || identical(n$tag, "boundary_call") || identical(n$effect %||% "pure", "boundary")) {
       found <<- TRUE
     }
   })

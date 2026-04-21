@@ -129,7 +129,16 @@ tccq_c_const_literal <- function(value, mode) {
       }
     },
     integer = paste0(as.integer(value)),
-    logical = if (isTRUE(value)) "1" else "0",
+    logical = {
+      ival <- suppressWarnings(as.integer(value))
+      if (length(ival) != 1L || is.na(ival)) {
+        "NA_LOGICAL"
+      } else if (ival != 0L) {
+        "1"
+      } else {
+        "0"
+      }
+    },
     raw = paste0(as.integer(value)),
     tccq_abort("unsupported literal mode: ", mode)
   )

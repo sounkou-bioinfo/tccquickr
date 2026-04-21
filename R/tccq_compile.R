@@ -13,6 +13,9 @@
 #'
 #' @param fn R function with a leading declare(type(...)) annotation.
 #' @param mode One of "compile", "code", or "ir".
+#' @param fallback One of "auto" or "hard". In "auto" mode unsupported
+#'   calls may lower to explicit `r_eval` boundary nodes. In "hard" mode they
+#'   are rejected.
 #' @param backend Backend object. Defaults to TinyCC via Rtinycc.
 #' @param target Target object. Defaults to C + R C API emission.
 #' @param extlibs Optional list of tccq_external_library descriptors.
@@ -22,14 +25,17 @@
 tccq_compile <- function(
   fn,
   mode = c("compile", "code", "ir"),
+  fallback = c("auto", "hard"),
   backend = tccq_backend_tinycc(),
   target = tccq_target_c_rapi(),
   extlibs = list(),
   debug = FALSE
 ) {
   mode <- match.arg(mode)
+  fallback <- match.arg(fallback)
 
   module <- tccq_frontend(fn)
+  module <- tccq_module_with(module, fallback = fallback)
   module <- tccq_lower_module(module)
   module <- tccq_run_passes(module)
 
@@ -37,7 +43,7 @@ tccq_compile <- function(
     return(module)
   }
 
-  ctx <- tccq_context_from_extlibs(extlibs)
+  ctx <- tccq_merge_contexts(tccq_context_from_extlibs(extlibs), module$boundary_context)
   src <- target$emit(module, ctx)
 
   if (identical(mode, "code")) {

@@ -4,11 +4,11 @@
 tccq_lower_module <- function(module) {
   tccq_module_validate(module)
   body_exprs <- module$body_exprs %||% list(module$expr)
-  ir <- tccq_lower_program(body_exprs, module$types)
+  ir <- tccq_lower_program(body_exprs, module$types, fallback = module$fallback %||% "hard")
   tccq_module_with(module, ir = ir)
 }
 
-tccq_lower_program <- function(exprs, env) {
+tccq_lower_program <- function(exprs, env, fallback = "hard") {
   if (!length(exprs)) {
     tccq_abort("cannot lower empty program")
   }
@@ -19,18 +19,18 @@ tccq_lower_program <- function(exprs, env) {
 
   if (length(exprs) > 1L) {
     for (i in seq_len(length(exprs) - 1L)) {
-      lowered <- tccq_lower_stmt(exprs[[i]], current_env, local_names)
+      lowered <- tccq_lower_stmt(exprs[[i]], current_env, local_names, fallback = fallback)
       stmts[[length(stmts) + 1L]] <- lowered$stmt
       current_env <- lowered$env
       local_names <- lowered$local_names
     }
   }
 
-  result <- tccq_lower_expr(exprs[[length(exprs)]], current_env)
+  result <- tccq_lower_expr(exprs[[length(exprs)]], current_env, fallback = fallback)
   tccq_ir_program(stmts, result)
 }
 
-tccq_lower_stmt <- function(expr, env, local_names) {
+tccq_lower_stmt <- function(expr, env, local_names, fallback = "hard") {
   if (!tccq_is_assignment_call(expr)) {
     tccq_abort(
       "only assignment statements are allowed before the final expression; got: ",
@@ -52,7 +52,7 @@ tccq_lower_stmt <- function(expr, env, local_names) {
         ". Use a fresh local name instead."
       )
     }
-    value <- tccq_lower_expr(rhs, env)
+    value <- tccq_lower_expr(rhs, env, fallback = fallback)
     env[[name]] <- value$type
     local_names <- tccq_unique(c(local_names, name))
 
@@ -82,7 +82,7 @@ tccq_lower_stmt <- function(expr, env, local_names) {
       tccq_abort("indexed assignment target must be a vector: ", name)
     }
 
-    value <- tccq_lower_expr(rhs, env)
+    value <- tccq_lower_expr(rhs, env, fallback = fallback)
     if (!tccq_is_scalar_rhs_for_assignment(value)) {
       tccq_abort("fresh compiler currently supports scalar RHS assignment only")
     }
@@ -92,11 +92,11 @@ tccq_lower_stmt <- function(expr, env, local_names) {
       if (length(range_args) != 2L) {
         tccq_abort("range assignment requires lo:hi")
       }
-      start <- tccq_lower_expr(range_args[[1L]], env)
-      stop <- tccq_lower_expr(range_args[[2L]], env)
+      start <- tccq_lower_expr(range_args[[1L]], env, fallback = fallback)
+      stop <- tccq_lower_expr(range_args[[2L]], env, fallback = fallback)
       stmt <- tccq_ir_store_range(name, start, stop, value, target_type)
     } else {
-      index <- tccq_lower_expr(parts$index, env)
+      index <- tccq_lower_expr(parts$index, env, fallback = fallback)
       stmt <- tccq_ir_store_index(name, index, value, target_type)
     }
 
@@ -106,7 +106,7 @@ tccq_lower_stmt <- function(expr, env, local_names) {
   tccq_abort("unsupported assignment LHS: ", deparse(lhs, nlines = 1L))
 }
 
-tccq_lower_expr <- function(expr, env) {
+tccq_lower_expr <- function(expr, env, fallback = "hard") {
   if (is.integer(expr) && length(expr) == 1L) {
     return(tccq_ir_const(as.integer(expr), tccq_type_scalar("integer")))
   }
@@ -116,7 +116,8 @@ tccq_lower_expr <- function(expr, env) {
   }
 
   if (is.logical(expr) && length(expr) == 1L) {
-    return(tccq_ir_const(isTRUE(expr), tccq_type_scalar("logical")))
+    val <- if (is.na(expr)) NA_integer_ else as.integer(expr)
+    return(tccq_ir_const(val, tccq_type_scalar("logical")))
   }
 
   if (is.symbol(expr)) {
@@ -135,29 +136,29 @@ tccq_lower_expr <- function(expr, env) {
   args <- as.list(expr[-1L])
 
   if (identical(head, "(")) {
-    return(tccq_lower_expr(args[[1L]], env))
+    return(tccq_lower_expr(args[[1L]], env, fallback = fallback))
   }
 
   if (head %in% c("+", "-")) {
     if (length(args) == 1L) {
-      x <- tccq_lower_expr(args[[1L]], env)
+      x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
       if (identical(head, "+")) {
         return(x)
       }
       return(tccq_ir_unary("-", x, type = x$type))
     }
-    return(tccq_lower_binary(head, args, env))
+    return(tccq_lower_binary(head, args, env, fallback = fallback))
   }
 
   if (head %in% c("*", "/", "^")) {
-    return(tccq_lower_binary(head, args, env))
+    return(tccq_lower_binary(head, args, env, fallback = fallback))
   }
 
   if (head %in% c("sin", "cos", "tan", "exp", "log", "sqrt", "abs")) {
     if (length(args) != 1L) {
       tccq_abort(head, " expects exactly one argument")
     }
-    x <- tccq_lower_expr(args[[1L]], env)
+    x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
     out_type <- tccq_type(mode = "double", rank = x$type$rank, dims = x$type$dims)
     return(tccq_ir_call1(head, x, type = out_type))
   }
@@ -166,7 +167,7 @@ tccq_lower_expr <- function(expr, env) {
     if (length(args) != 1L) {
       tccq_abort("fresh compiler currently supports sum(x) with one argument")
     }
-    x <- tccq_lower_expr(args[[1L]], env)
+    x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
     if (!tccq_type_is_numeric(x$type)) {
       tccq_abort("sum() requires numeric/logical input")
     }
@@ -177,7 +178,7 @@ tccq_lower_expr <- function(expr, env) {
     if (length(args) != 1L) {
       tccq_abort("length() expects exactly one argument")
     }
-    x <- tccq_lower_expr(args[[1L]], env)
+    x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
     return(tccq_ir_len(x))
   }
 
@@ -186,7 +187,7 @@ tccq_lower_expr <- function(expr, env) {
       tccq_abort("fresh compiler supports one-dimensional x[i] only")
     }
 
-    x <- tccq_lower_expr(args[[1L]], env)
+    x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
     if (x$type$rank != 1L) {
       tccq_abort("subscript x[i] requires a vector input")
     }
@@ -197,12 +198,12 @@ tccq_lower_expr <- function(expr, env) {
       if (length(range_args) != 2L) {
         tccq_abort("range slicing requires lo:hi")
       }
-      start <- tccq_lower_expr(range_args[[1L]], env)
-      stop <- tccq_lower_expr(range_args[[2L]], env)
+      start <- tccq_lower_expr(range_args[[1L]], env, fallback = fallback)
+      stop <- tccq_lower_expr(range_args[[2L]], env, fallback = fallback)
       return(tccq_ir_slice_range(x, start, stop))
     }
 
-    index <- tccq_lower_expr(idx_ast, env)
+    index <- tccq_lower_expr(idx_ast, env, fallback = fallback)
     return(tccq_ir_index(x, index))
   }
 
@@ -210,18 +211,33 @@ tccq_lower_expr <- function(expr, env) {
     tccq_abort("':' is currently only supported inside x[lo:hi]")
   }
 
-  tccq_abort(
-    "unsupported call in fresh compiler: ", head,
-    ". Add a lowerer case or route it through an explicit boundary node."
+  tccq_lower_boundary_or_abort(expr, head, args, env, fallback = fallback)
+}
+
+tccq_lower_boundary_or_abort <- function(expr, head, args, env, fallback = "hard") {
+  fallback <- match.arg(fallback, c("auto", "hard"))
+  if (identical(fallback, "hard")) {
+    tccq_abort(
+      "unsupported call in fresh compiler: ", head,
+      ". Add a lowerer case or route it through an explicit boundary node."
+    )
+  }
+
+  lowered_args <- lapply(args, tccq_lower_expr, env = env, fallback = fallback)
+  out_type <- if (length(lowered_args) == 1L) lowered_args[[1L]]$type else tccq_type_scalar("logical")
+  tccq_ir_boundary_r_eval(
+    call_expr = expr,
+    args = lowered_args,
+    type = out_type
   )
 }
 
-tccq_lower_binary <- function(op, args, env) {
+tccq_lower_binary <- function(op, args, env, fallback = "hard") {
   if (length(args) != 2L) {
     tccq_abort("operator ", op, " expects exactly two arguments")
   }
-  lhs <- tccq_lower_expr(args[[1L]], env)
-  rhs <- tccq_lower_expr(args[[2L]], env)
+  lhs <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
+  rhs <- tccq_lower_expr(args[[2L]], env, fallback = fallback)
   out_mode <- tccq_type_result_mode_arith(lhs$type, rhs$type, op = op)
   out_type <- tccq_type_broadcast(lhs$type, rhs$type, mode = out_mode)
   tccq_ir_binary(op, lhs, rhs, type = out_type)

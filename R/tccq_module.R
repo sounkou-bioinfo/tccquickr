@@ -11,7 +11,10 @@ tccq_module <- function(
   kernel = NULL,
   facts = list(),
   alloc_plan = NULL,
-  protect_plan = NULL
+  protect_plan = NULL,
+  fallback = "hard",
+  boundary_context = NULL,
+  storage_plan = NULL
 ) {
   structure(
     list(
@@ -24,7 +27,10 @@ tccq_module <- function(
       kernel = kernel,
       facts = facts,
       alloc_plan = alloc_plan,
-      protect_plan = protect_plan
+      protect_plan = protect_plan,
+      fallback = fallback,
+      boundary_context = boundary_context,
+      storage_plan = storage_plan
     ),
     class = "tccq_module"
   )

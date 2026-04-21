@@ -43,22 +43,19 @@ scalar_kernel <- tccquickr:::tccq_ir_scalar_kernel(
 )
 expect_identical(tccquickr:::tccq_fuse_kernel(scalar_kernel), scalar_kernel)
 
-boundary_ir <- tccquickr:::tccq_node(
-  "boundary",
-  kind = "rf_call",
-  reason = "unsupported R call",
-  input = tccquickr:::tccq_ir_var("x", tccquickr:::tccq_type_vector("double")),
-  type = tccquickr:::tccq_type_vector("double"),
-  effect = "boundary"
+boundary_ir <- tccquickr:::tccq_ir_boundary_r_eval(
+  call_expr = quote(foo(x)),
+  args = list(tccquickr:::tccq_ir_var("x", tccquickr:::tccq_type_vector("double"))),
+  type = tccquickr:::tccq_type_scalar("logical")
 )
 barrier_module <- tccquickr:::tccq_module(
   entry = "tccq_entry",
   formal_names = c("x"),
   types = list(x = tccquickr:::tccq_type_vector("double")),
   expr = quote(x),
-  ir = boundary_ir
+  ir = boundary_ir,
+  fallback = "auto"
 )
-expect_error(
-  tccquickr:::tccq_run_passes(barrier_module),
-  pattern = "boundary nodes are explicit legality barriers"
-)
+barrier_out <- tccquickr:::tccq_run_passes(barrier_module)
+expect_equal(barrier_out$kernel$tag, "scalar_kernel")
+expect_identical(barrier_out$boundary_context$headers, character())

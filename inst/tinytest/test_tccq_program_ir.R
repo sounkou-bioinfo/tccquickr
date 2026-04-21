@@ -47,8 +47,10 @@ expect_equal(mod_range$kernel$result_kernel$tag, "materialize")
 
 mod_slice <- tccq_compile(slice_expr_fn, mode = "ir")
 expect_equal(mod_slice$ir$tag, "program")
-expect_equal(mod_slice$ir$result$tag, "slice_range")
+expect_equal(mod_slice$ir$result$tag, "view1")
+expect_false(isTRUE(mod_slice$ir$result$barrier))
 expect_equal(mod_slice$kernel$tag, "materialize")
+expect_equal(mod_slice$storage_plan$direct_return, FALSE)
 
 compiled_reduce_after_store <- tccq_compile(binding_then_store_fn)
 expect_equal(compiled_reduce_after_store(c(1, 2, 3), 2L, 10), 14)

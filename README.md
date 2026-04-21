@@ -240,32 +240,33 @@ This is still a small rewrite system, but the important point is that
 fusion is now expressed as a middle-end transformation rather than being
 buried entirely inside C string emission.
 
-### Example: legality barriers
+### Example: explicit boundary fallback
 
-Boundary nodes are explicit legality barriers. The fresh compiler does
-not yet fallback through them; it refuses to compile them.
+Boundary nodes stay explicit legality barriers, but `fallback = "auto"`
+now lowers unsupported calls to explicit `r_eval` boundary nodes instead
+of failing immediately during lowering.
 
 ``` r
-boundary_ir <- tccquickr:::tccq_ir_boundary(
-  kind = "rf_call",
-  reason = "unsupported R call",
-  input = tccquickr:::tccq_ir_var("x", tccquickr:::tccq_type_vector("double")),
-  type = tccquickr:::tccq_type_vector("double")
-)
+fallback_kernel <- function(x) {
+  declare(type(x = double()))
+  identity(x)
+}
 
-boundary_module <- tccquickr:::tccq_module(
-  entry = "tccq_entry",
-  formal_names = c("x"),
-  types = list(x = tccquickr:::tccq_type_vector("double")),
-  expr = quote(x),
-  ir = boundary_ir
-)
+fallback_ir <- tccq_compile(fallback_kernel, mode = "ir", fallback = "auto")
+fallback_ir$ir$result$tag
+#> [1] "boundary_call"
+fallback_ir$ir$result$api
+#> [1] "r_eval"
+```
 
+In `fallback = "hard"` mode, the same unsupported call is rejected.
+
+``` r
 tryCatch(
-  tccquickr:::tccq_run_passes(boundary_module),
+  tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
   error = function(e) e$message
 )
-#> [1] "boundary nodes are explicit legality barriers in tccq; later milestones may lower them, but milestone 2 refuses to compile them"
+#> [1] "unsupported call in fresh compiler: identity. Add a lowerer case or route it through an explicit boundary node."
 ```
 
 ### Example: assignments and indexed writes
@@ -327,36 +328,44 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
   double v_v = REAL_RO(arg_v)[0];
   int tccq_nprotect = 0;
   R_xlen_t n_y = n_x;
-  SEXP loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
-  ++tccq_nprotect;
-  double *p_y = REAL(loc_y);
-  for (R_xlen_t i = 0; i < n_y; ++i) {
-    p_y[i] = (double)(p_x[i]);
+  SEXP loc_y = R_NilValue;
+  double *p_y = (double *) p_x;
+  int own_y = 0;
+  if (!own_y) {
+    loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
+    ++tccq_nprotect;
+    double *tmp_y = REAL(loc_y);
+    for (R_xlen_t i = 0; i < n_y; ++i) tmp_y[i] = p_y[i];
+    p_y = tmp_y;
+    own_y = 1;
   }
   R_xlen_t j_y = tccq_checked_index1((R_xlen_t)(v_i), n_y, "y");
   p_y[j_y] = (double)(v_v);
-  R_xlen_t n_out = n_y;
-  SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
-  ++tccq_nprotect;
-  double *p_out = REAL(out);
-  for (R_xlen_t i = 0; i < n_out; ++i) {
-    p_out[i] = (double)(p_y[i]);
+  if (!own_y) {
+    loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
+    ++tccq_nprotect;
+    double *tmp_y = REAL(loc_y);
+    for (R_xlen_t i = 0; i < n_y; ++i) tmp_y[i] = p_y[i];
+    p_y = tmp_y;
+    own_y = 1;
   }
   UNPROTECT(tccq_nprotect);
-  return out;
+  return loc_y;
 }
 ```
 
-The local `y <- x` binding is materialized into owned local storage
-before the indexed write. That keeps direct writes to caller-owned
-formal vectors out of this milestone.
+The local `y <- x` binding now starts as an alias to the formal input.
+The first indexed write materializes `y` into owned local storage, so
+mutate-then- return allocates only once while still keeping direct
+writes to caller-owned formal vectors out of scope for this milestone.
 
 ### Example: slicing and reduction
 
 ``` r
 slice_sum_kernel <- function(x, lo, hi) {
   declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
-  sum(x[lo:hi])
+  y <- x[lo:hi]
+  sum(y)
 }
 
 slice_sum_src <- tccq_compile(slice_sum_kernel, mode = "code")
@@ -407,13 +416,18 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
   }
   int v_hi = INTEGER_RO(arg_hi)[0];
   int tccq_nprotect = 0;
-  R_xlen_t lo_fold = tccq_checked_index1((R_xlen_t)(v_lo), n_x, "x");
-  R_xlen_t hi_fold = tccq_checked_index1((R_xlen_t)(v_hi), n_x, "x");
-  if (hi_fold < lo_fold) { Rf_error("decreasing slices are not supported"); }
-  R_xlen_t n_fold = hi_fold - lo_fold + 1;
+  R_xlen_t lo_n_y = tccq_checked_index1((R_xlen_t)(v_lo), n_x, "x");
+  R_xlen_t hi_n_y = tccq_checked_index1((R_xlen_t)(v_hi), n_x, "x");
+  if (hi_n_y < lo_n_y) { Rf_error("decreasing slices are not supported"); }
+  R_xlen_t n_n_y = hi_n_y - lo_n_y + 1;
+  R_xlen_t n_y = n_n_y;
+  SEXP loc_y = R_NilValue;
+  double *p_y = (double *) (p_x + lo_n_y);
+  int own_y = 0;
+  R_xlen_t n_out = n_y;
   double acc = 0.0;
-  for (R_xlen_t i = 0; i < n_fold; ++i) {
-    acc += (double)(p_x[lo_fold + i]);
+  for (R_xlen_t i = 0; i < n_out; ++i) {
+    acc += (double)(p_y[i]);
   }
   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
   ++tccq_nprotect;
@@ -422,6 +436,10 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
   return out;
 }
 ```
+
+The slice bind now lowers to an explicit `view1` node. In the current
+target, that means the compiler can bind a pointer/length view and
+reduce over it without allocating a copied slice first.
 
 ### Example: direct formal mutation is rejected
 
@@ -565,13 +583,19 @@ This path allocates one output vector and fills it in one loop.
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
   compiled_sum <- tccq_compile(fresh_sum_kernel)
   compiled_vec <- tccq_compile(fresh_vec_kernel)
+  compiled_fallback <- tccq_compile(fallback_kernel, fallback = "auto")
+  compiled_assign <- tccq_compile(assign_kernel)
+  compiled_slice_sum <- tccq_compile(slice_sum_kernel)
 
   x <- as.double(seq(-2, 2, length.out = 10))
   y <- as.double(seq(1, 3, length.out = 10))
 
   list(
     compiled_sum = compiled_sum(x, y),
-    compiled_vec_head = unname(compiled_vec(x, y)[1:4])
+    compiled_vec_head = unname(compiled_vec(x, y)[1:4]),
+    compiled_fallback = compiled_fallback(42),
+    compiled_assign = unname(compiled_assign(c(1, 2, 3), 2L, 10)),
+    compiled_slice_sum = compiled_slice_sum(c(1, 2, 3, 4), 2L, 4L)
   )
 }
 #> $compiled_sum
@@ -579,6 +603,15 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
 #> 
 #> $compiled_vec_head
 #> [1] 0.09070257 0.49394330 1.19022755 2.15940797
+#> 
+#> $compiled_fallback
+#> [1] 42
+#> 
+#> $compiled_assign
+#> [1]  1 10  3
+#> 
+#> $compiled_slice_sum
+#> [1] 9
 ```
 
 ## Related projects and influences
