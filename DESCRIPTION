@@ -23,7 +23,7 @@ Imports:
 Suggests:
     tinytest,
     quickr
-Additional_repositories: https://sounkou-bioinfo.r-universe.dev
+Remotes: sounkou-bioinfo/Rtinycc
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
