@@ -35,6 +35,15 @@ The package depends on
 underlying TinyCC toolchain, libtcc runtime, FFI compilation pipeline,
 and pointer/runtime support.
 
+Conceptually, the project sits near several adjacent efforts:
+
+- [`quickr`](https://github.com/t-kalinowski/quickr) as a useful R
+  subset compiler comparison
+- [`anvil`](https://github.com/r-xla/anvil) as a broader transformation
+  and backend framework comparison
+- [`SAC` / `sac2c`](https://sac-home.org/about%3Asac) as the main
+  inspiration for explicit array IR, fusion, and allocation reduction
+
 ## Scope
 
 `tccquickr` is where the transformation framework lives.
@@ -536,6 +545,36 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
 #> $compiled_vec_head
 #> [1] 0.09070257 0.49394330 1.19022755 2.15940797
 ```
+
+## Related projects and influences
+
+`tccquickr` is not trying to be identical to any one upstream project,
+but its current direction is easier to understand relative to a few
+concrete references.
+
+### `quickr`
+
+[`quickr`](https://github.com/t-kalinowski/quickr) is a useful
+comparison for a declared R subset compiler. It demonstrates that a
+strict, typed subset of R can be lowered aggressively and made fast.
+
+### `anvil`
+
+[`anvil`](https://github.com/r-xla/anvil) is a useful comparison for
+explicit transformation architecture and backend thinking. It is broader
+than the goals here, but it is a good reference point for separating
+frontend and backend concerns.
+
+### `SAC` and `sac2c`
+
+[`SAC`](https://sac-home.org/about%3Asac) and the
+[`sac2c`](https://gitlab.sac-home.org/sac-group/sac2c) compiler are the
+main optimization inspiration for the fresh path here:
+
+- explicit array/kernel IR
+- fusion as an IR rewrite rather than a codegen accident
+- allocation reduction and materialization discipline
+- legality-driven optimization boundaries
 
 ## Status
 
