@@ -17,7 +17,7 @@ if (requireNamespace("pkgload", quietly = TRUE)) {
 }
 knitr::knit_engines$set(rtinycc = Rtinycc:::rtinycc_engine)
 
-tccq2_c_block <- function(code) {
+tccq_c_block <- function(code) {
   Rtinycc:::rtinycc_c_block(code)
 }
 ```
@@ -38,7 +38,7 @@ Experimental backend-neutral R code transformation framework on top of
 `tccquickr` is an experimental compiler and transformation framework for a
 small, declared R subset.
 
-The current design direction is centered on the fresh `tccq2_*` path:
+The current design direction is centered on the fresh `tccq_*` path:
 
 - frontend parsing and typed lowering for `declare(type(...))`-annotated R
 - explicit middle-end IR for producers, materialization, folds, statements, and
@@ -66,7 +66,7 @@ Conceptually, the project sits near several adjacent efforts:
 
 The main moving parts are:
 
-- `tccq2_compile()`
+- `tccq_compile()`
 - typed frontend parsing and lowering
 - middle-end kernel IR and rewrite passes
 - C + R C API target emission
@@ -91,7 +91,7 @@ install.packages(
 )
 ```
 
-## Fresh `tccq2` scaffold
+## Fresh `tccq` scaffold
 
 The fresh path is deliberately small in the first milestones.
 
@@ -167,8 +167,8 @@ fresh_vec_kernel <- function(x, y) {
   sin(x) + y * y
 }
 
-sum_module <- tccq2_compile(fresh_sum_kernel, mode = "ir")
-vec_module <- tccq2_compile(fresh_vec_kernel, mode = "ir")
+sum_module <- tccq_compile(fresh_sum_kernel, mode = "ir")
+vec_module <- tccq_compile(fresh_vec_kernel, mode = "ir")
 
 sum_module
 vec_module
@@ -184,25 +184,25 @@ materialized producer. The fusion pass rewrites that to a fold over the
 producer directly.
 
 ```{r}
-mod0 <- tccquickr:::tccq2_frontend(fresh_sum_kernel)
-mod0 <- tccquickr:::tccq2_lower_module(mod0)
+mod0 <- tccquickr:::tccq_frontend(fresh_sum_kernel)
+mod0 <- tccquickr:::tccq_lower_module(mod0)
 
-before_fusion <- tccquickr:::tccq2_run_passes(
+before_fusion <- tccquickr:::tccq_run_passes(
   mod0,
   passes = list(
-    tccquickr:::tccq2_pass_validate_ir(),
-    tccquickr:::tccq2_pass_effects(),
-    tccquickr:::tccq2_pass_kernelize()
+    tccquickr:::tccq_pass_validate_ir(),
+    tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_kernelize()
   )
 )
 
-after_fusion <- tccquickr:::tccq2_run_passes(
+after_fusion <- tccquickr:::tccq_run_passes(
   mod0,
   passes = list(
-    tccquickr:::tccq2_pass_validate_ir(),
-    tccquickr:::tccq2_pass_effects(),
-    tccquickr:::tccq2_pass_kernelize(),
-    tccquickr:::tccq2_pass_fusion()
+    tccquickr:::tccq_pass_validate_ir(),
+    tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_kernelize(),
+    tccquickr:::tccq_pass_fusion()
   )
 )
 
@@ -220,23 +220,23 @@ Boundary nodes are explicit legality barriers. The fresh compiler does not yet
 fallback through them; it refuses to compile them.
 
 ```{r}
-boundary_ir <- tccquickr:::tccq2_ir_boundary(
+boundary_ir <- tccquickr:::tccq_ir_boundary(
   kind = "rf_call",
   reason = "unsupported R call",
-  input = tccquickr:::tccq2_ir_var("x", tccquickr:::tccq2_type_vector("double")),
-  type = tccquickr:::tccq2_type_vector("double")
+  input = tccquickr:::tccq_ir_var("x", tccquickr:::tccq_type_vector("double")),
+  type = tccquickr:::tccq_type_vector("double")
 )
 
-boundary_module <- tccquickr:::tccq2_module(
-  entry = "tccq2_entry",
+boundary_module <- tccquickr:::tccq_module(
+  entry = "tccq_entry",
   formal_names = c("x"),
-  types = list(x = tccquickr:::tccq2_type_vector("double")),
+  types = list(x = tccquickr:::tccq_type_vector("double")),
   expr = quote(x),
   ir = boundary_ir
 )
 
 tryCatch(
-  tccquickr:::tccq2_run_passes(boundary_module),
+  tccquickr:::tccq_run_passes(boundary_module),
   error = function(e) e$message
 )
 ```
@@ -251,8 +251,8 @@ assign_kernel <- function(x, i, v) {
   y
 }
 
-assign_src <- tccq2_compile(assign_kernel, mode = "code")
-tccq2_c_block(assign_src)
+assign_src <- tccq_compile(assign_kernel, mode = "code")
+tccq_c_block(assign_src)
 ```
 
 The local `y <- x` binding is materialized into owned local storage before the
@@ -267,8 +267,8 @@ slice_sum_kernel <- function(x, lo, hi) {
   sum(x[lo:hi])
 }
 
-slice_sum_src <- tccq2_compile(slice_sum_kernel, mode = "code")
-tccq2_c_block(slice_sum_src)
+slice_sum_src <- tccq_compile(slice_sum_kernel, mode = "code")
+tccq_c_block(slice_sum_src)
 ```
 
 ### Example: direct formal mutation is rejected
@@ -281,7 +281,7 @@ direct_formal_mutation <- function(x, v) {
 }
 
 tryCatch(
-  tccq2_compile(direct_formal_mutation, mode = "code"),
+  tccq_compile(direct_formal_mutation, mode = "code"),
   error = function(e) e$message
 )
 ```
@@ -289,8 +289,8 @@ tryCatch(
 ### Example: generate C source
 
 ```{r}
-sum_src <- tccq2_compile(fresh_sum_kernel, mode = "code")
-tccq2_c_block(sum_src)
+sum_src <- tccq_compile(fresh_sum_kernel, mode = "code")
+tccq_c_block(sum_src)
 ```
 
 The generated C contains one reduction loop and no intermediate vector
@@ -299,8 +299,8 @@ allocation for the reduction itself.
 ### Example: vector materialization kernel
 
 ```{r}
-vec_src <- tccq2_compile(fresh_vec_kernel, mode = "code")
-tccq2_c_block(vec_src)
+vec_src <- tccq_compile(fresh_vec_kernel, mode = "code")
+tccq_c_block(vec_src)
 ```
 
 This path allocates one output vector and fills it in one loop.
@@ -309,8 +309,8 @@ This path allocates one output vector and fills it in one loop.
 
 ```{r}
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
-  compiled_sum <- tccq2_compile(fresh_sum_kernel)
-  compiled_vec <- tccq2_compile(fresh_vec_kernel)
+  compiled_sum <- tccq_compile(fresh_sum_kernel)
+  compiled_vec <- tccq_compile(fresh_vec_kernel)
 
   x <- as.double(seq(-2, 2, length.out = 10))
   y <- as.double(seq(1, 3, length.out = 10))
@@ -361,7 +361,7 @@ separation of concerns:
 - [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) provides the TinyCC /
   FFI runtime layer
 - `tccquickr` provides the compiler and transformation framework
-- `tccq2_*` is the active architecture for explicit IR, mutation barriers,
+- `tccq_*` is the active architecture for explicit IR, mutation barriers,
   slicing/indexing semantics, and backend-neutral compilation flow
 
 ## Development

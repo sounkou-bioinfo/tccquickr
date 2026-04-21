@@ -1,15 +1,15 @@
-# tccq2_backend.R - fresh backend protocol
+# tccq_backend.R - fresh backend protocol
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-tccq2_backend <- function(name, compile, capabilities = list()) {
+tccq_backend <- function(name, compile, capabilities = list()) {
   structure(
     list(name = name, compile = compile, capabilities = capabilities),
-    class = "tccq2_backend"
+    class = "tccq_backend"
   )
 }
 
-tccq2_backend_source <- function() {
-  tccq2_backend(
+tccq_backend_source <- function() {
+  tccq_backend(
     name = "source",
     capabilities = list(c = TRUE, compile = FALSE, r_api = TRUE),
     compile = function(module, target, ctx = list()) {
@@ -25,12 +25,12 @@ tccq2_backend_source <- function() {
   )
 }
 
-tccq2_backend_tinycc <- function() {
-  tccq2_backend(
+tccq_backend_tinycc <- function() {
+  tccq_backend(
     name = "tinycc",
     capabilities = list(c = TRUE, compile = TRUE, r_api = TRUE, in_memory = TRUE),
     compile = function(module, target, ctx = list()) {
-      tccq2_require_namespace("Rtinycc")
+      tccq_require_namespace("Rtinycc")
 
       src <- target$emit(module, ctx)
       spec <- target$entry_spec(module, ctx)

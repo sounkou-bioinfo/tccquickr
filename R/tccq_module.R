@@ -1,7 +1,7 @@
-# tccq2_module.R - fresh compiler module object
+# tccq_module.R - fresh compiler module object
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-tccq2_module <- function(
+tccq_module <- function(
   entry,
   formal_names,
   types,
@@ -26,33 +26,33 @@ tccq2_module <- function(
       alloc_plan = alloc_plan,
       protect_plan = protect_plan
     ),
-    class = "tccq2_module"
+    class = "tccq_module"
   )
 }
 
-tccq2_module_validate <- function(module) {
-  tccq2_assert(inherits(module, "tccq2_module"), "expected tccq2_module")
-  tccq2_assert(is.character(module$entry), "module entry must be character")
-  tccq2_assert(length(module$entry) == 1L, "module entry must have length 1")
-  tccq2_assert(length(module$formal_names) == length(module$types), "formal/type mismatch")
+tccq_module_validate <- function(module) {
+  tccq_assert(inherits(module, "tccq_module"), "expected tccq_module")
+  tccq_assert(is.character(module$entry), "module entry must be character")
+  tccq_assert(length(module$entry) == 1L, "module entry must have length 1")
+  tccq_assert(length(module$formal_names) == length(module$types), "formal/type mismatch")
 
   missing <- setdiff(module$formal_names, names(module$types))
   if (length(missing)) {
-    tccq2_abort("missing type declarations for: ", paste(missing, collapse = ", "))
+    tccq_abort("missing type declarations for: ", paste(missing, collapse = ", "))
   }
 
   if (is.null(module$body_exprs) || !length(module$body_exprs)) {
-    tccq2_abort("module must contain at least one body expression")
+    tccq_abort("module must contain at least one body expression")
   }
 
   if (!is.null(module$ir)) {
-    tccq2_ir_validate(module$ir)
+    tccq_ir_validate(module$ir)
   }
 
   invisible(TRUE)
 }
 
-tccq2_module_with <- function(module, ...) {
+tccq_module_with <- function(module, ...) {
   updates <- list(...)
   for (nm in names(updates)) {
     module[[nm]] <- updates[[nm]]

@@ -1,28 +1,28 @@
-# tccq2_print.R - compact printers for fresh compiler objects
+# tccq_print.R - compact printers for fresh compiler objects
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-#' Format a `tccq2` type
+#' Format a `tccq` type
 #'
-#' @param x A `tccq2_type` object.
+#' @param x A `tccq_type` object.
 #' @param ... Unused.
 #' @return A compact character representation.
-#' @exportS3Method format tccq2_type
-format.tccq2_type <- function(x, ...) {
-  tccq2_type_to_string(x)
+#' @exportS3Method format tccq_type
+format.tccq_type <- function(x, ...) {
+  tccq_type_to_string(x)
 }
 
-#' Print a `tccq2` type
+#' Print a `tccq` type
 #'
-#' @param x A `tccq2_type` object.
+#' @param x A `tccq_type` object.
 #' @param ... Unused.
 #' @return `x`, invisibly.
-#' @exportS3Method print tccq2_type
-print.tccq2_type <- function(x, ...) {
-  cat("<tccq2_type>", format(x, ...), "\n")
+#' @exportS3Method print tccq_type
+print.tccq_type <- function(x, ...) {
+  cat("<tccq_type>", format(x, ...), "\n")
   invisible(x)
 }
 
-tccq2_kernel_result_tag <- function(kernel) {
+tccq_kernel_result_tag <- function(kernel) {
   if (is.null(kernel) || is.null(kernel$tag)) {
     return("<none>")
   }
@@ -38,16 +38,16 @@ tccq2_kernel_result_tag <- function(kernel) {
   kernel$tag
 }
 
-#' Print a `tccq2` module summary
+#' Print a `tccq` module summary
 #'
-#' @param x A `tccq2_module` object.
+#' @param x A `tccq_module` object.
 #' @param ... Unused.
 #' @return `x`, invisibly.
-#' @exportS3Method print tccq2_module
-print.tccq2_module <- function(x, ...) {
-  tccq2_module_validate(x)
+#' @exportS3Method print tccq_module
+print.tccq_module <- function(x, ...) {
+  tccq_module_validate(x)
 
-  cat("<tccq2_module>\n")
+  cat("<tccq_module>\n")
   cat("  entry:", x$entry, "\n")
 
   if (length(x$formal_names)) {
@@ -64,10 +64,10 @@ print.tccq2_module <- function(x, ...) {
   }
 
   if (!is.null(x$kernel)) {
-    cat("  kernel:", tccq2_kernel_result_tag(x$kernel), "\n")
+    cat("  kernel:", tccq_kernel_result_tag(x$kernel), "\n")
   }
 
-  locals <- if (!is.null(x$ir)) tccq2_ir_program_locals(x$ir) else list()
+  locals <- if (!is.null(x$ir)) tccq_ir_program_locals(x$ir) else list()
   if (length(locals)) {
     cat("  locals:\n")
     for (nm in names(locals)) {

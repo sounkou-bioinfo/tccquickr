@@ -1,7 +1,7 @@
-# tccq2_extlib.R - external C library descriptors for later milestones
+# tccq_extlib.R - external C library descriptors for later milestones
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-tccq2_external_library <- function(
+tccq_external_library <- function(
   name,
   headers = character(),
   libraries = character(),
@@ -20,11 +20,11 @@ tccq2_external_library <- function(
       symbols = symbols,
       effects = effects
     ),
-    class = "tccq2_external_library"
+    class = "tccq_external_library"
   )
 }
 
-tccq2_context_from_extlibs <- function(extlibs = list()) {
+tccq_context_from_extlibs <- function(extlibs = list()) {
   if (!length(extlibs)) {
     return(list(headers = character(), libraries = character(), external_symbols = list()))
   }
@@ -34,8 +34,8 @@ tccq2_context_from_extlibs <- function(extlibs = list()) {
   symbols <- list()
 
   for (lib in extlibs) {
-    if (!inherits(lib, "tccq2_external_library")) {
-      tccq2_abort("expected tccq2_external_library")
+    if (!inherits(lib, "tccq_external_library")) {
+      tccq_abort("expected tccq_external_library")
     }
     headers <- c(headers, lib$headers)
     libraries <- c(libraries, lib$libraries)
@@ -43,8 +43,8 @@ tccq2_context_from_extlibs <- function(extlibs = list()) {
   }
 
   list(
-    headers = tccq2_unique(headers),
-    libraries = tccq2_unique(libraries),
+    headers = tccq_unique(headers),
+    libraries = tccq_unique(libraries),
     external_symbols = symbols
   )
 }

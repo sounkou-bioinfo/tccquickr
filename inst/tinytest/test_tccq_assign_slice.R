@@ -1,4 +1,4 @@
-# test_tccq2_assign_slice.R
+# test_tccq_assign_slice.R
 
 assignment_block_fn <- function(x) {
   declare(type(x = double(NA)))
@@ -6,7 +6,7 @@ assignment_block_fn <- function(x) {
   sum(y)
 }
 
-assignment_block_src <- tccq2_compile(assignment_block_fn, mode = "code")
+assignment_block_src <- tccq_compile(assignment_block_fn, mode = "code")
 expect_true(grepl("loc_y", assignment_block_src, fixed = TRUE))
 
 scalar_index_read_fn <- function(x, i) {
@@ -14,15 +14,15 @@ scalar_index_read_fn <- function(x, i) {
   x[i] + 1
 }
 
-scalar_index_read_src <- tccq2_compile(scalar_index_read_fn, mode = "code")
-expect_true(grepl("tccq2_checked_index1", scalar_index_read_src, fixed = TRUE))
+scalar_index_read_src <- tccq_compile(scalar_index_read_fn, mode = "code")
+expect_true(grepl("tccq_checked_index1", scalar_index_read_src, fixed = TRUE))
 
 range_slice_fn <- function(x, lo, hi) {
   declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
   x[lo:hi]
 }
 
-range_slice_src <- tccq2_compile(range_slice_fn, mode = "code")
+range_slice_src <- tccq_compile(range_slice_fn, mode = "code")
 expect_true(grepl("Rf_allocVector", range_slice_src, fixed = TRUE))
 
 indexed_assignment_fn <- function(x, i, v) {
@@ -32,7 +32,7 @@ indexed_assignment_fn <- function(x, i, v) {
   y
 }
 
-indexed_assignment_src <- tccq2_compile(indexed_assignment_fn, mode = "code")
+indexed_assignment_src <- tccq_compile(indexed_assignment_fn, mode = "code")
 expect_true(grepl("loc_y", indexed_assignment_src, fixed = TRUE))
 expect_true(grepl("p_y\\[j_y\\]", indexed_assignment_src))
 
@@ -43,7 +43,7 @@ range_assignment_fn <- function(x, v) {
   y
 }
 
-range_assignment_src <- tccq2_compile(range_assignment_fn, mode = "code")
+range_assignment_src <- tccq_compile(range_assignment_fn, mode = "code")
 expect_true(grepl("n_rng_y", range_assignment_src, fixed = TRUE))
 
 direct_formal_mutation_fn <- function(x, v) {
@@ -53,7 +53,7 @@ direct_formal_mutation_fn <- function(x, v) {
 }
 
 expect_error(
-  tccq2_compile(direct_formal_mutation_fn, mode = "code"),
+  tccq_compile(direct_formal_mutation_fn, mode = "code"),
   pattern = "requires a local vector binding"
 )
 
@@ -64,7 +64,7 @@ direct_formal_range_mutation_fn <- function(x, v) {
 }
 
 expect_error(
-  tccq2_compile(direct_formal_range_mutation_fn, mode = "code"),
+  tccq_compile(direct_formal_range_mutation_fn, mode = "code"),
   pattern = "requires a local vector binding"
 )
 
@@ -76,11 +76,11 @@ rebind_local_name_fn <- function(x) {
 }
 
 expect_error(
-  tccq2_compile(rebind_local_name_fn, mode = "code"),
+  tccq_compile(rebind_local_name_fn, mode = "code"),
   pattern = "rebinding a local name is not yet supported"
 )
 
-compiled_indexed_assignment <- tccq2_compile(indexed_assignment_fn, backend = tccquickr:::tccq2_backend_tinycc())
+compiled_indexed_assignment <- tccq_compile(indexed_assignment_fn, backend = tccquickr:::tccq_backend_tinycc())
 expect_equal(compiled_indexed_assignment(c(1, 2, 3), 2L, 10), c(1, 10, 3))
 
 slice_sum_fn <- function(x, lo, hi) {
@@ -88,5 +88,5 @@ slice_sum_fn <- function(x, lo, hi) {
   sum(x[lo:hi])
 }
 
-compiled_slice_sum <- tccq2_compile(slice_sum_fn, backend = tccquickr:::tccq2_backend_tinycc())
+compiled_slice_sum <- tccq_compile(slice_sum_fn, backend = tccquickr:::tccq_backend_tinycc())
 expect_equal(compiled_slice_sum(c(1, 2, 3, 4), 2L, 4L), 9)

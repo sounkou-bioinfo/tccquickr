@@ -20,7 +20,7 @@ experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](h
 `tccquickr` is an experimental compiler and transformation framework for
 a small, declared R subset.
 
-The current design direction is centered on the fresh `tccq2_*` path:
+The current design direction is centered on the fresh `tccq_*` path:
 
 - frontend parsing and typed lowering for `declare(type(...))`-annotated
   R
@@ -50,7 +50,7 @@ Conceptually, the project sits near several adjacent efforts:
 
 The main moving parts are:
 
-- `tccq2_compile()`
+- `tccq_compile()`
 - typed frontend parsing and lowering
 - middle-end kernel IR and rewrite passes
 - C + R C API target emission
@@ -76,7 +76,7 @@ install.packages(
 )
 ```
 
-## Fresh `tccq2` scaffold
+## Fresh `tccq` scaffold
 
 The fresh path is deliberately small in the first milestones.
 
@@ -160,12 +160,12 @@ fresh_vec_kernel <- function(x, y) {
   sin(x) + y * y
 }
 
-sum_module <- tccq2_compile(fresh_sum_kernel, mode = "ir")
-vec_module <- tccq2_compile(fresh_vec_kernel, mode = "ir")
+sum_module <- tccq_compile(fresh_sum_kernel, mode = "ir")
+vec_module <- tccq_compile(fresh_vec_kernel, mode = "ir")
 
 sum_module
-#> <tccq2_module>
-#>   entry: tccq2_entry 
+#> <tccq_module>
+#>   entry: tccq_entry 
 #>   formals:
 #>    - x : double[NA] 
 #>    - y : double[NA] 
@@ -173,8 +173,8 @@ sum_module
 #>   kernel: fold 
 #>   result type: double
 vec_module
-#> <tccq2_module>
-#>   entry: tccq2_entry 
+#> <tccq_module>
+#>   entry: tccq_entry 
 #>   formals:
 #>    - x : double[NA] 
 #>    - y : double[NA] 
@@ -194,31 +194,31 @@ materialized producer. The fusion pass rewrites that to a fold over the
 producer directly.
 
 ``` r
-mod0 <- tccquickr:::tccq2_frontend(fresh_sum_kernel)
-mod0 <- tccquickr:::tccq2_lower_module(mod0)
+mod0 <- tccquickr:::tccq_frontend(fresh_sum_kernel)
+mod0 <- tccquickr:::tccq_lower_module(mod0)
 
-before_fusion <- tccquickr:::tccq2_run_passes(
+before_fusion <- tccquickr:::tccq_run_passes(
   mod0,
   passes = list(
-    tccquickr:::tccq2_pass_validate_ir(),
-    tccquickr:::tccq2_pass_effects(),
-    tccquickr:::tccq2_pass_kernelize()
+    tccquickr:::tccq_pass_validate_ir(),
+    tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_kernelize()
   )
 )
 
-after_fusion <- tccquickr:::tccq2_run_passes(
+after_fusion <- tccquickr:::tccq_run_passes(
   mod0,
   passes = list(
-    tccquickr:::tccq2_pass_validate_ir(),
-    tccquickr:::tccq2_pass_effects(),
-    tccquickr:::tccq2_pass_kernelize(),
-    tccquickr:::tccq2_pass_fusion()
+    tccquickr:::tccq_pass_validate_ir(),
+    tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_kernelize(),
+    tccquickr:::tccq_pass_fusion()
   )
 )
 
 before_fusion
-#> <tccq2_module>
-#>   entry: tccq2_entry 
+#> <tccq_module>
+#>   entry: tccq_entry 
 #>   formals:
 #>    - x : double[NA] 
 #>    - y : double[NA] 
@@ -226,8 +226,8 @@ before_fusion
 #>   kernel: fold 
 #>   result type: double
 after_fusion
-#> <tccq2_module>
-#>   entry: tccq2_entry 
+#> <tccq_module>
+#>   entry: tccq_entry 
 #>   formals:
 #>    - x : double[NA] 
 #>    - y : double[NA] 
@@ -246,26 +246,26 @@ Boundary nodes are explicit legality barriers. The fresh compiler does
 not yet fallback through them; it refuses to compile them.
 
 ``` r
-boundary_ir <- tccquickr:::tccq2_ir_boundary(
+boundary_ir <- tccquickr:::tccq_ir_boundary(
   kind = "rf_call",
   reason = "unsupported R call",
-  input = tccquickr:::tccq2_ir_var("x", tccquickr:::tccq2_type_vector("double")),
-  type = tccquickr:::tccq2_type_vector("double")
+  input = tccquickr:::tccq_ir_var("x", tccquickr:::tccq_type_vector("double")),
+  type = tccquickr:::tccq_type_vector("double")
 )
 
-boundary_module <- tccquickr:::tccq2_module(
-  entry = "tccq2_entry",
+boundary_module <- tccquickr:::tccq_module(
+  entry = "tccq_entry",
   formal_names = c("x"),
-  types = list(x = tccquickr:::tccq2_type_vector("double")),
+  types = list(x = tccquickr:::tccq_type_vector("double")),
   expr = quote(x),
   ir = boundary_ir
 )
 
 tryCatch(
-  tccquickr:::tccq2_run_passes(boundary_module),
+  tccquickr:::tccq_run_passes(boundary_module),
   error = function(e) e$message
 )
-#> [1] "boundary nodes are explicit legality barriers in tccq2; later milestones may lower them, but milestone 2 refuses to compile them"
+#> [1] "boundary nodes are explicit legality barriers in tccq; later milestones may lower them, but milestone 2 refuses to compile them"
 ```
 
 ### Example: assignments and indexed writes
@@ -278,8 +278,8 @@ assign_kernel <- function(x, i, v) {
   y
 }
 
-assign_src <- tccq2_compile(assign_kernel, mode = "code")
-tccq2_c_block(assign_src)
+assign_src <- tccq_compile(assign_kernel, mode = "code")
+tccq_c_block(assign_src)
 ```
 
 ``` c
@@ -298,14 +298,14 @@ tccq2_c_block(assign_src)
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
 
-static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
 }
 
-SEXP tccq2_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
+SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
   if (TYPEOF(arg_x) != REALSXP) {
     Rf_error("argument %s has wrong R type", "x");
   }
@@ -325,24 +325,24 @@ SEXP tccq2_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
     Rf_error("scalar argument %s is empty", "v");
   }
   double v_v = REAL_RO(arg_v)[0];
-  int tccq2_nprotect = 0;
+  int tccq_nprotect = 0;
   R_xlen_t n_y = n_x;
   SEXP loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
-  ++tccq2_nprotect;
+  ++tccq_nprotect;
   double *p_y = REAL(loc_y);
   for (R_xlen_t i = 0; i < n_y; ++i) {
     p_y[i] = (double)(p_x[i]);
   }
-  R_xlen_t j_y = tccq2_checked_index1((R_xlen_t)(v_i), n_y, "y");
+  R_xlen_t j_y = tccq_checked_index1((R_xlen_t)(v_i), n_y, "y");
   p_y[j_y] = (double)(v_v);
   R_xlen_t n_out = n_y;
   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
-  ++tccq2_nprotect;
+  ++tccq_nprotect;
   double *p_out = REAL(out);
   for (R_xlen_t i = 0; i < n_out; ++i) {
     p_out[i] = (double)(p_y[i]);
   }
-  UNPROTECT(tccq2_nprotect);
+  UNPROTECT(tccq_nprotect);
   return out;
 }
 ```
@@ -359,8 +359,8 @@ slice_sum_kernel <- function(x, lo, hi) {
   sum(x[lo:hi])
 }
 
-slice_sum_src <- tccq2_compile(slice_sum_kernel, mode = "code")
-tccq2_c_block(slice_sum_src)
+slice_sum_src <- tccq_compile(slice_sum_kernel, mode = "code")
+tccq_c_block(slice_sum_src)
 ```
 
 ``` c
@@ -379,14 +379,14 @@ tccq2_c_block(slice_sum_src)
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
 
-static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
 }
 
-SEXP tccq2_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
+SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
   if (TYPEOF(arg_x) != REALSXP) {
     Rf_error("argument %s has wrong R type", "x");
   }
@@ -406,9 +406,9 @@ SEXP tccq2_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
     Rf_error("scalar argument %s is empty", "hi");
   }
   int v_hi = INTEGER_RO(arg_hi)[0];
-  int tccq2_nprotect = 0;
-  R_xlen_t lo_fold = tccq2_checked_index1((R_xlen_t)(v_lo), n_x, "x");
-  R_xlen_t hi_fold = tccq2_checked_index1((R_xlen_t)(v_hi), n_x, "x");
+  int tccq_nprotect = 0;
+  R_xlen_t lo_fold = tccq_checked_index1((R_xlen_t)(v_lo), n_x, "x");
+  R_xlen_t hi_fold = tccq_checked_index1((R_xlen_t)(v_hi), n_x, "x");
   if (hi_fold < lo_fold) { Rf_error("decreasing slices are not supported"); }
   R_xlen_t n_fold = hi_fold - lo_fold + 1;
   double acc = 0.0;
@@ -416,9 +416,9 @@ SEXP tccq2_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
     acc += (double)(p_x[lo_fold + i]);
   }
   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
-  ++tccq2_nprotect;
+  ++tccq_nprotect;
   REAL(out)[0] = acc;
-  UNPROTECT(tccq2_nprotect);
+  UNPROTECT(tccq_nprotect);
   return out;
 }
 ```
@@ -433,7 +433,7 @@ direct_formal_mutation <- function(x, v) {
 }
 
 tryCatch(
-  tccq2_compile(direct_formal_mutation, mode = "code"),
+  tccq_compile(direct_formal_mutation, mode = "code"),
   error = function(e) e$message
 )
 #> [1] "indexed assignment currently requires a local vector binding. Write y <- x; y[i] <- value; y instead of mutating formal 'x' directly."
@@ -442,8 +442,8 @@ tryCatch(
 ### Example: generate C source
 
 ``` r
-sum_src <- tccq2_compile(fresh_sum_kernel, mode = "code")
-tccq2_c_block(sum_src)
+sum_src <- tccq_compile(fresh_sum_kernel, mode = "code")
+tccq_c_block(sum_src)
 ```
 
 ``` c
@@ -462,14 +462,14 @@ tccq2_c_block(sum_src)
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
 
-static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
 }
 
-SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
+SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   if (TYPEOF(arg_x) != REALSXP) {
     Rf_error("argument %s has wrong R type", "x");
   }
@@ -480,7 +480,7 @@ SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
   }
   R_xlen_t n_y = XLENGTH(arg_y);
   const double *p_y = REAL_RO(arg_y);
-  int tccq2_nprotect = 0;
+  int tccq_nprotect = 0;
   R_xlen_t n_out = n_x;
   if (n_y != n_out) {
     Rf_error("vector length mismatch for %s", "y");
@@ -490,9 +490,9 @@ SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
     acc += (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
   }
   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
-  ++tccq2_nprotect;
+  ++tccq_nprotect;
   REAL(out)[0] = acc;
-  UNPROTECT(tccq2_nprotect);
+  UNPROTECT(tccq_nprotect);
   return out;
 }
 ```
@@ -503,8 +503,8 @@ allocation for the reduction itself.
 ### Example: vector materialization kernel
 
 ``` r
-vec_src <- tccq2_compile(fresh_vec_kernel, mode = "code")
-tccq2_c_block(vec_src)
+vec_src <- tccq_compile(fresh_vec_kernel, mode = "code")
+tccq_c_block(vec_src)
 ```
 
 ``` c
@@ -523,14 +523,14 @@ tccq2_c_block(vec_src)
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
 
-static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
 }
 
-SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
+SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   if (TYPEOF(arg_x) != REALSXP) {
     Rf_error("argument %s has wrong R type", "x");
   }
@@ -541,18 +541,18 @@ SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
   }
   R_xlen_t n_y = XLENGTH(arg_y);
   const double *p_y = REAL_RO(arg_y);
-  int tccq2_nprotect = 0;
+  int tccq_nprotect = 0;
   R_xlen_t n_out = n_x;
   if (n_y != n_out) {
     Rf_error("vector length mismatch for %s", "y");
   }
   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
-  ++tccq2_nprotect;
+  ++tccq_nprotect;
   double *p_out = REAL(out);
   for (R_xlen_t i = 0; i < n_out; ++i) {
     p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
   }
-  UNPROTECT(tccq2_nprotect);
+  UNPROTECT(tccq_nprotect);
   return out;
 }
 ```
@@ -563,8 +563,8 @@ This path allocates one output vector and fills it in one loop.
 
 ``` r
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
-  compiled_sum <- tccq2_compile(fresh_sum_kernel)
-  compiled_vec <- tccq2_compile(fresh_vec_kernel)
+  compiled_sum <- tccq_compile(fresh_sum_kernel)
+  compiled_vec <- tccq_compile(fresh_vec_kernel)
 
   x <- as.double(seq(-2, 2, length.out = 10))
   y <- as.double(seq(1, 3, length.out = 10))
@@ -621,7 +621,7 @@ is about separation of concerns:
 - [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) provides the
   TinyCC / FFI runtime layer
 - `tccquickr` provides the compiler and transformation framework
-- `tccq2_*` is the active architecture for explicit IR, mutation
+- `tccq_*` is the active architecture for explicit IR, mutation
   barriers, slicing/indexing semantics, and backend-neutral compilation
   flow
 
