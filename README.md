@@ -163,27 +163,24 @@ fresh_vec_kernel <- function(x, y) {
 sum_module <- tccq2_compile(fresh_sum_kernel, mode = "ir")
 vec_module <- tccq2_compile(fresh_vec_kernel, mode = "ir")
 
-list(
-  sum_kernel_tag = sum_module$kernel$tag,
-  sum_domain_tag = sum_module$kernel$domain$tag,
-  sum_elem_tag = sum_module$kernel$elem$tag,
-  vec_kernel_tag = vec_module$kernel$tag,
-  vec_producer_tag = vec_module$kernel$producer$tag
-)
-#> $sum_kernel_tag
-#> [1] "fold"
-#> 
-#> $sum_domain_tag
-#> [1] "domain"
-#> 
-#> $sum_elem_tag
-#> [1] "producer"
-#> 
-#> $vec_kernel_tag
-#> [1] "materialize"
-#> 
-#> $vec_producer_tag
-#> [1] "producer"
+sum_module
+#> <tccq2_module>
+#>   entry: tccq2_entry 
+#>   formals:
+#>    - x : double[NA] 
+#>    - y : double[NA] 
+#>   ir: program 
+#>   kernel: fold 
+#>   result type: double
+vec_module
+#> <tccq2_module>
+#>   entry: tccq2_entry 
+#>   formals:
+#>    - x : double[NA] 
+#>    - y : double[NA] 
+#>   ir: program 
+#>   kernel: materialize 
+#>   result type: double[NA]
 ```
 
 The reduction path is represented as a `fold` over an explicit
@@ -219,15 +216,24 @@ after_fusion <- tccquickr:::tccq2_run_passes(
   )
 )
 
-list(
-  before = before_fusion$kernel$elem$tag,
-  after = after_fusion$kernel$elem$tag
-)
-#> $before
-#> [1] "materialize"
-#> 
-#> $after
-#> [1] "producer"
+before_fusion
+#> <tccq2_module>
+#>   entry: tccq2_entry 
+#>   formals:
+#>    - x : double[NA] 
+#>    - y : double[NA] 
+#>   ir: program 
+#>   kernel: fold 
+#>   result type: double
+after_fusion
+#> <tccq2_module>
+#>   entry: tccq2_entry 
+#>   formals:
+#>    - x : double[NA] 
+#>    - y : double[NA] 
+#>   ir: program 
+#>   kernel: fold 
+#>   result type: double
 ```
 
 This is still a small rewrite system, but the important point is that

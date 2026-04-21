@@ -170,13 +170,8 @@ fresh_vec_kernel <- function(x, y) {
 sum_module <- tccq2_compile(fresh_sum_kernel, mode = "ir")
 vec_module <- tccq2_compile(fresh_vec_kernel, mode = "ir")
 
-list(
-  sum_kernel_tag = sum_module$kernel$tag,
-  sum_domain_tag = sum_module$kernel$domain$tag,
-  sum_elem_tag = sum_module$kernel$elem$tag,
-  vec_kernel_tag = vec_module$kernel$tag,
-  vec_producer_tag = vec_module$kernel$producer$tag
-)
+sum_module
+vec_module
 ```
 
 The reduction path is represented as a `fold` over an explicit `producer`.
@@ -211,10 +206,8 @@ after_fusion <- tccquickr:::tccq2_run_passes(
   )
 )
 
-list(
-  before = before_fusion$kernel$elem$tag,
-  after = after_fusion$kernel$elem$tag
-)
+before_fusion
+after_fusion
 ```
 
 This is still a small rewrite system, but the important point is that fusion is
