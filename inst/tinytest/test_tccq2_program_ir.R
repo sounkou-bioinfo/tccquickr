@@ -50,10 +50,8 @@ expect_equal(mod_slice$ir$tag, "program")
 expect_equal(mod_slice$ir$result$tag, "slice_range")
 expect_equal(mod_slice$kernel$tag, "materialize")
 
-if (requireNamespace("Rtinycc", quietly = TRUE)) {
-  compiled_reduce_after_store <- tccq2_compile(binding_then_store_fn)
-  expect_equal(compiled_reduce_after_store(c(1, 2, 3), 2L, 10), 14)
+compiled_reduce_after_store <- tccq2_compile(binding_then_store_fn)
+expect_equal(compiled_reduce_after_store(c(1, 2, 3), 2L, 10), 14)
 
-  compiled_range_store <- tccq2_compile(range_store_fn)
-  expect_equal(compiled_range_store(c(1, 2, 3, 4), 9), c(1, 9, 9, 4))
-}
+compiled_range_store <- tccq2_compile(range_store_fn)
+expect_equal(compiled_range_store(c(1, 2, 3, 4), 9), c(1, 9, 9, 4))
