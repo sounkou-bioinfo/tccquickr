@@ -115,6 +115,7 @@ tcc_ir_rf_call <- function(fun, args, mode = "sexp") {
 }
 
 tcc_ir_fallback <- function(reason) {
-  tcc_ir_node("fallback", mode = "sexp")
-  list(tag = "fallback", mode = "sexp", reason = reason)
+  node <- tcc_ir_node("fallback", mode = "sexp")
+  node$reason <- reason
+  node
 }

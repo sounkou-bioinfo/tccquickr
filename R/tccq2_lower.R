@@ -46,6 +46,12 @@ tccq2_lower_stmt <- function(expr, env, local_names) {
     if (name %in% names(env) && !name %in% local_names) {
       tccq2_abort("rebinding formal arguments is not yet supported in tccq2: ", name)
     }
+    if (name %in% local_names) {
+      tccq2_abort(
+        "rebinding a local name is not yet supported in tccq2: ", name,
+        ". Use a fresh local name instead."
+      )
+    }
     value <- tccq2_lower_expr(rhs, env)
     env[[name]] <- value$type
     local_names <- tccq2_unique(c(local_names, name))

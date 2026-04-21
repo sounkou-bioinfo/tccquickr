@@ -28,6 +28,12 @@ fallback is used. When \code{mode = "code"}, returns a character string
 containing generated C source.
 }
 \description{
+Legacy compiler entry point.
+}
+\details{
+\code{tcc_quick()} is the older prototype path kept for compatibility while new
+compiler work moves into \code{tccq2_compile()}.
+
 \code{tcc_quick()} is an experimental C-first path for compiling a strict subset
 of R functions annotated with \code{declare(type(...))}. In the current subset, supported
 bodies are recursive scalar expressions (arithmetic, comparisons, logical
@@ -38,8 +44,7 @@ scalar \verb{<-} assignments before the final expression are supported.
 Rank-3+ declarations (for example \code{double(NA, NA, NA)}) are accepted at
 parse time but currently reserved for upcoming multidimensional array
 support; they fallback in \code{soft}/\code{auto} and error in \code{hard} mode.
-}
-\details{
+
 For non-arithmetic symbol calls (e.g. \code{max(x, y)} or \code{pmax(a, b, c, d, e)}),
 \code{tcc_quick()} emits a wrapper that constructs the call pairlist and evaluates
 it in base via \code{Rf_eval()}, so R's primitive/internal implementation is used.

@@ -10,6 +10,12 @@ tcc_quick_ops()
 A data.frame with columns \code{category}, \code{r}, \code{c}, \code{vectorized}.
 }
 \description{
+Legacy supported-operations table for \code{tcc_quick()}.
+}
+\details{
+\code{tcc_quick()} is the older prototype path. New transformation work should
+target \code{tccq2_compile()}.
+
 Returns a data.frame listing every R construct that \code{tcc_quick()} can
 lower to C.  The table is assembled programmatically from the call
 registry and from the lowerer/codegen, so it stays in sync with

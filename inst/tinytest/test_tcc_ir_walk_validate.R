@@ -79,6 +79,11 @@ expect_equal(rf_node$tag, "rf_call")
 expect_equal(rf_node$fun, "mean")
 expect_equal(rf_node$mode, "sexp")
 
+fallback_node <- tccquickr:::tcc_ir_fallback("unsupported")
+expect_equal(fallback_node$tag, "fallback")
+expect_equal(fallback_node$mode, "sexp")
+expect_equal(fallback_node$reason, "unsupported")
+
 fb_node <- tccquickr:::tcc_ir_fallback("unsupported")
 expect_equal(fb_node$tag, "fallback")
 expect_equal(fb_node$mode, "sexp")

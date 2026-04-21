@@ -4,8 +4,13 @@
 #' Fresh experimental R-to-C compiler scaffold
 #'
 #' This is a fresh-start compiler path. It intentionally does not call the old
-#' tcc_quick lowerer or code generator. Milestone 1 supports declared scalar and
-#' vector arithmetic plus sum() reductions.
+#' tcc_quick lowerer or code generator. The current milestone supports declared
+#' scalar and vector arithmetic, fused `sum()` reductions, local bindings,
+#' indexed reads, contiguous slices, and local indexed/range writes.
+#'
+#' Current statement semantics are intentionally strict: rebinding a local name
+#' is rejected, direct mutation of formal arguments is rejected, and indexed or
+#' range assignment currently requires a scalar right-hand side.
 #'
 #' @param fn R function with a leading declare(type(...)) annotation.
 #' @param mode One of "compile", "code", or "ir".

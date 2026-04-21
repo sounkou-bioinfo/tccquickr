@@ -62,6 +62,29 @@ expect_error(
   pattern = "requires a local vector binding"
 )
 
+direct_formal_range_mutation_fn <- function(x, v) {
+  declare(type(x = double(NA)), type(v = double()))
+  x[2:3] <- v
+  x
+}
+
+expect_error(
+  tccq2_compile(direct_formal_range_mutation_fn, mode = "code"),
+  pattern = "requires a local vector binding"
+)
+
+rebind_local_name_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  y <- y + 2
+  sum(y)
+}
+
+expect_error(
+  tccq2_compile(rebind_local_name_fn, mode = "code"),
+  pattern = "rebinding a local name is not yet supported"
+)
+
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
   compiled_indexed_assignment <- tccq2_compile(indexed_assignment_fn, backend = tccquickr:::tccq2_backend_tinycc())
   expect_equal(compiled_indexed_assignment(c(1, 2, 3), 2L, 10), c(1, 10, 3))

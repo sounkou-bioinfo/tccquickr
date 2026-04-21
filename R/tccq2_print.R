@@ -1,10 +1,22 @@
 # tccq2_print.R - compact printers for fresh compiler objects
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+#' Format a `tccq2` type
+#'
+#' @param x A `tccq2_type` object.
+#' @param ... Unused.
+#' @return A compact character representation.
+#' @exportS3Method format tccq2_type
 format.tccq2_type <- function(x, ...) {
   tccq2_type_to_string(x)
 }
 
+#' Print a `tccq2` type
+#'
+#' @param x A `tccq2_type` object.
+#' @param ... Unused.
+#' @return `x`, invisibly.
+#' @exportS3Method print tccq2_type
 print.tccq2_type <- function(x, ...) {
   cat("<tccq2_type>", format(x, ...), "\n")
   invisible(x)
@@ -26,6 +38,12 @@ tccq2_kernel_result_tag <- function(kernel) {
   kernel$tag
 }
 
+#' Print a `tccq2` module summary
+#'
+#' @param x A `tccq2_module` object.
+#' @param ... Unused.
+#' @return `x`, invisibly.
+#' @exportS3Method print tccq2_module
 print.tccq2_module <- function(x, ...) {
   tccq2_module_validate(x)
 

@@ -256,6 +256,11 @@ tcc_quick_compile <- function(fn, decl, ir, debug = FALSE) {
 
 #' Supported operations table for tcc_quick
 #'
+#' Legacy supported-operations table for `tcc_quick()`.
+#'
+#' `tcc_quick()` is the older prototype path. New transformation work should
+#' target `tccq2_compile()`.
+#'
 #' Returns a data.frame listing every R construct that `tcc_quick()` can
 #' lower to C.  The table is assembled programmatically from the call
 #' registry and from the lowerer/codegen, so it stays in sync with
@@ -856,6 +861,11 @@ tcc_quick_ops <- function() {
 }
 
 #' Compile a small declare()-annotated R subset with TinyCC
+#'
+#' Legacy compiler entry point.
+#'
+#' `tcc_quick()` is the older prototype path kept for compatibility while new
+#' compiler work moves into `tccq2_compile()`.
 #'
 #' `tcc_quick()` is an experimental C-first path for compiling a strict subset
 #' of R functions annotated with `declare(type(...))`. In the current subset, supported
