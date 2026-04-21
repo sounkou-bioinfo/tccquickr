@@ -6,6 +6,7 @@ tccq2_module <- function(
   formal_names,
   types,
   expr,
+  body_exprs = list(expr),
   ir = NULL,
   kernel = NULL,
   facts = list(),
@@ -18,6 +19,7 @@ tccq2_module <- function(
       formal_names = formal_names,
       types = types,
       expr = expr,
+      body_exprs = body_exprs,
       ir = ir,
       kernel = kernel,
       facts = facts,
@@ -37,6 +39,10 @@ tccq2_module_validate <- function(module) {
   missing <- setdiff(module$formal_names, names(module$types))
   if (length(missing)) {
     tccq2_abort("missing type declarations for: ", paste(missing, collapse = ", "))
+  }
+
+  if (is.null(module$body_exprs) || !length(module$body_exprs)) {
+    tccq2_abort("module must contain at least one body expression")
   }
 
   if (!is.null(module$ir)) {

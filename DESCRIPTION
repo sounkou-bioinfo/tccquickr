@@ -1,5 +1,5 @@
 Package: tccquickr
-Title: Experimental R-to-C Lowering on Top of 'Rtinycc'
+Title: Experimental R Code Transformation Framework on Top of 'Rtinycc'
 Version: 0.0.0.9000
 Authors@R: c(
     person(
@@ -10,10 +10,11 @@ Authors@R: c(
     )
   )
 Description: Provides an experimental and intentionally narrow
-    declare()-annotated R-to-C lowering pipeline built on top of
-    'Rtinycc'. The package contains the parser, IR, lowering, and
-    code-generation layers for the tcc_quick prototype while keeping the
-    underlying TinyCC toolchain and FFI runtime in 'Rtinycc'
+    declare()-annotated R code transformation and R-to-C compilation
+    framework built on top of 'Rtinycc'. The package contains frontend
+    parsing, typed IR, middle-end kernel rewrites, target C emission,
+    and backend-neutral compilation helpers while keeping the underlying
+    TinyCC toolchain and FFI runtime in 'Rtinycc'
     <https://github.com/sounkou-bioinfo/Rtinycc>.
 License: GPL (>= 3)
 Depends: R (>= 4.4.0)
@@ -22,6 +23,7 @@ Imports:
 Suggests:
     tinytest,
     quickr
+Additionaly_repositories: https://sounkou-bioinfo.r-universe.dev
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

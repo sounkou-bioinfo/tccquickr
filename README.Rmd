@@ -19,8 +19,8 @@ if (requireNamespace("pkgload", quietly = TRUE)) {
 
 # tccquickr
 
-Experimental `tcc_quick()` front-end work on top of `Rtinycc`, plus a fresh
-backend-neutral compiler scaffold under `tccq2_*`.
+Experimental backend-neutral R code transformation framework on top of
+`Rtinycc`.
 
 <!-- badges: start -->
 [![R-CMD-check](https://github.com/sounkou-bioinfo/tccquickr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/sounkou-bioinfo/tccquickr/actions/workflows/R-CMD-check.yaml)
@@ -30,27 +30,33 @@ backend-neutral compiler scaffold under `tccq2_*`.
 
 ## Abstract
 
-`tccquickr` contains two related pieces of work:
+`tccquickr` is an experimental compiler and transformation framework for a
+small, declared R subset.
 
-- the existing experimental `tcc_quick()` prototype and its older parser / IR /
-  lowering / code-generation path
-- a fresh-start `tccq2_*` compiler scaffold that keeps backend choice explicit
-  and starts introducing middle-end concepts directly
+The current design direction is centered on the fresh `tccq2_*` path:
 
-The package is intentionally scoped as the compiler-front-end experiment.
-It depends on [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) for the
-underlying TinyCC toolchain, libtcc runtime, FFI compilation pipeline, and
-pointer/runtime support.
+- frontend parsing and typed lowering for `declare(type(...))`-annotated R
+- explicit middle-end IR for producers, materialization, folds, statements, and
+  legality barriers
+- C emission through the R C API
+- swappable backends, with source-only output and TinyCC via
+  [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
+
+The package depends on [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
+for the underlying TinyCC toolchain, libtcc runtime, FFI compilation pipeline,
+and pointer/runtime support.
 
 ## Scope
 
-`tccquickr` currently contains:
+`tccquickr` is where the transformation framework lives.
 
-- `tcc_quick()`
-- `tcc_quick_ops()`
-- the older internal IR and lowering/codegen helpers
-- the fresh `tccq2_compile()` scaffold
-- transpiler-focused `tinytest` coverage
+The main moving parts are:
+
+- `tccq2_compile()`
+- typed frontend parsing and lowering
+- middle-end kernel IR and rewrite passes
+- C + R C API target emission
+- tinytest coverage for generated code and compiled behavior
 
 [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) remains responsible for:
 
@@ -84,6 +90,10 @@ Milestone 1 / 2 supports:
 - unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and `sqrt()`
 - `sum(...)` as a fused reduction
 - explicit kernel IR nodes for `producer`, `materialize`, and `fold`
+- statement blocks with local bindings
+- scalar indexed reads `x[i]`
+- contiguous range slices `x[lo:hi]`
+- local indexed writes `y[i] <- v` and local range writes `y[lo:hi] <- v`
 
 The intended split is:
 
@@ -106,6 +116,18 @@ The intended split is:
 
 These are the concepts that let the package move from “fusion hidden in code
 emission” toward “fusion represented in IR”.
+
+### Assignment and slicing rules
+
+The fresh compiler treats these forms differently:
+
+- `a <- expr` is a local binding, not mutation
+- `x[i]` is an indexed read with checked 1-based indexing
+- `x[lo:hi]` is a contiguous slice expression
+- `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
+
+For the current milestone, indexed writes are only allowed into local vector
+bindings. Direct formal mutation such as `x[i] <- v` is rejected.
 
 ### Example: inspect fresh IR
 
@@ -201,6 +223,51 @@ tryCatch(
 )
 ```
 
+### Example: assignments and indexed writes
+
+```{r}
+assign_kernel <- function(x, i, v) {
+  declare(type(x = double(NA)), type(i = integer()), type(v = double()))
+  y <- x
+  y[i] <- v
+  y
+}
+
+assign_src <- tccq2_compile(assign_kernel, mode = "code")
+cat(assign_src)
+```
+
+The local `y <- x` binding is materialized into owned local storage before the
+indexed write. That keeps direct writes to caller-owned formal vectors out of
+this milestone.
+
+### Example: slicing and reduction
+
+```{r}
+slice_sum_kernel <- function(x, lo, hi) {
+  declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
+  sum(x[lo:hi])
+}
+
+slice_sum_src <- tccq2_compile(slice_sum_kernel, mode = "code")
+cat(slice_sum_src)
+```
+
+### Example: direct formal mutation is rejected
+
+```{r}
+direct_formal_mutation <- function(x, v) {
+  declare(type(x = double(NA)), type(v = double()))
+  x[1] <- v
+  x
+}
+
+tryCatch(
+  tccq2_compile(direct_formal_mutation, mode = "code"),
+  error = function(e) e$message
+)
+```
+
 ### Example: generate C source
 
 ```{r}
@@ -239,15 +306,16 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
 
 ## Status
 
-This package is experimental. The split from
-[`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) is primarily about
-semantic clarity and package soundness:
+This package is experimental.
 
-- [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) should read as the
-  TinyCC/FFI package
-- `tccquickr` should carry the separate R-to-C lowering experiment
-- the fresh `tccq2_*` path is where explicit producer/fold/materialize ideas can
-  be grown without disturbing the older prototype
+The split from [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) is about
+separation of concerns:
+
+- [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) provides the TinyCC /
+  FFI runtime layer
+- `tccquickr` provides the compiler and transformation framework
+- `tccq2_*` is the active architecture for explicit IR, mutation barriers,
+  slicing/indexing semantics, and backend-neutral compilation flow
 
 ## Development
 

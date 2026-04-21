@@ -3,8 +3,8 @@
 
 # tccquickr
 
-Experimental `tcc_quick()` front-end work on top of `Rtinycc`, plus a
-fresh backend-neutral compiler scaffold under `tccq2_*`.
+Experimental backend-neutral R code transformation framework on top of
+`Rtinycc`.
 
 <!-- badges: start -->
 
@@ -17,28 +17,35 @@ experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](h
 
 ## Abstract
 
-`tccquickr` contains two related pieces of work:
+`tccquickr` is an experimental compiler and transformation framework for
+a small, declared R subset.
 
-- the existing experimental `tcc_quick()` prototype and its older parser
-  / IR / lowering / code-generation path
-- a fresh-start `tccq2_*` compiler scaffold that keeps backend choice
-  explicit and starts introducing middle-end concepts directly
+The current design direction is centered on the fresh `tccq2_*` path:
 
-The package is intentionally scoped as the compiler-front-end
-experiment. It depends on
+- frontend parsing and typed lowering for `declare(type(...))`-annotated
+  R
+- explicit middle-end IR for producers, materialization, folds,
+  statements, and legality barriers
+- C emission through the R C API
+- swappable backends, with source-only output and TinyCC via
+  [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
+
+The package depends on
 [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) for the
 underlying TinyCC toolchain, libtcc runtime, FFI compilation pipeline,
 and pointer/runtime support.
 
 ## Scope
 
-`tccquickr` currently contains:
+`tccquickr` is where the transformation framework lives.
 
-- `tcc_quick()`
-- `tcc_quick_ops()`
-- the older internal IR and lowering/codegen helpers
-- the fresh `tccq2_compile()` scaffold
-- transpiler-focused `tinytest` coverage
+The main moving parts are:
+
+- `tccq2_compile()`
+- typed frontend parsing and lowering
+- middle-end kernel IR and rewrite passes
+- C + R C API target emission
+- tinytest coverage for generated code and compiled behavior
 
 [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) remains
 responsible for:
@@ -74,6 +81,11 @@ Milestone 1 / 2 supports:
   `sqrt()`
 - `sum(...)` as a fused reduction
 - explicit kernel IR nodes for `producer`, `materialize`, and `fold`
+- statement blocks with local bindings
+- scalar indexed reads `x[i]`
+- contiguous range slices `x[lo:hi]`
+- local indexed writes `y[i] <- v` and local range writes
+  `y[lo:hi] <- v`
 
 The intended split is:
 
@@ -96,6 +108,18 @@ reduce a producer-like element expression over a loop domain
 
 These are the concepts that let the package move from “fusion hidden in
 code emission” toward “fusion represented in IR”.
+
+### Assignment and slicing rules
+
+The fresh compiler treats these forms differently:
+
+- `a <- expr` is a local binding, not mutation
+- `x[i]` is an indexed read with checked 1-based indexing
+- `x[lo:hi]` is a contiguous slice expression
+- `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
+
+For the current milestone, indexed writes are only allowed into local
+vector bindings. Direct formal mutation such as `x[i] <- v` is rejected.
 
 ### Example: inspect fresh IR
 
@@ -212,6 +236,171 @@ tryCatch(
 #> [1] "boundary nodes are explicit legality barriers in tccq2; later milestones may lower them, but milestone 2 refuses to compile them"
 ```
 
+### Example: assignments and indexed writes
+
+``` r
+assign_kernel <- function(x, i, v) {
+  declare(type(x = double(NA)), type(i = integer()), type(v = double()))
+  y <- x
+  y[i] <- v
+  y
+}
+
+assign_src <- tccq2_compile(assign_kernel, mode = "code")
+cat(assign_src)
+#> #include <R.h>
+#> #include <Rinternals.h>
+#> #include <Rmath.h>
+#> #include <math.h>
+#> 
+#> #ifndef REAL_RO
+#> #define REAL_RO(x) REAL(x)
+#> #endif
+#> #ifndef INTEGER_RO
+#> #define INTEGER_RO(x) INTEGER(x)
+#> #endif
+#> #ifndef LOGICAL_RO
+#> #define LOGICAL_RO(x) LOGICAL(x)
+#> #endif
+#> 
+#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+#>   if (idx < 1 || idx > len) {
+#>     Rf_error("index out of bounds for %s", name);
+#>   }
+#>   return idx - 1;
+#> }
+#> 
+#> SEXP tccq2_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
+#>   if (TYPEOF(arg_x) != REALSXP) {
+#>     Rf_error("argument %s has wrong R type", "x");
+#>   }
+#>   R_xlen_t n_x = XLENGTH(arg_x);
+#>   const double *p_x = REAL_RO(arg_x);
+#>   if (TYPEOF(arg_i) != INTSXP) {
+#>     Rf_error("argument %s has wrong R type", "i");
+#>   }
+#>   if (XLENGTH(arg_i) < 1) {
+#>     Rf_error("scalar argument %s is empty", "i");
+#>   }
+#>   int v_i = INTEGER_RO(arg_i)[0];
+#>   if (TYPEOF(arg_v) != REALSXP) {
+#>     Rf_error("argument %s has wrong R type", "v");
+#>   }
+#>   if (XLENGTH(arg_v) < 1) {
+#>     Rf_error("scalar argument %s is empty", "v");
+#>   }
+#>   double v_v = REAL_RO(arg_v)[0];
+#>   int tccq2_nprotect = 0;
+#>   R_xlen_t n_y = n_x;
+#>   SEXP loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
+#>   ++tccq2_nprotect;
+#>   double *p_y = REAL(loc_y);
+#>   for (R_xlen_t i = 0; i < n_y; ++i) {
+#>     p_y[i] = (double)(p_x[i]);
+#>   }
+#>   R_xlen_t j_y = tccq2_checked_index1((R_xlen_t)(v_i), n_y, "y");
+#>   p_y[j_y] = (double)(v_v);
+#>   R_xlen_t n_out = n_y;
+#>   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
+#>   ++tccq2_nprotect;
+#>   double *p_out = REAL(out);
+#>   for (R_xlen_t i = 0; i < n_out; ++i) {
+#>     p_out[i] = (double)(p_y[i]);
+#>   }
+#>   UNPROTECT(tccq2_nprotect);
+#>   return out;
+#> }
+```
+
+The local `y <- x` binding is materialized into owned local storage
+before the indexed write. That keeps direct writes to caller-owned
+formal vectors out of this milestone.
+
+### Example: slicing and reduction
+
+``` r
+slice_sum_kernel <- function(x, lo, hi) {
+  declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
+  sum(x[lo:hi])
+}
+
+slice_sum_src <- tccq2_compile(slice_sum_kernel, mode = "code")
+cat(slice_sum_src)
+#> #include <R.h>
+#> #include <Rinternals.h>
+#> #include <Rmath.h>
+#> #include <math.h>
+#> 
+#> #ifndef REAL_RO
+#> #define REAL_RO(x) REAL(x)
+#> #endif
+#> #ifndef INTEGER_RO
+#> #define INTEGER_RO(x) INTEGER(x)
+#> #endif
+#> #ifndef LOGICAL_RO
+#> #define LOGICAL_RO(x) LOGICAL(x)
+#> #endif
+#> 
+#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+#>   if (idx < 1 || idx > len) {
+#>     Rf_error("index out of bounds for %s", name);
+#>   }
+#>   return idx - 1;
+#> }
+#> 
+#> SEXP tccq2_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
+#>   if (TYPEOF(arg_x) != REALSXP) {
+#>     Rf_error("argument %s has wrong R type", "x");
+#>   }
+#>   R_xlen_t n_x = XLENGTH(arg_x);
+#>   const double *p_x = REAL_RO(arg_x);
+#>   if (TYPEOF(arg_lo) != INTSXP) {
+#>     Rf_error("argument %s has wrong R type", "lo");
+#>   }
+#>   if (XLENGTH(arg_lo) < 1) {
+#>     Rf_error("scalar argument %s is empty", "lo");
+#>   }
+#>   int v_lo = INTEGER_RO(arg_lo)[0];
+#>   if (TYPEOF(arg_hi) != INTSXP) {
+#>     Rf_error("argument %s has wrong R type", "hi");
+#>   }
+#>   if (XLENGTH(arg_hi) < 1) {
+#>     Rf_error("scalar argument %s is empty", "hi");
+#>   }
+#>   int v_hi = INTEGER_RO(arg_hi)[0];
+#>   int tccq2_nprotect = 0;
+#>   R_xlen_t lo_fold = tccq2_checked_index1((R_xlen_t)(v_lo), n_x, "x");
+#>   R_xlen_t hi_fold = tccq2_checked_index1((R_xlen_t)(v_hi), n_x, "x");
+#>   if (hi_fold < lo_fold) { Rf_error("decreasing slices are not supported"); }
+#>   R_xlen_t n_fold = hi_fold - lo_fold + 1;
+#>   double acc = 0.0;
+#>   for (R_xlen_t i = 0; i < n_fold; ++i) {
+#>     acc += (double)(p_x[lo_fold + i]);
+#>   }
+#>   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
+#>   ++tccq2_nprotect;
+#>   REAL(out)[0] = acc;
+#>   UNPROTECT(tccq2_nprotect);
+#>   return out;
+#> }
+```
+
+### Example: direct formal mutation is rejected
+
+``` r
+direct_formal_mutation <- function(x, v) {
+  declare(type(x = double(NA)), type(v = double()))
+  x[1] <- v
+  x
+}
+
+tryCatch(
+  tccq2_compile(direct_formal_mutation, mode = "code"),
+  error = function(e) e$message
+)
+#> [1] "indexed assignment currently requires a local vector binding. Write y <- x; y[i] <- value; y instead of mutating formal 'x' directly."
+```
+
 ### Example: generate C source
 
 ``` r
@@ -232,6 +421,13 @@ cat(sum_src)
 #> #define LOGICAL_RO(x) LOGICAL(x)
 #> #endif
 #> 
+#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+#>   if (idx < 1 || idx > len) {
+#>     Rf_error("index out of bounds for %s", name);
+#>   }
+#>   return idx - 1;
+#> }
+#> 
 #> SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
 #>   if (TYPEOF(arg_x) != REALSXP) {
 #>     Rf_error("argument %s has wrong R type", "x");
@@ -243,6 +439,7 @@ cat(sum_src)
 #>   }
 #>   R_xlen_t n_y = XLENGTH(arg_y);
 #>   const double *p_y = REAL_RO(arg_y);
+#>   int tccq2_nprotect = 0;
 #>   R_xlen_t n_out = n_x;
 #>   if (n_y != n_out) {
 #>     Rf_error("vector length mismatch for %s", "y");
@@ -252,8 +449,9 @@ cat(sum_src)
 #>     acc += (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
 #>   }
 #>   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
+#>   ++tccq2_nprotect;
 #>   REAL(out)[0] = acc;
-#>   UNPROTECT(1);
+#>   UNPROTECT(tccq2_nprotect);
 #>   return out;
 #> }
 ```
@@ -281,6 +479,13 @@ cat(vec_src)
 #> #define LOGICAL_RO(x) LOGICAL(x)
 #> #endif
 #> 
+#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+#>   if (idx < 1 || idx > len) {
+#>     Rf_error("index out of bounds for %s", name);
+#>   }
+#>   return idx - 1;
+#> }
+#> 
 #> SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
 #>   if (TYPEOF(arg_x) != REALSXP) {
 #>     Rf_error("argument %s has wrong R type", "x");
@@ -292,16 +497,18 @@ cat(vec_src)
 #>   }
 #>   R_xlen_t n_y = XLENGTH(arg_y);
 #>   const double *p_y = REAL_RO(arg_y);
+#>   int tccq2_nprotect = 0;
 #>   R_xlen_t n_out = n_x;
 #>   if (n_y != n_out) {
 #>     Rf_error("vector length mismatch for %s", "y");
 #>   }
 #>   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
+#>   ++tccq2_nprotect;
 #>   double *p_out = REAL(out);
 #>   for (R_xlen_t i = 0; i < n_out; ++i) {
 #>     p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
 #>   }
-#>   UNPROTECT(1);
+#>   UNPROTECT(tccq2_nprotect);
 #>   return out;
 #> }
 ```
@@ -332,15 +539,17 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
 
 ## Status
 
-This package is experimental. The split from
-[`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) is primarily
-about semantic clarity and package soundness:
+This package is experimental.
 
-- [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) should read as
-  the TinyCC/FFI package
-- `tccquickr` should carry the separate R-to-C lowering experiment
-- the fresh `tccq2_*` path is where explicit producer/fold/materialize
-  ideas can be grown without disturbing the older prototype
+The split from [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
+is about separation of concerns:
+
+- [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) provides the
+  TinyCC / FFI runtime layer
+- `tccquickr` provides the compiler and transformation framework
+- `tccq2_*` is the active architecture for explicit IR, mutation
+  barriers, slicing/indexing semantics, and backend-neutral compilation
+  flow
 
 ## Development
 

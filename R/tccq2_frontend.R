@@ -28,7 +28,8 @@ tccq2_frontend <- function(fn, entry = "tccq2_entry") {
     entry = entry,
     formal_names = formal_names,
     types = parsed$types[formal_names],
-    expr = parsed$expr
+    expr = parsed$expr,
+    body_exprs = parsed$body_exprs
   )
 }
 
@@ -60,16 +61,14 @@ tccq2_parse_function_body <- function(fn) {
   remaining <- remaining[!vapply(remaining, is.null, logical(1))]
 
   if (!length(remaining)) {
-    tccq2_abort("function body must contain one expression after declare(...)")
-  }
-  if (length(remaining) != 1L) {
-    tccq2_abort(
-      "fresh milestone supports exactly one expression after leading declare(...); ",
-      "statement blocks come later"
-    )
+    tccq2_abort("function body must contain at least one expression after declare(...)")
   }
 
-  list(types = types, expr = remaining[[1L]])
+  list(
+    types = types,
+    expr = remaining[[length(remaining)]],
+    body_exprs = remaining
+  )
 }
 
 tccq2_parse_declare_call <- function(expr) {

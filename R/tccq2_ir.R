@@ -40,28 +40,142 @@ tccq2_ir_len <- function(x) {
   tccq2_node("len", x = x, type = tccq2_type_scalar("integer"))
 }
 
-tccq2_ir_kernel_scalar <- function(expr) {
-  tccq2_node("kernel_scalar", expr = expr, type = expr$type)
+# Program and statement IR ----------------------------------------------------
+
+tccq2_ir_program <- function(stmts, result) {
+  tccq2_node(
+    "program",
+    stmts = stmts,
+    result = result,
+    type = result$type,
+    effect = if (any(vapply(stmts, function(s) !identical(s$effect, "pure"), logical(1)))) {
+      "write"
+    } else {
+      result$effect %||% "pure"
+    }
+  )
 }
 
-tccq2_ir_kernel_materialize <- function(expr) {
-  tccq2_node("kernel_materialize", expr = expr, type = expr$type)
+tccq2_ir_bind <- function(name, value) {
+  tccq2_node(
+    "bind",
+    name = as.character(name),
+    value = value,
+    type = value$type,
+    effect = value$effect %||% "pure"
+  )
 }
 
-tccq2_ir_kernel_fold <- function(op, expr, type = tccq2_type_scalar("double")) {
-  tccq2_node("kernel_fold", op = op, expr = expr, type = type)
+tccq2_ir_store_index <- function(name, index, value, target_type) {
+  tccq2_node(
+    "store_index",
+    name = as.character(name),
+    index = index,
+    value = value,
+    target_type = target_type,
+    type = target_type,
+    effect = "write"
+  )
 }
+
+tccq2_ir_store_range <- function(name, start, stop, value, target_type) {
+  tccq2_node(
+    "store_range",
+    name = as.character(name),
+    start = start,
+    stop = stop,
+    value = value,
+    target_type = target_type,
+    type = target_type,
+    effect = "write"
+  )
+}
+
+# Indexing expression IR -----------------------------------------------------
+
+tccq2_ir_index <- function(x, index) {
+  if (x$type$rank != 1L) {
+    tccq2_abort("x[i] currently requires a vector input")
+  }
+  tccq2_node(
+    "index",
+    x = x,
+    index = index,
+    type = tccq2_type_scalar(x$type$mode),
+    effect = "pure"
+  )
+}
+
+tccq2_ir_slice_range <- function(x, start, stop) {
+  if (x$type$rank != 1L) {
+    tccq2_abort("x[lo:hi] currently requires a vector input")
+  }
+  tccq2_node(
+    "slice_range",
+    x = x,
+    start = start,
+    stop = stop,
+    type = tccq2_type_vector(x$type$mode, length = NA_integer_),
+    effect = "pure"
+  )
+}
+
+# Program kernel wrapper ------------------------------------------------------
+
+tccq2_ir_kernel_program <- function(stmts, result_kernel) {
+  tccq2_node(
+    "kernel_program",
+    stmts = stmts,
+    result_kernel = result_kernel,
+    type = result_kernel$type,
+    effect = if (any(vapply(stmts, function(s) !identical(s$effect, "pure"), logical(1)))) {
+      "write"
+    } else {
+      result_kernel$effect %||% "pure"
+    }
+  )
+}
+
+# Program helpers -------------------------------------------------------------
+
+tccq2_ir_program_locals <- function(node) {
+  locals <- list()
+  tccq2_ir_walk(node, function(n) {
+    if (identical(n$tag, "bind")) {
+      locals[[n$name]] <<- n$type
+    }
+  })
+  locals
+}
+
+tccq2_ir_program_mutated_names <- function(node) {
+  names <- character()
+  tccq2_ir_walk(node, function(n) {
+    if (n$tag %in% c("store_index", "store_range")) {
+      names <<- c(names, n$name)
+    }
+  })
+  tccq2_unique(names)
+}
+
+# Recursive walker ------------------------------------------------------------
 
 tccq2_ir_walk <- function(node, f) {
-  if (!is.list(node) || is.null(node$tag)) {
-    return(invisible(NULL))
-  }
-  f(node)
-  for (child in node) {
-    if (is.list(child) && !is.null(child$tag)) {
-      tccq2_ir_walk(child, f)
+  visit <- function(x) {
+    if (is.list(x) && !is.null(x$tag)) {
+      f(x)
+      for (child in x) {
+        visit(child)
+      }
+    } else if (is.list(x)) {
+      for (child in x) {
+        visit(child)
+      }
     }
+    invisible(NULL)
   }
+
+  visit(node)
   invisible(NULL)
 }
 
@@ -99,5 +213,11 @@ tccq2_ir_validate <- function(node) {
   tccq2_assert(is.list(node), "IR node must be a list")
   tccq2_assert(!is.null(node$tag), "IR node missing tag")
   tccq2_assert(!is.null(node$type), "IR node '", node$tag, "' missing type")
+
+  tccq2_ir_walk(node, function(n) {
+    tccq2_assert(!is.null(n$tag), "IR child missing tag")
+    tccq2_assert(!is.null(n$type), "IR node '", n$tag, "' missing type")
+  })
+
   invisible(TRUE)
 }

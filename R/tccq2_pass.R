@@ -68,16 +68,19 @@ tccq2_pass_effects <- function() {
     requires = "ir_valid",
     provides = "effects_known",
     run = function(module, facts) {
-      has_impure <- FALSE
       tccq2_ir_walk(module$ir, function(n) {
-        effect <- n$effect %||% "pure"
-        if (!effect %in% c("pure", "boundary")) {
-          has_impure <<- TRUE
+        eff <- n$effect %||% "pure"
+        if (identical(eff, "pure")) {
+          return(invisible(NULL))
         }
+        if (identical(eff, "write") && n$tag %in% c("program", "kernel_program", "store_index", "store_range")) {
+          return(invisible(NULL))
+        }
+        if (identical(eff, "boundary")) {
+          return(invisible(NULL))
+        }
+        tccq2_abort("unsupported effect in fresh compiler: ", eff, " on node ", n$tag)
       })
-      if (has_impure) {
-        tccq2_abort("fresh compiler milestone 2 does not accept impure IR")
-      }
       module
     }
   )
@@ -90,23 +93,35 @@ tccq2_pass_kernelize <- function() {
     provides = "kernel_ir",
     run = function(module, facts) {
       ir <- module$ir
-      kernel <- if (identical(ir$tag, "reduce")) {
-        domain <- tccq2_kernel_domain_from_expr(ir$x)
-        producer <- tccq2_ir_producer(domain = domain, elem = ir$x, type = ir$x$type)
-        tccq2_ir_fold(
-          op = ir$op,
-          domain = domain,
-          elem = tccq2_ir_materialize(producer = producer, type = ir$x$type),
-          init = 0.0,
-          type = ir$type
-        )
-      } else if (ir$type$rank > 0L) {
-        domain <- tccq2_kernel_domain_from_expr(ir)
-        producer <- tccq2_ir_producer(domain = domain, elem = ir, type = ir$type)
-        tccq2_ir_materialize(producer = producer, type = ir$type)
-      } else {
-        tccq2_ir_scalar_kernel(ir)
+
+      make_kernel <- function(expr) {
+        if (identical(expr$tag, "reduce")) {
+          domain <- tccq2_kernel_domain_from_expr(expr$x)
+          producer <- tccq2_ir_producer(domain = domain, elem = expr$x, type = expr$x$type)
+          tccq2_ir_fold(
+            op = expr$op,
+            domain = domain,
+            elem = tccq2_ir_materialize(producer = producer, type = expr$x$type),
+            init = 0.0,
+            type = expr$type
+          )
+        } else if (expr$type$rank > 0L) {
+          domain <- tccq2_kernel_domain_from_expr(expr)
+          producer <- tccq2_ir_producer(domain = domain, elem = expr, type = expr$type)
+          tccq2_ir_materialize(producer = producer, type = expr$type)
+        } else {
+          tccq2_ir_scalar_kernel(expr)
+        }
       }
+
+      kernel <- if (identical(ir$tag, "program") && length(ir$stmts)) {
+        tccq2_ir_kernel_program(ir$stmts, make_kernel(ir$result))
+      } else if (identical(ir$tag, "program")) {
+        make_kernel(ir$result)
+      } else {
+        make_kernel(ir)
+      }
+
       tccq2_module_with(module, kernel = kernel)
     }
   )
@@ -118,7 +133,13 @@ tccq2_pass_fusion <- function() {
     requires = "kernel_ir",
     provides = "fusion_done",
     run = function(module, facts) {
-      tccq2_module_with(module, kernel = tccq2_fuse_kernel(module$kernel))
+      kernel <- module$kernel
+      if (identical(kernel$tag, "kernel_program")) {
+        kernel$result_kernel <- tccq2_fuse_kernel(kernel$result_kernel)
+      } else {
+        kernel <- tccq2_fuse_kernel(kernel)
+      }
+      tccq2_module_with(module, kernel = kernel)
     }
   )
 }
@@ -152,6 +173,7 @@ tccq2_pass_allocation_plan <- function() {
         scalar_kernel = list(kind = "scalar_result", protect = TRUE),
         materialize = list(kind = "vector_result", protect = TRUE),
         fold = list(kind = "scalar_result", protect = TRUE),
+        kernel_program = list(kind = "program_result", protect = TRUE),
         tccq2_abort("unknown kernel tag for allocation plan: ", kernel$tag)
       )
       tccq2_module_with(
@@ -168,7 +190,6 @@ tccq2_pass_protect_plan <- function() {
     requires = "alloc_plan",
     provides = "protect_plan",
     run = function(module, facts) {
-      # Milestone 1 has one allocated return SEXP and no materialized temps.
       tccq2_module_with(module, protect_plan = list(n_protect = 1L))
     }
   )
