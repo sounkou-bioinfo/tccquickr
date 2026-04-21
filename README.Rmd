@@ -15,6 +15,11 @@ if (requireNamespace("pkgload", quietly = TRUE)) {
 } else {
   library(tccquickr)
 }
+knitr::knit_engines$set(rtinycc = Rtinycc:::rtinycc_engine)
+
+tccq2_c_block <- function(code) {
+  Rtinycc:::rtinycc_c_block(code)
+}
 ```
 
 # tccquickr
@@ -243,7 +248,7 @@ assign_kernel <- function(x, i, v) {
 }
 
 assign_src <- tccq2_compile(assign_kernel, mode = "code")
-cat(assign_src)
+tccq2_c_block(assign_src)
 ```
 
 The local `y <- x` binding is materialized into owned local storage before the
@@ -259,7 +264,7 @@ slice_sum_kernel <- function(x, lo, hi) {
 }
 
 slice_sum_src <- tccq2_compile(slice_sum_kernel, mode = "code")
-cat(slice_sum_src)
+tccq2_c_block(slice_sum_src)
 ```
 
 ### Example: direct formal mutation is rejected
@@ -281,7 +286,7 @@ tryCatch(
 
 ```{r}
 sum_src <- tccq2_compile(fresh_sum_kernel, mode = "code")
-cat(sum_src)
+tccq2_c_block(sum_src)
 ```
 
 The generated C contains one reduction loop and no intermediate vector
@@ -291,7 +296,7 @@ allocation for the reduction itself.
 
 ```{r}
 vec_src <- tccq2_compile(fresh_vec_kernel, mode = "code")
-cat(vec_src)
+tccq2_c_block(vec_src)
 ```
 
 This path allocates one output vector and fills it in one loop.

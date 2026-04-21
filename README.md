@@ -256,69 +256,72 @@ assign_kernel <- function(x, i, v) {
 }
 
 assign_src <- tccq2_compile(assign_kernel, mode = "code")
-cat(assign_src)
-#> #include <R.h>
-#> #include <Rinternals.h>
-#> #include <Rmath.h>
-#> #include <math.h>
-#> 
-#> #ifndef REAL_RO
-#> #define REAL_RO(x) REAL(x)
-#> #endif
-#> #ifndef INTEGER_RO
-#> #define INTEGER_RO(x) INTEGER(x)
-#> #endif
-#> #ifndef LOGICAL_RO
-#> #define LOGICAL_RO(x) LOGICAL(x)
-#> #endif
-#> 
-#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
-#>   if (idx < 1 || idx > len) {
-#>     Rf_error("index out of bounds for %s", name);
-#>   }
-#>   return idx - 1;
-#> }
-#> 
-#> SEXP tccq2_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
-#>   if (TYPEOF(arg_x) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "x");
-#>   }
-#>   R_xlen_t n_x = XLENGTH(arg_x);
-#>   const double *p_x = REAL_RO(arg_x);
-#>   if (TYPEOF(arg_i) != INTSXP) {
-#>     Rf_error("argument %s has wrong R type", "i");
-#>   }
-#>   if (XLENGTH(arg_i) < 1) {
-#>     Rf_error("scalar argument %s is empty", "i");
-#>   }
-#>   int v_i = INTEGER_RO(arg_i)[0];
-#>   if (TYPEOF(arg_v) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "v");
-#>   }
-#>   if (XLENGTH(arg_v) < 1) {
-#>     Rf_error("scalar argument %s is empty", "v");
-#>   }
-#>   double v_v = REAL_RO(arg_v)[0];
-#>   int tccq2_nprotect = 0;
-#>   R_xlen_t n_y = n_x;
-#>   SEXP loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
-#>   ++tccq2_nprotect;
-#>   double *p_y = REAL(loc_y);
-#>   for (R_xlen_t i = 0; i < n_y; ++i) {
-#>     p_y[i] = (double)(p_x[i]);
-#>   }
-#>   R_xlen_t j_y = tccq2_checked_index1((R_xlen_t)(v_i), n_y, "y");
-#>   p_y[j_y] = (double)(v_v);
-#>   R_xlen_t n_out = n_y;
-#>   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
-#>   ++tccq2_nprotect;
-#>   double *p_out = REAL(out);
-#>   for (R_xlen_t i = 0; i < n_out; ++i) {
-#>     p_out[i] = (double)(p_y[i]);
-#>   }
-#>   UNPROTECT(tccq2_nprotect);
-#>   return out;
-#> }
+tccq2_c_block(assign_src)
+```
+
+``` c
+#include <R.h>
+#include <Rinternals.h>
+#include <Rmath.h>
+#include <math.h>
+
+#ifndef REAL_RO
+#define REAL_RO(x) REAL(x)
+#endif
+#ifndef INTEGER_RO
+#define INTEGER_RO(x) INTEGER(x)
+#endif
+#ifndef LOGICAL_RO
+#define LOGICAL_RO(x) LOGICAL(x)
+#endif
+
+static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+  if (idx < 1 || idx > len) {
+    Rf_error("index out of bounds for %s", name);
+  }
+  return idx - 1;
+}
+
+SEXP tccq2_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
+  if (TYPEOF(arg_x) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "x");
+  }
+  R_xlen_t n_x = XLENGTH(arg_x);
+  const double *p_x = REAL_RO(arg_x);
+  if (TYPEOF(arg_i) != INTSXP) {
+    Rf_error("argument %s has wrong R type", "i");
+  }
+  if (XLENGTH(arg_i) < 1) {
+    Rf_error("scalar argument %s is empty", "i");
+  }
+  int v_i = INTEGER_RO(arg_i)[0];
+  if (TYPEOF(arg_v) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "v");
+  }
+  if (XLENGTH(arg_v) < 1) {
+    Rf_error("scalar argument %s is empty", "v");
+  }
+  double v_v = REAL_RO(arg_v)[0];
+  int tccq2_nprotect = 0;
+  R_xlen_t n_y = n_x;
+  SEXP loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
+  ++tccq2_nprotect;
+  double *p_y = REAL(loc_y);
+  for (R_xlen_t i = 0; i < n_y; ++i) {
+    p_y[i] = (double)(p_x[i]);
+  }
+  R_xlen_t j_y = tccq2_checked_index1((R_xlen_t)(v_i), n_y, "y");
+  p_y[j_y] = (double)(v_v);
+  R_xlen_t n_out = n_y;
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
+  ++tccq2_nprotect;
+  double *p_out = REAL(out);
+  for (R_xlen_t i = 0; i < n_out; ++i) {
+    p_out[i] = (double)(p_y[i]);
+  }
+  UNPROTECT(tccq2_nprotect);
+  return out;
+}
 ```
 
 The local `y <- x` binding is materialized into owned local storage
@@ -334,64 +337,67 @@ slice_sum_kernel <- function(x, lo, hi) {
 }
 
 slice_sum_src <- tccq2_compile(slice_sum_kernel, mode = "code")
-cat(slice_sum_src)
-#> #include <R.h>
-#> #include <Rinternals.h>
-#> #include <Rmath.h>
-#> #include <math.h>
-#> 
-#> #ifndef REAL_RO
-#> #define REAL_RO(x) REAL(x)
-#> #endif
-#> #ifndef INTEGER_RO
-#> #define INTEGER_RO(x) INTEGER(x)
-#> #endif
-#> #ifndef LOGICAL_RO
-#> #define LOGICAL_RO(x) LOGICAL(x)
-#> #endif
-#> 
-#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
-#>   if (idx < 1 || idx > len) {
-#>     Rf_error("index out of bounds for %s", name);
-#>   }
-#>   return idx - 1;
-#> }
-#> 
-#> SEXP tccq2_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
-#>   if (TYPEOF(arg_x) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "x");
-#>   }
-#>   R_xlen_t n_x = XLENGTH(arg_x);
-#>   const double *p_x = REAL_RO(arg_x);
-#>   if (TYPEOF(arg_lo) != INTSXP) {
-#>     Rf_error("argument %s has wrong R type", "lo");
-#>   }
-#>   if (XLENGTH(arg_lo) < 1) {
-#>     Rf_error("scalar argument %s is empty", "lo");
-#>   }
-#>   int v_lo = INTEGER_RO(arg_lo)[0];
-#>   if (TYPEOF(arg_hi) != INTSXP) {
-#>     Rf_error("argument %s has wrong R type", "hi");
-#>   }
-#>   if (XLENGTH(arg_hi) < 1) {
-#>     Rf_error("scalar argument %s is empty", "hi");
-#>   }
-#>   int v_hi = INTEGER_RO(arg_hi)[0];
-#>   int tccq2_nprotect = 0;
-#>   R_xlen_t lo_fold = tccq2_checked_index1((R_xlen_t)(v_lo), n_x, "x");
-#>   R_xlen_t hi_fold = tccq2_checked_index1((R_xlen_t)(v_hi), n_x, "x");
-#>   if (hi_fold < lo_fold) { Rf_error("decreasing slices are not supported"); }
-#>   R_xlen_t n_fold = hi_fold - lo_fold + 1;
-#>   double acc = 0.0;
-#>   for (R_xlen_t i = 0; i < n_fold; ++i) {
-#>     acc += (double)(p_x[lo_fold + i]);
-#>   }
-#>   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
-#>   ++tccq2_nprotect;
-#>   REAL(out)[0] = acc;
-#>   UNPROTECT(tccq2_nprotect);
-#>   return out;
-#> }
+tccq2_c_block(slice_sum_src)
+```
+
+``` c
+#include <R.h>
+#include <Rinternals.h>
+#include <Rmath.h>
+#include <math.h>
+
+#ifndef REAL_RO
+#define REAL_RO(x) REAL(x)
+#endif
+#ifndef INTEGER_RO
+#define INTEGER_RO(x) INTEGER(x)
+#endif
+#ifndef LOGICAL_RO
+#define LOGICAL_RO(x) LOGICAL(x)
+#endif
+
+static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+  if (idx < 1 || idx > len) {
+    Rf_error("index out of bounds for %s", name);
+  }
+  return idx - 1;
+}
+
+SEXP tccq2_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
+  if (TYPEOF(arg_x) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "x");
+  }
+  R_xlen_t n_x = XLENGTH(arg_x);
+  const double *p_x = REAL_RO(arg_x);
+  if (TYPEOF(arg_lo) != INTSXP) {
+    Rf_error("argument %s has wrong R type", "lo");
+  }
+  if (XLENGTH(arg_lo) < 1) {
+    Rf_error("scalar argument %s is empty", "lo");
+  }
+  int v_lo = INTEGER_RO(arg_lo)[0];
+  if (TYPEOF(arg_hi) != INTSXP) {
+    Rf_error("argument %s has wrong R type", "hi");
+  }
+  if (XLENGTH(arg_hi) < 1) {
+    Rf_error("scalar argument %s is empty", "hi");
+  }
+  int v_hi = INTEGER_RO(arg_hi)[0];
+  int tccq2_nprotect = 0;
+  R_xlen_t lo_fold = tccq2_checked_index1((R_xlen_t)(v_lo), n_x, "x");
+  R_xlen_t hi_fold = tccq2_checked_index1((R_xlen_t)(v_hi), n_x, "x");
+  if (hi_fold < lo_fold) { Rf_error("decreasing slices are not supported"); }
+  R_xlen_t n_fold = hi_fold - lo_fold + 1;
+  double acc = 0.0;
+  for (R_xlen_t i = 0; i < n_fold; ++i) {
+    acc += (double)(p_x[lo_fold + i]);
+  }
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
+  ++tccq2_nprotect;
+  REAL(out)[0] = acc;
+  UNPROTECT(tccq2_nprotect);
+  return out;
+}
 ```
 
 ### Example: direct formal mutation is rejected
@@ -414,55 +420,58 @@ tryCatch(
 
 ``` r
 sum_src <- tccq2_compile(fresh_sum_kernel, mode = "code")
-cat(sum_src)
-#> #include <R.h>
-#> #include <Rinternals.h>
-#> #include <Rmath.h>
-#> #include <math.h>
-#> 
-#> #ifndef REAL_RO
-#> #define REAL_RO(x) REAL(x)
-#> #endif
-#> #ifndef INTEGER_RO
-#> #define INTEGER_RO(x) INTEGER(x)
-#> #endif
-#> #ifndef LOGICAL_RO
-#> #define LOGICAL_RO(x) LOGICAL(x)
-#> #endif
-#> 
-#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
-#>   if (idx < 1 || idx > len) {
-#>     Rf_error("index out of bounds for %s", name);
-#>   }
-#>   return idx - 1;
-#> }
-#> 
-#> SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
-#>   if (TYPEOF(arg_x) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "x");
-#>   }
-#>   R_xlen_t n_x = XLENGTH(arg_x);
-#>   const double *p_x = REAL_RO(arg_x);
-#>   if (TYPEOF(arg_y) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "y");
-#>   }
-#>   R_xlen_t n_y = XLENGTH(arg_y);
-#>   const double *p_y = REAL_RO(arg_y);
-#>   int tccq2_nprotect = 0;
-#>   R_xlen_t n_out = n_x;
-#>   if (n_y != n_out) {
-#>     Rf_error("vector length mismatch for %s", "y");
-#>   }
-#>   double acc = 0.0;
-#>   for (R_xlen_t i = 0; i < n_out; ++i) {
-#>     acc += (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
-#>   }
-#>   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
-#>   ++tccq2_nprotect;
-#>   REAL(out)[0] = acc;
-#>   UNPROTECT(tccq2_nprotect);
-#>   return out;
-#> }
+tccq2_c_block(sum_src)
+```
+
+``` c
+#include <R.h>
+#include <Rinternals.h>
+#include <Rmath.h>
+#include <math.h>
+
+#ifndef REAL_RO
+#define REAL_RO(x) REAL(x)
+#endif
+#ifndef INTEGER_RO
+#define INTEGER_RO(x) INTEGER(x)
+#endif
+#ifndef LOGICAL_RO
+#define LOGICAL_RO(x) LOGICAL(x)
+#endif
+
+static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+  if (idx < 1 || idx > len) {
+    Rf_error("index out of bounds for %s", name);
+  }
+  return idx - 1;
+}
+
+SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
+  if (TYPEOF(arg_x) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "x");
+  }
+  R_xlen_t n_x = XLENGTH(arg_x);
+  const double *p_x = REAL_RO(arg_x);
+  if (TYPEOF(arg_y) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "y");
+  }
+  R_xlen_t n_y = XLENGTH(arg_y);
+  const double *p_y = REAL_RO(arg_y);
+  int tccq2_nprotect = 0;
+  R_xlen_t n_out = n_x;
+  if (n_y != n_out) {
+    Rf_error("vector length mismatch for %s", "y");
+  }
+  double acc = 0.0;
+  for (R_xlen_t i = 0; i < n_out; ++i) {
+    acc += (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
+  }
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
+  ++tccq2_nprotect;
+  REAL(out)[0] = acc;
+  UNPROTECT(tccq2_nprotect);
+  return out;
+}
 ```
 
 The generated C contains one reduction loop and no intermediate vector
@@ -472,54 +481,57 @@ allocation for the reduction itself.
 
 ``` r
 vec_src <- tccq2_compile(fresh_vec_kernel, mode = "code")
-cat(vec_src)
-#> #include <R.h>
-#> #include <Rinternals.h>
-#> #include <Rmath.h>
-#> #include <math.h>
-#> 
-#> #ifndef REAL_RO
-#> #define REAL_RO(x) REAL(x)
-#> #endif
-#> #ifndef INTEGER_RO
-#> #define INTEGER_RO(x) INTEGER(x)
-#> #endif
-#> #ifndef LOGICAL_RO
-#> #define LOGICAL_RO(x) LOGICAL(x)
-#> #endif
-#> 
-#> static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
-#>   if (idx < 1 || idx > len) {
-#>     Rf_error("index out of bounds for %s", name);
-#>   }
-#>   return idx - 1;
-#> }
-#> 
-#> SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
-#>   if (TYPEOF(arg_x) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "x");
-#>   }
-#>   R_xlen_t n_x = XLENGTH(arg_x);
-#>   const double *p_x = REAL_RO(arg_x);
-#>   if (TYPEOF(arg_y) != REALSXP) {
-#>     Rf_error("argument %s has wrong R type", "y");
-#>   }
-#>   R_xlen_t n_y = XLENGTH(arg_y);
-#>   const double *p_y = REAL_RO(arg_y);
-#>   int tccq2_nprotect = 0;
-#>   R_xlen_t n_out = n_x;
-#>   if (n_y != n_out) {
-#>     Rf_error("vector length mismatch for %s", "y");
-#>   }
-#>   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
-#>   ++tccq2_nprotect;
-#>   double *p_out = REAL(out);
-#>   for (R_xlen_t i = 0; i < n_out; ++i) {
-#>     p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
-#>   }
-#>   UNPROTECT(tccq2_nprotect);
-#>   return out;
-#> }
+tccq2_c_block(vec_src)
+```
+
+``` c
+#include <R.h>
+#include <Rinternals.h>
+#include <Rmath.h>
+#include <math.h>
+
+#ifndef REAL_RO
+#define REAL_RO(x) REAL(x)
+#endif
+#ifndef INTEGER_RO
+#define INTEGER_RO(x) INTEGER(x)
+#endif
+#ifndef LOGICAL_RO
+#define LOGICAL_RO(x) LOGICAL(x)
+#endif
+
+static R_xlen_t tccq2_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+  if (idx < 1 || idx > len) {
+    Rf_error("index out of bounds for %s", name);
+  }
+  return idx - 1;
+}
+
+SEXP tccq2_entry(SEXP arg_x, SEXP arg_y) {
+  if (TYPEOF(arg_x) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "x");
+  }
+  R_xlen_t n_x = XLENGTH(arg_x);
+  const double *p_x = REAL_RO(arg_x);
+  if (TYPEOF(arg_y) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "y");
+  }
+  R_xlen_t n_y = XLENGTH(arg_y);
+  const double *p_y = REAL_RO(arg_y);
+  int tccq2_nprotect = 0;
+  R_xlen_t n_out = n_x;
+  if (n_y != n_out) {
+    Rf_error("vector length mismatch for %s", "y");
+  }
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
+  ++tccq2_nprotect;
+  double *p_out = REAL(out);
+  for (R_xlen_t i = 0; i < n_out; ++i) {
+    p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
+  }
+  UNPROTECT(tccq2_nprotect);
+  return out;
+}
 ```
 
 This path allocates one output vector and fills it in one loop.
