@@ -3,7 +3,5 @@
 S3method(format,tccq2_type)
 S3method(print,tccq2_module)
 S3method(print,tccq2_type)
-export(tcc_quick)
-export(tcc_quick_ops)
 export(tccq2_compile)
 import(Rtinycc)

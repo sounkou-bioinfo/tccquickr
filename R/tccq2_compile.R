@@ -3,8 +3,7 @@
 
 #' Fresh experimental R-to-C compiler scaffold
 #'
-#' This is a fresh-start compiler path. It intentionally does not call the old
-#' tcc_quick lowerer or code generator. The current milestone supports declared
+#' This is the package's current compiler path. The current milestone supports declared
 #' scalar and vector arithmetic, fused `sum()` reductions, local bindings,
 #' indexed reads, contiguous slices, and local indexed/range writes.
 #'
