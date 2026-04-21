@@ -95,27 +95,38 @@ install.packages(
 
 The fresh path is deliberately small in the first milestones.
 
-Milestone 1 / 2 supports:
+### Current status
 
-- declared scalar and vector inputs
-- `double`, `integer`, and `logical` typing
-- scalar arithmetic
-- vector elementwise arithmetic
-- unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and `sqrt()`
-- `sum(...)` as a fused reduction
-- explicit kernel IR nodes for `producer`, `materialize`, and `fold`
-- statement blocks with local bindings
-- scalar indexed reads `x[i]`
-- contiguous range slices `x[lo:hi]`
-- local indexed writes `y[i] <- v` and local range writes `y[lo:hi] <- v`
+Implemented now:
 
-The intended split is:
+- [x] declared scalar and vector inputs
+- [x] `double`, `integer`, and `logical` typing
+- [x] scalar arithmetic
+- [x] vector elementwise arithmetic
+- [x] unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and `sqrt()`
+- [x] `sum(...)` as a fused reduction
+- [x] explicit kernel IR nodes for `producer`, `materialize`, and `fold`
+- [x] statement blocks with local bindings
+- [x] scalar indexed reads `x[i]`
+- [x] contiguous range slices `x[lo:hi]`
+- [x] local indexed writes `y[i] <- v` and local range writes `y[lo:hi] <- v`
 
-- frontend: parse `declare(type(...))` and lower a small R subset
-- middle-end: validate, kernelize, and later perform explicit fusion and
-  allocation planning
-- target: emit C using the R C API
-- backend: either return source or compile through TinyCC via `Rtinycc`
+Planned next:
+
+- [ ] explicit slice/view IR instead of treating slices only as a special-case expression form
+- [ ] richer legality analysis around mutation barriers and materialization points
+- [ ] explicit allocation planning and reuse decisions in the middle-end
+- [ ] broader indexing forms such as gather/scatter/filter
+- [ ] additional targets/backends beyond the current C + R API emission path
+
+### Intended architecture split
+
+- [x] frontend: parse `declare(type(...))` and lower a small R subset
+- [x] middle-end: validate and kernelize
+- [x] target: emit C using the R C API
+- [x] backend: either return source or compile through TinyCC via `Rtinycc`
+- [ ] middle-end: explicit fusion and allocation planning beyond the current basic passes
+- [ ] backend/target expansion beyond the current source-only and TinyCC-backed path
 
 ### Kernel IR concepts
 
