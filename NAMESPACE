@@ -1,3 +1,4 @@
 export(tcc_quick)
 export(tcc_quick_ops)
+export(tccq2_compile)
 import(Rtinycc)
