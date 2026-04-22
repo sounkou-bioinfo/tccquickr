@@ -2,25 +2,25 @@
 
 ## Scope
 
-`tccquickr` is the experimental compiler-front-end package built on top of
-`Rtinycc` and directly referencing
+`tccquickr` is the experimental compiler and transformation package built on
+ top of `Rtinycc` and directly referencing
 <https://github.com/sounkou-bioinfo/Rtinycc>.
 
 This repo is responsible for:
 
-- `tcc_quick()` and `tcc_quick_ops()`
-- the parser, IR, lowering, validation, and code-generation pipeline
+- the `tccq_*` compiler path
+- the parser, IR, lowering, validation, middle-end passes, and C target codegen
 - transpiler-specific tests, docs, and examples
-- experimentation around the R-to-C subset and its semantics
-- the fresh `tccq2_*` compiler path, where backend-neutral middle-end work
-  should land first
+- experimentation around the declared R-to-C subset and its semantics
+- backend-neutral architecture work, with `Rtinycc` used as the current TinyCC
+  backend/runtime layer rather than re-owned here
 
 This repo should depend on `Rtinycc` for TinyCC runtime, FFI compilation,
 and low-level execution support rather than re-owning that functionality.
 
-## Fresh `tccq2` Direction
+## Current `tccq` Direction
 
-Treat `tccq2_*` as the preferred path for new compiler architecture work.
+Treat `tccq_*` as the package's current compiler architecture.
 
 The intended split is:
 
@@ -30,14 +30,15 @@ The intended split is:
 - target: C + R C API emission
 - backend: source-only or TinyCC via `Rtinycc`
 
-Do not wire new middle-end ideas directly into `tcc_quick*` unless the task is
-specifically about preserving or fixing the older prototype.
+Do not introduce parallel replacement paths lightly. New compiler work should
+land in `tccq_*` unless the task is explicitly about a temporary migration or
+compatibility shim.
 
 ### Assignment, slicing, and indexed-write semantics
 
-For `tccq2`, keep the semantics explicit:
+For `tccq`, keep the semantics explicit:
 
-- `a <- expr` is a local binding / rebinding, not mutation
+- `a <- expr` is a local binding, not mutation
 - `x[i]` is an indexed read
 - `x[lo:hi]` is a contiguous slice expression
 - `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
@@ -51,6 +52,8 @@ Conservative milestone rules:
 - slicing may stay view-like in IR, but writes, fallback boundaries, and return
   paths may force materialization
 - do not fuse across `store_index` or `store_range`
+- rebinding an already-bound local name is currently rejected until explicit
+  reassignment semantics are designed
 - boundary nodes should stay explicit legality barriers; do not silently fall
   back through random codegen paths
 
