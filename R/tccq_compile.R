@@ -44,6 +44,11 @@ tccq_compile <- function(
   }
 
   ctx <- tccq_merge_contexts(tccq_context_from_extlibs(extlibs), module$boundary_context)
+
+  if (identical(mode, "compile")) {
+    tccq_validate_backend_target_ctx(backend, target, module, ctx)
+  }
+
   src <- target$emit(module, ctx)
 
   if (identical(mode, "code")) {

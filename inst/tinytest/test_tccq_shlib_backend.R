@@ -27,6 +27,17 @@ expect_identical(shlib_backend$name, "shlib")
 expect_identical(shlib_backend$capabilities$shared_library, TRUE)
 expect_identical(shlib_backend$capabilities$system_compiler, TRUE)
 expect_identical(shlib_backend$capabilities$cli, TRUE)
+expect_identical(shlib_backend$capabilities$boundary_apis, "r_eval")
+
+mk <- tccquickr:::tccq_shlib_makevars(list(
+  include_paths = c("", "/opt/include"),
+  library_paths = c("", "/opt/lib"),
+  libraries = c("", "m"),
+  options = c("", "-O2", "-DDEMO=1")
+))
+expect_true(any(grepl("^PKG_CFLAGS=-fPIC -O2$", mk)))
+expect_true(any(grepl("^PKG_CPPFLAGS=-DDEMO=1 -I/opt/include$", mk)))
+expect_true(any(grepl("^PKG_LIBS=-L/opt/lib -lm$", mk)))
 
 x <- as.double(seq(-2, 2, length.out = 25))
 y <- as.double(seq(1, 3, length.out = 25))

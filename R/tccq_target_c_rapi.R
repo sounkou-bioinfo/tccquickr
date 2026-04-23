@@ -5,6 +5,12 @@ tccq_target_c_rapi <- function() {
   structure(
     list(
       name = "c_rapi",
+      capabilities = tccq_target_capabilities(
+        c = TRUE,
+        r_api = TRUE,
+        boundary_apis = "r_eval",
+        source_artifact = "c"
+      ),
       entry_spec = function(module, ctx = list()) {
         list(
           args = rep("sexp", length(module$formal_names)),

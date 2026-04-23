@@ -94,3 +94,46 @@ expect_error(
   tccq_compile(matrix_decl_fn, mode = "code"),
   pattern = "supports scalar/vector only"
 )
+
+header_only_extlib <- tccquickr:::tccq_external_library(
+  name = "demo_header",
+  headers = "#include <demo.h>"
+)
+headerless_backend <- tccquickr:::tccq_backend(
+  name = "headerless",
+  capabilities = list(c = TRUE, compile = TRUE, r_api = TRUE),
+  compile = function(module, target, ctx = list()) {
+    list(backend = "headerless", source = "", compiled = NULL, callable = NULL, module = module)
+  }
+)
+expect_error(
+  tccq_compile(simple_sum_fn, backend = headerless_backend, extlibs = list(header_only_extlib)),
+  pattern = "compile context field 'headers'"
+)
+
+boundaryless_backend <- tccquickr:::tccq_backend(
+  name = "boundaryless",
+  capabilities = list(
+    c = TRUE,
+    compile = TRUE,
+    r_api = TRUE,
+    headers = TRUE,
+    include_paths = TRUE,
+    library_paths = TRUE,
+    libraries = TRUE,
+    options = TRUE,
+    boundary_apis = character()
+  ),
+  compile = function(module, target, ctx = list()) {
+    list(backend = "boundaryless", source = "", compiled = NULL, callable = NULL, module = module)
+  }
+)
+
+fallback_scalar_fn <- function(x) {
+  declare(type(x = double()))
+  identity(x)
+}
+expect_error(
+  tccq_compile(fallback_scalar_fn, backend = boundaryless_backend, fallback = "auto"),
+  pattern = "does not support boundary APIs"
+)

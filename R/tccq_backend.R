@@ -3,7 +3,11 @@
 
 tccq_backend <- function(name, compile, capabilities = list()) {
   structure(
-    list(name = name, compile = compile, capabilities = capabilities),
+    list(
+      name = name,
+      compile = compile,
+      capabilities = do.call(tccq_backend_capabilities, capabilities)
+    ),
     class = "tccq_backend"
   )
 }
@@ -28,7 +32,19 @@ tccq_backend_source <- function() {
 tccq_backend_tinycc <- function() {
   tccq_backend(
     name = "tinycc",
-    capabilities = list(c = TRUE, compile = TRUE, r_api = TRUE, in_memory = TRUE, cli = FALSE),
+    capabilities = list(
+      c = TRUE,
+      compile = TRUE,
+      r_api = TRUE,
+      in_memory = TRUE,
+      cli = FALSE,
+      headers = TRUE,
+      include_paths = TRUE,
+      library_paths = TRUE,
+      libraries = TRUE,
+      options = TRUE,
+      boundary_apis = "r_eval"
+    ),
     compile = function(module, target, ctx = list()) {
       tccq_require_namespace("Rtinycc")
 
@@ -97,7 +113,13 @@ tccq_backend_shlib <- function() {
       in_memory = FALSE,
       cli = TRUE,
       shared_library = TRUE,
-      system_compiler = TRUE
+      system_compiler = TRUE,
+      headers = TRUE,
+      include_paths = TRUE,
+      library_paths = TRUE,
+      libraries = TRUE,
+      options = TRUE,
+      boundary_apis = "r_eval"
     ),
     compile = function(module, target, ctx = list()) {
       tccq_backend_compile_shlib(module, target, ctx)
@@ -167,7 +189,7 @@ tccq_shlib_build_dir <- function(module) {
 }
 
 tccq_shlib_source_with_headers <- function(src, headers = character()) {
-  headers <- tccq_unique(headers %||% character())
+  headers <- tccq_unique(tccq_nonempty_flags(headers))
   if (!length(headers)) {
     return(src)
   }
@@ -178,15 +200,19 @@ tccq_shlib_makevars <- function(ctx = list()) {
   ctx <- ctx %||% list()
   option_flags <- tccq_shlib_partition_options(ctx$options %||% character())
 
-  cppflags <- c(
+  include_paths <- tccq_nonempty_flags(ctx$include_paths)
+  library_paths <- tccq_nonempty_flags(ctx$library_paths)
+  libraries <- tccq_nonempty_flags(ctx$libraries)
+
+  cppflags <- tccq_unique(c(
     option_flags$cppflags,
-    paste0("-I", ctx$include_paths %||% character())
-  )
-  libs <- c(
+    paste0("-I", include_paths)
+  ))
+  libs <- tccq_unique(c(
     option_flags$libs,
-    paste0("-L", ctx$library_paths %||% character()),
-    vapply(ctx$libraries %||% character(), tccq_shlib_library_flag, character(1))
-  )
+    paste0("-L", library_paths),
+    vapply(libraries, tccq_shlib_library_flag, character(1))
+  ))
   cflags <- tccq_unique(c("-fPIC", option_flags$cflags))
 
   Filter(nzchar, c(
@@ -197,7 +223,7 @@ tccq_shlib_makevars <- function(ctx = list()) {
 }
 
 tccq_shlib_partition_options <- function(options = character()) {
-  options <- options %||% character()
+  options <- tccq_nonempty_flags(options)
   if (!length(options)) {
     return(list(cflags = character(), cppflags = character(), libs = character()))
   }

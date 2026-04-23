@@ -100,6 +100,12 @@ Current backends:
 - `tccq_backend_tinycc()`
 - `tccq_backend_shlib()`
 
+The compile seam now also validates backend capabilities against:
+
+- target requirements
+- compile context fields such as headers, include paths, and libraries
+- explicit boundary APIs used by the module
+
 Planned direction:
 
 - keep the main target in C

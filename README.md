@@ -108,6 +108,8 @@ Implemented now:
   `y[lo:hi] <- v`
 - [x] explicit fallback boundary nodes in `fallback = "auto"`
 - [x] conservative storage, allocation, and protect planning passes
+- [x] compile-time backend/target capability checks for context fields
+  and boundary APIs
 - [x] source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`)
   backends
 
