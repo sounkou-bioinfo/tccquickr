@@ -98,7 +98,8 @@ Current backends:
 
 - `tccq_backend_source()`
 - `tccq_backend_tinycc()`
-- `tccq_backend_shlib()`
+- `tccq_backend_shlib()` for shared-library compilation through `R CMD SHLIB`,
+  in the same general deployment space as [`callme`](https://github.com/coolbutuseless/callme)
 
 The compile seam now also validates backend capabilities against:
 

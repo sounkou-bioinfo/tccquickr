@@ -43,7 +43,7 @@ expect_equal(ctx$headers, "#include <math.h>")
 expect_equal(ctx$libraries, "m")
 expect_true("sin" %in% names(ctx$external_symbols))
 
-source_backend <- tccquickr:::tccq_backend_source()
+source_backend <- tccq_backend_source()
 source_result <- tccq_compile(simple_sum_fn, backend = source_backend, extlibs = list(extlib))
 expect_equal(source_result$backend, "source")
 expect_true(is.character(source_result$source))
@@ -131,7 +131,7 @@ boundaryless_backend <- tccquickr:::tccq_backend(
 
 fallback_scalar_fn <- function(x) {
   declare(type(x = double()))
-  identity(x)
+  floor(x)
 }
 expect_error(
   tccq_compile(fallback_scalar_fn, backend = boundaryless_backend, fallback = "auto"),

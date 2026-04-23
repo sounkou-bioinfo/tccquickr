@@ -20,7 +20,7 @@ experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](h
 `tccquickr` is an experimental compiler and transformation framework for
 a small, declared R subset.
 
-The current design direction is centered on the fresh `tccq_*` path:
+The current design direction is centered on the `tccq_*` path:
 
 - frontend parsing and typed lowering for `declare(type(...))`-annotated
   R
@@ -29,7 +29,9 @@ The current design direction is centered on the fresh `tccq_*` path:
 - C emission through the R C API
 - swappable C backends, with source-only output, TinyCC via
   [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc), and
-  shared-library compilation through `R CMD SHLIB`
+  shared-library compilation through `R CMD SHLIB`, in the same general
+  deployment space as
+  [`callme`](https://github.com/coolbutuseless/callme)
 
 The package depends on
 [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) for the
@@ -42,6 +44,8 @@ Conceptually, the project sits near several adjacent efforts:
   subset compiler comparison
 - [`anvil`](https://github.com/r-xla/anvil) as a broader transformation
   and backend framework comparison
+- [`callme`](https://github.com/coolbutuseless/callme) as a useful
+  reference for C-only shared-library compilation/loading workflows
 - [`SAC` / `sac2c`](https://sac-home.org/about%3Asac) as the main
   inspiration for explicit array IR, fusion, and allocation reduction
 
@@ -52,6 +56,8 @@ Conceptually, the project sits near several adjacent efforts:
 The main moving parts are:
 
 - `tccq_compile()`
+- backend factories such as `tccq_backend_source()`,
+  `tccq_backend_tinycc()`, and `tccq_backend_shlib()`
 - typed frontend parsing and lowering
 - middle-end kernel IR and rewrite passes
 - C + R C API target emission
@@ -64,6 +70,11 @@ responsible for:
 - `tcc_ffi()`, `tcc_bind()`, and `tcc_compile()`
 - low-level state and CLI helpers
 - pointer, struct, callback, and declarative FFI support
+
+Shared-library deployment through `R CMD SHLIB` is a separate C backend
+path in `tccquickr`, closer in spirit to
+[`callme`](https://github.com/coolbutuseless/callme) than to `Rtinycc`’s
+TinyCC runtime responsibilities.
 
 ## Installation
 
@@ -134,6 +145,20 @@ Planned next:
   normalization
 - [ ] backend expansion toward other C compilation/loading paths such as
   additional system compiler or `callme`-style workflows
+
+### Backend selection
+
+`tccq_compile()` accepts explicit backend objects:
+
+- `tccq_backend_source()` returns emitted C without compiling it
+- `tccq_backend_tinycc()` compiles emitted C in memory through `Rtinycc`
+- `tccq_backend_shlib()` compiles emitted C through `R CMD SHLIB`
+
+That shared-library path is in the same general deployment space as
+[`callme`](https://github.com/coolbutuseless/callme): a C-only
+compile/load workflow around `.Call()` entry points. Internally,
+`tccq_compile()` validates backend capabilities against the target,
+compile context, and explicit boundary APIs before compilation.
 
 ### Kernel IR concepts
 
@@ -263,7 +288,7 @@ of failing immediately during lowering.
 ``` r
 fallback_kernel <- function(x) {
   declare(type(x = double()))
-  identity(x)
+  floor(x)
 }
 
 fallback_ir <- tccq_compile(fallback_kernel, mode = "ir", fallback = "auto")
@@ -280,7 +305,7 @@ tryCatch(
   tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
   error = function(e) e$message
 )
-#> [1] "unsupported call in fresh compiler: identity. Add a lowerer case or route it through an explicit boundary node."
+#> [1] "unsupported call in fresh compiler: floor. Add a lowerer case or route it through an explicit boundary node."
 ```
 
 ### Example: assignments and indexed writes

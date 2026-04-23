@@ -3,5 +3,8 @@
 S3method(format,tccq_type)
 S3method(print,tccq_module)
 S3method(print,tccq_type)
+export(tccq_backend_shlib)
+export(tccq_backend_source)
+export(tccq_backend_tinycc)
 export(tccq_compile)
 import(Rtinycc)

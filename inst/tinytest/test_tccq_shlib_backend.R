@@ -19,10 +19,10 @@ shlib_assign_fn <- function(x, i, v) {
 
 shlib_fallback_fn <- function(x) {
   declare(type(x = double()))
-  identity(x)
+  floor(x)
 }
 
-shlib_backend <- tccquickr:::tccq_backend_shlib()
+shlib_backend <- tccq_backend_shlib()
 expect_identical(shlib_backend$name, "shlib")
 expect_identical(shlib_backend$capabilities$shared_library, TRUE)
 expect_identical(shlib_backend$capabilities$system_compiler, TRUE)

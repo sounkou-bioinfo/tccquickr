@@ -84,7 +84,7 @@ expect_error(
   pattern = "rebinding a local name is not yet supported"
 )
 
-compiled_indexed_assignment <- tccq_compile(indexed_assignment_fn, backend = tccquickr:::tccq_backend_tinycc())
+compiled_indexed_assignment <- tccq_compile(indexed_assignment_fn, backend = tccq_backend_tinycc())
 expect_equal(compiled_indexed_assignment(c(1, 2, 3), 2L, 10), c(1, 10, 3))
 
 slice_sum_fn <- function(x, lo, hi) {
@@ -92,5 +92,5 @@ slice_sum_fn <- function(x, lo, hi) {
   sum(x[lo:hi])
 }
 
-compiled_slice_sum <- tccq_compile(slice_sum_fn, backend = tccquickr:::tccq_backend_tinycc())
+compiled_slice_sum <- tccq_compile(slice_sum_fn, backend = tccq_backend_tinycc())
 expect_equal(compiled_slice_sum(c(1, 2, 3, 4), 2L, 4L), 9)

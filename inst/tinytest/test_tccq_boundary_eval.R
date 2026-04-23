@@ -2,7 +2,7 @@
 
 fallback_scalar_fn <- function(x) {
   declare(type(x = double()))
-  identity(x)
+  floor(x)
 }
 
 fallback_scalar_ir <- tccq_compile(fallback_scalar_fn, mode = "ir", fallback = "auto")
@@ -16,7 +16,7 @@ expect_identical(tccq_compile(fallback_scalar_fn, fallback = "auto")(42), 42)
 
 fallback_vector_fn <- function(x) {
   declare(type(x = double(NA)))
-  identity(x)
+  floor(x)
 }
 
 fallback_vector_ir <- tccq_compile(fallback_vector_fn, mode = "ir", fallback = "auto")

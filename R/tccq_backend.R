@@ -12,6 +12,32 @@ tccq_backend <- function(name, compile, capabilities = list()) {
   )
 }
 
+#' `tccq` backend factories
+#'
+#' Backend objects control how emitted C is handled by [tccq_compile()].
+#'
+#' - `tccq_backend_source()` returns generated C source without compiling it.
+#' - `tccq_backend_tinycc()` compiles and loads the emitted C in memory through
+#'   `Rtinycc`.
+#' - `tccq_backend_shlib()` compiles the emitted C as a shared library through
+#'   `R CMD SHLIB` and loads it with `dyn.load()`. This lives in the same
+#'   general deployment space as [`callme`](https://github.com/coolbutuseless/callme).
+#'
+#' Backends declare capabilities internally, and `tccq_compile()` validates the
+#' selected backend against the current target, compile context, and explicit
+#' boundary APIs before compiling.
+#'
+#' @return A `tccq_backend` object suitable for the `backend =` argument of
+#'   [tccq_compile()].
+#' @examples
+#' tccq_backend_source()$name
+#' tccq_backend_tinycc()$name
+#' tccq_backend_shlib()$name
+#' @name tccq_backends
+NULL
+
+#' @rdname tccq_backends
+#' @export
 tccq_backend_source <- function() {
   tccq_backend(
     name = "source",
@@ -29,6 +55,8 @@ tccq_backend_source <- function() {
   )
 }
 
+#' @rdname tccq_backends
+#' @export
 tccq_backend_tinycc <- function() {
   tccq_backend(
     name = "tinycc",
@@ -103,6 +131,8 @@ tccq_backend_tinycc <- function() {
   )
 }
 
+#' @rdname tccq_backends
+#' @export
 tccq_backend_shlib <- function() {
   tccq_backend(
     name = "shlib",

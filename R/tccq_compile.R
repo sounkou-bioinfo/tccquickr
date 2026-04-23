@@ -16,7 +16,9 @@
 #' @param fallback One of "auto" or "hard". In "auto" mode unsupported
 #'   calls may lower to explicit `r_eval` boundary nodes. In "hard" mode they
 #'   are rejected.
-#' @param backend Backend object. Defaults to TinyCC via Rtinycc.
+#' @param backend Backend object. Use `tccq_backend_source()`,
+#'   `tccq_backend_tinycc()`, or `tccq_backend_shlib()`. Defaults to TinyCC via
+#'   `Rtinycc`.
 #' @param target Target object. Defaults to C + R C API emission.
 #' @param extlibs Optional list of tccq_external_library descriptors.
 #' @param debug Print generated C source before compiling.

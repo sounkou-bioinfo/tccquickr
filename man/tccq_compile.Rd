@@ -7,6 +7,7 @@
 tccq_compile(
   fn,
   mode = c("compile", "code", "ir"),
+  fallback = c("auto", "hard"),
   backend = tccq_backend_tinycc(),
   target = tccq_target_c_rapi(),
   extlibs = list(),
@@ -18,7 +19,13 @@ tccq_compile(
 
 \item{mode}{One of "compile", "code", or "ir".}
 
-\item{backend}{Backend object. Defaults to TinyCC via Rtinycc.}
+\item{fallback}{One of "auto" or "hard". In "auto" mode unsupported
+calls may lower to explicit \code{r_eval} boundary nodes. In "hard" mode they
+are rejected.}
+
+\item{backend}{Backend object. Use \code{tccq_backend_source()},
+\code{tccq_backend_tinycc()}, or \code{tccq_backend_shlib()}. Defaults to TinyCC via
+\code{Rtinycc}.}
 
 \item{target}{Target object. Defaults to C + R C API emission.}
 

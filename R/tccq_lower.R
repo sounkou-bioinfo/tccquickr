@@ -154,6 +154,13 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
     return(tccq_lower_binary(head, args, env, fallback = fallback))
   }
 
+  if (identical(head, "identity")) {
+    if (length(args) != 1L) {
+      tccq_abort("identity() expects exactly one argument")
+    }
+    return(tccq_lower_expr(args[[1L]], env, fallback = fallback))
+  }
+
   if (head %in% c("sin", "cos", "tan", "exp", "log", "sqrt", "abs")) {
     if (length(args) != 1L) {
       tccq_abort(head, " expects exactly one argument")

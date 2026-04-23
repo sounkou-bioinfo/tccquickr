@@ -21,7 +21,7 @@ vec_module <- tccquickr:::tccq_compile(fresh_vec_kernel, mode = "ir")
 expect_equal(vec_module$kernel$tag, "materialize")
 expect_equal(vec_module$kernel$producer$tag, "producer")
 
-source_backend <- tccquickr:::tccq_backend_source()
+source_backend <- tccq_backend_source()
 source_result <- tccquickr:::tccq_compile(
   fresh_sum_kernel,
   backend = source_backend
