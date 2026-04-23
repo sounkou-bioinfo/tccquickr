@@ -1,80 +1,51 @@
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
-# tccquickr
+# tccquickr: an R-to-C transformation framework
 
-Experimental backend-neutral R code transformation framework on top of
+Experimental backend-neutral R-to-C transformation framework on top of
 `Rtinycc`.
 
 <!-- badges: start -->
 
 [![R-CMD-check](https://github.com/sounkou-bioinfo/tccquickr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/sounkou-bioinfo/tccquickr/actions/workflows/R-CMD-check.yaml)
 [![tccquickr status
-badge](https://sounkou-bioinfo.r-universe.dev/tccquickr/badges/version)](https://sounkou-bioinfo.r-universe.dev/tccquickr)
+badge](https://sounkou-bioinfo.r-universe.dev/tccquickr/badges/version)](https://sounkou-bioinfo.r-universe.dev/tccquickr/badges/version)
 [![Lifecycle:
 experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 <!-- badges: end -->
 
-## Abstract
+## What this package is
 
-`tccquickr` is an experimental compiler and transformation framework for
-a small, declared R subset.
+`tccquickr` is an experimental R-to-C transformation framework for a
+small, declared subset of R.
 
-The current design direction is centered on the `tccq_*` path:
+The package is centered on `tccq_compile()`, which takes
+`declare(type(...))`-annotated R code, lowers it into explicit typed IR,
+applies middle-end rewrites, emits C through the R C API, and then
+either:
 
-- frontend parsing and typed lowering for `declare(type(...))`-annotated
-  R
-- explicit middle-end IR for producers, materialization, folds,
-  statements, and legality barriers
-- C emission through the R C API
-- swappable C backends, with source-only output, TinyCC via
-  [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc), and
-  shared-library compilation through `R CMD SHLIB`, in the same general
-  deployment space as
-  [`callme`](https://github.com/coolbutuseless/callme)
+- returns generated C source,
+- compiles it in memory through TinyCC via `Rtinycc`, or
+- compiles it as a shared library through `R CMD SHLIB`.
 
-The package depends on
-[`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) for the
-underlying TinyCC toolchain, libtcc runtime, FFI compilation pipeline,
-and pointer/runtime support.
-
-Conceptually, the project sits near several adjacent efforts:
-
-- [`quickr`](https://github.com/t-kalinowski/quickr) as a useful R
-  subset compiler comparison
-- [`anvil`](https://github.com/r-xla/anvil) as a broader transformation
-  and backend framework comparison
-- [`callme`](https://github.com/coolbutuseless/callme) as a useful
-  reference for C-only shared-library compilation/loading workflows
-- [`SAC` / `sac2c`](https://sac-home.org/about%3Asac) as the main
-  inspiration for explicit array IR, fusion, and allocation reduction
-
-## Scope
-
-`tccquickr` is where the transformation framework lives.
-
-The main moving parts are:
+The public entry points are:
 
 - `tccq_compile()`
-- backend factories such as `tccq_backend_source()`,
-  `tccq_backend_tinycc()`, and `tccq_backend_shlib()`
-- typed frontend parsing and lowering
-- middle-end kernel IR and rewrite passes
-- C + R C API target emission
-- tinytest coverage for generated code and compiled behavior
+- `tccq_backend_source()`
+- `tccq_backend_tinycc()`
+- `tccq_backend_shlib()`
 
-[`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) remains
-responsible for:
+Responsibility is split deliberately:
 
-- bundled TinyCC build and installation
-- `tcc_ffi()`, `tcc_bind()`, and `tcc_compile()`
-- low-level state and CLI helpers
-- pointer, struct, callback, and declarative FFI support
+- `tccquickr` owns the frontend, IR, passes, C target, and
+  backend-neutral orchestration
+- [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) owns the
+  TinyCC toolchain, libtcc runtime, FFI pipeline, and low-level native
+  runtime helpers
 
-Shared-library deployment through `R CMD SHLIB` is a separate C backend
-path in `tccquickr`, closer in spirit to
-[`callme`](https://github.com/coolbutuseless/callme) than to `Rtinycc`’s
-TinyCC runtime responsibilities.
+That means `tccquickr` is the transformation layer. TinyCC is one
+backend, not the whole design.
 
 ## Installation
 
@@ -88,164 +59,58 @@ install.packages(
 )
 ```
 
-## Current `tccq` compiler
+## Current scope
 
-`tccq_*` is the current compiler architecture.
+### Implemented today
 
-The main design rule is that the compiler knows more while it is still
-working with typed R-level IR than after it has emitted C. So legality,
-alias/view semantics, mutation barriers, fallback boundaries, and
-materialization choices should live in the frontend or middle-end
-whenever possible, with the C target mostly consuming those decisions.
-
-### Current status
-
-Implemented now:
-
-- [x] declared scalar and vector inputs
-- [x] `double`, `integer`, and `logical` typing
-- [x] scalar arithmetic
-- [x] vector elementwise arithmetic
-- [x] comparison and logical vector expressions
-- [x] unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and
+- declared scalar and vector inputs
+- `double`, `integer`, and `logical` typing
+- scalar and elementwise arithmetic
+- comparison and logical vector expressions
+- unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and
   `sqrt()`
-- [x] generic fold-style reducers: `sum`, `prod`, `min`, `max`, `mean`,
-  `any`, and `all`
-- [x] explicit kernel IR nodes for `domain`, `producer`, `materialize`,
-  `fold`, and `scalar_kernel`
-- [x] statement/program IR for local bindings and writes
-- [x] explicit contiguous view IR via `view1`
-- [x] scalar indexed reads `x[i]`
-- [x] contiguous range slices `x[lo:hi]`
-- [x] local indexed writes `y[i] <- v` and local range writes
+- explicit kernel IR nodes such as `producer`, `materialize`, `fold`,
+  and `scalar_kernel`
+- statement/program IR for local bindings and writes
+- scalar indexed reads `x[i]`
+- contiguous slices `x[lo:hi]`
+- local indexed writes `y[i] <- v` and local range writes
   `y[lo:hi] <- v`
-- [x] limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
-- [x] explicit fallback boundary nodes in `fallback = "auto"`
-- [x] conservative storage, allocation, and protect planning passes
-- [x] compile-time backend/target capability checks for context fields
-  and boundary APIs
-- [x] source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`)
-  backends
-- [x] generated differential validation over programmatically
-  constructed cases
+- fold-style reducers `sum`, `prod`, `min`, `max`, `mean`, `any`, and
+  `all`
+- limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
+- explicit boundary nodes in `fallback = "auto"`
+- source-only, TinyCC, and shared-library (`R CMD SHLIB`) backends
+- compile-time backend/target capability validation
+- hand-written and generated differential validation, including
+  cross-backend checks
 
-Planned next:
+### Intentionally still limited
 
-- [ ] richer semantic allocation/reuse planning before C emission
-- [ ] clearer middle-end ownership of boundary argument materialization
-- [ ] more systematic view/index normalization before target codegen
-- [ ] axis-wise reductions and matrix-aware lowering
-- [ ] broader indexing forms such as gather/scatter/filter
-- [ ] larger harvested validation corpus in addition to generated tests
+- full base-R `Reduce()` compatibility
+- axis-wise reductions such as `rowSums()` / `colSums()`
+- broader `apply`-family lowering
+- richer reuse/allocation planning before C emission
+- broader indexing forms such as gather/scatter/filter
+- larger harvested validation corpora from real array-oriented R code
 
-### Current architecture split
+## Quick tour
 
-- [x] frontend: parse `declare(type(...))` and lower a small R subset
-- [x] middle-end: validate IR, infer effects, kernelize, lower
-  recognized reducers, fuse, handle boundaries, and derive conservative
-  plans
-- [x] target: emit C using the R C API
-- [x] backend: return source or compile emitted C through TinyCC or
-  `R CMD SHLIB`
-- [ ] middle-end: richer plan-driven allocation/reuse and view/index
-  normalization
-- [ ] backend expansion toward other C compilation/loading paths such as
-  additional system compiler or `callme`-style workflows
+### Example 1: a reduction kernel
 
-### Reducer and idiom checklist
-
-Implemented now:
-
-- [x] direct reducers `sum`, `prod`, `min`, `max`, `mean`, `any`, `all`
-- [x] vector comparisons feeding reducers, e.g. `any(x > 0)`
-- [x] vector logical composition feeding reducers,
-  e.g. `all((x > 0) & (y > 0))`
-- [x] reducer lowering through explicit `fold` kernels rather than
-  `sum`-only special casing
-- [x] limited `Reduce(FUN, x)` lowering for recognized reducer operators
-  such as `+`, `*`, `&`, and `|`
-
-Still open:
-
-- [ ] full base-R `Reduce()` surface compatibility
-- [ ] axis-wise reducers such as `rowSums()` / `colSums()`
-- [ ] broader `apply`-family lowering on top of rank-aware IR
-
-### Validation checklist
-
-Implemented now:
-
-- [x] explicit hand-written runtime tests for reducers, slices, views,
-  boundaries, and backends
-- [x] generated differential tests comparing compiled `tccq` code
-  against direct R evaluation
-- [x] cross-backend checks between TinyCC and `R CMD SHLIB`
-
-Still open:
-
-- [ ] larger maintained validation corpus harvested from real
-  array-oriented R code
-- [ ] pass-by-pass translation-validation style checks for more
-  middle-end rewrites
-- [ ] broader edge-case matrices around exact reducer warning/NA
-  behavior
-
-### Backend selection
-
-`tccq_compile()` accepts explicit backend objects:
-
-- `tccq_backend_source()` returns emitted C without compiling it
-- `tccq_backend_tinycc()` compiles emitted C in memory through `Rtinycc`
-- `tccq_backend_shlib()` compiles emitted C through `R CMD SHLIB`
-
-That shared-library path is in the same general deployment space as
-[`callme`](https://github.com/coolbutuseless/callme): a C-only
-compile/load workflow around `.Call()` entry points. Internally,
-`tccq_compile()` validates backend capabilities against the target,
-compile context, and explicit boundary APIs before compilation.
-
-### Kernel IR concepts
-
-`producer`  
-an element computation over an index domain
-
-`materialize(producer)`  
-allocate an output vector and write producer elements into it
-
-`fold(op, domain, elem)`  
-reduce a producer-like element expression over a loop domain
-
-These are the concepts that let the package move from “fusion hidden in
-code emission” toward “fusion represented in IR”.
-
-### Assignment and slicing rules
-
-The current compiler treats these forms differently:
-
-- `a <- expr` is a local binding, not mutation
-- `x[i]` is an indexed read with checked 1-based indexing
-- `x[lo:hi]` is a contiguous slice expression
-- `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
-
-For the current milestone, indexed writes are only allowed into local
-vector bindings. Direct formal mutation such as `x[i] <- v` is rejected.
-
-### Example: inspect fresh IR
+Start with a kernel that reduces a vector expression to one scalar.
 
 ``` r
-fresh_sum_kernel <- function(x, y) {
+sum_kernel <- function(x, y) {
   declare(type(x = double(NA), y = double(NA)))
   sum((sin(x) + y) * y)
 }
+```
 
-fresh_vec_kernel <- function(x, y) {
-  declare(type(x = double(NA), y = double(NA)))
-  sin(x) + y * y
-}
+### Inspect the IR
 
-sum_module <- tccq_compile(fresh_sum_kernel, mode = "ir")
-vec_module <- tccq_compile(fresh_vec_kernel, mode = "ir")
-
+``` r
+sum_module <- tccq_compile(sum_kernel, mode = "ir")
 sum_module
 #> <tccq_module>
 #>   entry: tccq_entry 
@@ -255,6 +120,134 @@ sum_module
 #>   ir: program 
 #>   kernel: fold 
 #>   result type: double
+```
+
+This path lowers to an explicit `fold` over a `producer`.
+
+### Generate C
+
+<details>
+<summary>
+Show generated C for <code>sum_kernel</code>
+</summary>
+
+``` r
+sum_src <- tccq_compile(sum_kernel, mode = "code")
+tccq_c_block(sum_src)
+```
+
+``` c
+#include <R.h>
+#include <Rinternals.h>
+#include <Rmath.h>
+#include <math.h>
+
+#ifndef REAL_RO
+#define REAL_RO(x) REAL(x)
+#endif
+#ifndef INTEGER_RO
+#define INTEGER_RO(x) INTEGER(x)
+#endif
+#ifndef LOGICAL_RO
+#define LOGICAL_RO(x) LOGICAL(x)
+#endif
+#ifndef TCCQ_UNUSED
+# if defined(__GNUC__)
+#  define TCCQ_UNUSED __attribute__((unused))
+# else
+#  define TCCQ_UNUSED
+# endif
+#endif
+
+static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+  if (idx < 1 || idx > len) {
+    Rf_error("index out of bounds for %s", name);
+  }
+  return idx - 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_not(int x) {
+  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
+}
+
+static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
+  if (a == 0 || b == 0) return 0;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
+  if (a == 1 || b == 1) return 1;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 0;
+}
+
+SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
+  if (TYPEOF(arg_x) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "x");
+  }
+  R_xlen_t n_x = XLENGTH(arg_x);
+  const double *p_x = REAL_RO(arg_x);
+  if (TYPEOF(arg_y) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "y");
+  }
+  R_xlen_t n_y = XLENGTH(arg_y);
+  const double *p_y = REAL_RO(arg_y);
+  int tccq_nprotect = 0;
+  R_xlen_t n_out_lhs_lhs_x = n_x;
+  R_xlen_t n_out_lhs_lhs = n_out_lhs_lhs_x;
+  R_xlen_t n_out_lhs_rhs = n_y;
+  if (n_out_lhs_lhs != n_out_lhs_rhs) {
+    Rf_error("vector length mismatch in composite expression");
+  }
+  R_xlen_t n_out_lhs = n_out_lhs_lhs;
+  R_xlen_t n_out_rhs = n_y;
+  if (n_out_lhs != n_out_rhs) {
+    Rf_error("vector length mismatch in composite expression");
+  }
+  R_xlen_t n_out = n_out_lhs;
+  double acc = 0.0;
+  for (R_xlen_t i = 0; i < n_out; ++i) {
+    double v = (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
+    if (R_IsNA(v)) { acc = NA_REAL; break; }
+    if (R_IsNaN(v)) { acc = R_NaN; break; }
+    acc += v;
+  }
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
+  ++tccq_nprotect;
+  REAL(out)[0] = (double) (acc);
+  UNPROTECT(tccq_nprotect);
+  return out;
+}
+```
+
+</details>
+
+### Compile and run it
+
+``` r
+compiled_sum_kernel <- tccq_compile(sum_kernel)
+x <- as.double(seq(-2, 2, length.out = 10))
+y <- as.double(seq(1, 3, length.out = 10))
+compiled_sum_kernel(x, y)
+#> [1] 48.90504
+```
+
+### Example 2: a vector-return kernel
+
+Now take a kernel that produces a whole vector result.
+
+``` r
+vec_kernel <- function(x, y) {
+  declare(type(x = double(NA), y = double(NA)))
+  sin(x) + y * y
+}
+```
+
+### Inspect the IR
+
+``` r
+vec_module <- tccq_compile(vec_kernel, mode = "ir")
 vec_module
 #> <tccq_module>
 #>   entry: tccq_entry 
@@ -266,93 +259,151 @@ vec_module
 #>   result type: double[NA]
 ```
 
-The reduction path is represented as a `fold` over an explicit
-`producer`. The vector return path is represented as
-`materialize(producer)`.
+This path lowers to `materialize(producer)`.
 
-### Example: explicit fusion rewrite
+### Generate C
 
-Before fusion, `kernelize` represents the reduction as a fold over a
-materialized producer. The fusion pass rewrites that to a fold over the
-producer directly.
+<details>
+<summary>
+Show generated C for <code>vec_kernel</code>
+</summary>
 
 ``` r
-mod0 <- tccquickr:::tccq_frontend(fresh_sum_kernel)
-mod0 <- tccquickr:::tccq_lower_module(mod0)
-
-before_fusion <- tccquickr:::tccq_run_passes(
-  mod0,
-  passes = list(
-    tccquickr:::tccq_pass_validate_ir(),
-    tccquickr:::tccq_pass_effects(),
-    tccquickr:::tccq_pass_kernelize()
-  )
-)
-
-after_fusion <- tccquickr:::tccq_run_passes(
-  mod0,
-  passes = list(
-    tccquickr:::tccq_pass_validate_ir(),
-    tccquickr:::tccq_pass_effects(),
-    tccquickr:::tccq_pass_kernelize(),
-    tccquickr:::tccq_pass_fusion()
-  )
-)
-
-before_fusion
-#> <tccq_module>
-#>   entry: tccq_entry 
-#>   formals:
-#>    - x : double[NA] 
-#>    - y : double[NA] 
-#>   ir: program 
-#>   kernel: fold 
-#>   result type: double
-after_fusion
-#> <tccq_module>
-#>   entry: tccq_entry 
-#>   formals:
-#>    - x : double[NA] 
-#>    - y : double[NA] 
-#>   ir: program 
-#>   kernel: fold 
-#>   result type: double
+vec_src <- tccq_compile(vec_kernel, mode = "code")
+tccq_c_block(vec_src)
 ```
 
-This is still a small rewrite system, but the important point is that
-fusion is now expressed as a middle-end transformation rather than being
-buried entirely inside C string emission.
+``` c
+#include <R.h>
+#include <Rinternals.h>
+#include <Rmath.h>
+#include <math.h>
 
-### Example: explicit boundary fallback
+#ifndef REAL_RO
+#define REAL_RO(x) REAL(x)
+#endif
+#ifndef INTEGER_RO
+#define INTEGER_RO(x) INTEGER(x)
+#endif
+#ifndef LOGICAL_RO
+#define LOGICAL_RO(x) LOGICAL(x)
+#endif
+#ifndef TCCQ_UNUSED
+# if defined(__GNUC__)
+#  define TCCQ_UNUSED __attribute__((unused))
+# else
+#  define TCCQ_UNUSED
+# endif
+#endif
 
-Boundary nodes stay explicit legality barriers, but `fallback = "auto"`
-now lowers unsupported calls to explicit `r_eval` boundary nodes instead
-of failing immediately during lowering.
-
-``` r
-fallback_kernel <- function(x) {
-  declare(type(x = double()))
-  floor(x)
+static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+  if (idx < 1 || idx > len) {
+    Rf_error("index out of bounds for %s", name);
+  }
+  return idx - 1;
 }
 
-fallback_ir <- tccq_compile(fallback_kernel, mode = "ir", fallback = "auto")
-fallback_ir$ir$result$tag
-#> [1] "boundary_call"
-fallback_ir$ir$result$api
-#> [1] "r_eval"
+static TCCQ_UNUSED int tccq_lgl_not(int x) {
+  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
+}
+
+static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
+  if (a == 0 || b == 0) return 0;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
+  if (a == 1 || b == 1) return 1;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 0;
+}
+
+SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
+  if (TYPEOF(arg_x) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "x");
+  }
+  R_xlen_t n_x = XLENGTH(arg_x);
+  const double *p_x = REAL_RO(arg_x);
+  if (TYPEOF(arg_y) != REALSXP) {
+    Rf_error("argument %s has wrong R type", "y");
+  }
+  R_xlen_t n_y = XLENGTH(arg_y);
+  const double *p_y = REAL_RO(arg_y);
+  int tccq_nprotect = 0;
+  R_xlen_t n_out_lhs_x = n_x;
+  R_xlen_t n_out_lhs = n_out_lhs_x;
+  R_xlen_t n_out_rhs_lhs = n_y;
+  R_xlen_t n_out_rhs_rhs = n_y;
+  if (n_out_rhs_lhs != n_out_rhs_rhs) {
+    Rf_error("vector length mismatch in composite expression");
+  }
+  R_xlen_t n_out_rhs = n_out_rhs_lhs;
+  if (n_out_lhs != n_out_rhs) {
+    Rf_error("vector length mismatch in composite expression");
+  }
+  R_xlen_t n_out = n_out_lhs;
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
+  ++tccq_nprotect;
+  double *p_out = REAL(out);
+  for (R_xlen_t i = 0; i < n_out; ++i) {
+    p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
+  }
+  UNPROTECT(tccq_nprotect);
+  return out;
+}
 ```
 
-In `fallback = "hard"` mode, the same unsupported call is rejected.
+</details>
+
+### Compile and run it
 
 ``` r
-tryCatch(
-  tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
-  error = function(e) e$message
-)
-#> [1] "unsupported call in fresh compiler: floor. Add a lowerer case or route it through an explicit boundary node."
+compiled_vec_kernel <- tccq_compile(vec_kernel)
+unname(compiled_vec_kernel(x, y)[1:4])
+#> [1] 0.09070257 0.49394330 1.19022755 2.15940797
 ```
 
-### Example: assignments and indexed writes
+## Backend selection
+
+`tccq_compile()` can target different C backends explicitly.
+
+``` r
+tccq_compile(f, backend = tccq_backend_source())
+tccq_compile(f, backend = tccq_backend_tinycc())
+tccq_compile(f, backend = tccq_backend_shlib())
+```
+
+The roles are:
+
+- `tccq_backend_source()` returns emitted C and does not compile it
+- `tccq_backend_tinycc()` compiles emitted C in memory through `Rtinycc`
+- `tccq_backend_shlib()` compiles emitted C through `R CMD SHLIB` and
+  loads it through `.Call()`
+
+The shared-library route is in the same general deployment space as
+[`callme`](https://github.com/coolbutuseless/callme): a C-only
+compile/load workflow around shared objects and `.Call()` entry points.
+
+Before compilation, `tccq_compile()` validates backend capabilities
+against the selected target, compile context, and any explicit boundary
+APIs.
+
+## Current semantic model
+
+The current subset is small on purpose. The key rules are explicit and
+are meant to live in IR and middle-end plans rather than appearing
+accidentally in the C emitter.
+
+### Bindings, reads, slices, and writes
+
+- `a <- expr` is a local binding, not mutation
+- `x[i]` is a checked 1-based indexed read
+- `x[lo:hi]` is a contiguous slice/view expression
+- `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
+- direct mutation of formals such as `x[i] <- v` is rejected for now
+
+### Example: local bind, then indexed write
 
 ``` r
 assign_kernel <- function(x, i, v) {
@@ -361,7 +412,24 @@ assign_kernel <- function(x, i, v) {
   y[i] <- v
   y
 }
+```
 
+Compile and run it:
+
+``` r
+compiled_assign_kernel <- tccq_compile(assign_kernel)
+unname(compiled_assign_kernel(c(1, 2, 3), 2L, 10))
+#> [1]  1 10  3
+```
+
+Show the generated C:
+
+<details>
+<summary>
+Show generated C for <code>assign_kernel</code>
+</summary>
+
+``` r
 assign_src <- tccq_compile(assign_kernel, mode = "code")
 tccq_c_block(assign_src)
 ```
@@ -460,12 +528,12 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
 }
 ```
 
-The local `y <- x` binding now starts as an alias to the formal input.
-The first indexed write materializes `y` into owned local storage, so
-mutate-then- return allocates only once while still keeping direct
-writes to caller-owned formal vectors out of scope for this milestone.
+</details>
 
-### Example: slicing and reduction
+Here `y <- x` starts as an alias to the formal input. The first indexed
+write forces materialization into owned local storage.
+
+### Example: slice, then reduce
 
 ``` r
 slice_sum_kernel <- function(x, lo, hi) {
@@ -473,7 +541,24 @@ slice_sum_kernel <- function(x, lo, hi) {
   y <- x[lo:hi]
   sum(y)
 }
+```
 
+Compile and run it:
+
+``` r
+compiled_slice_sum_kernel <- tccq_compile(slice_sum_kernel)
+compiled_slice_sum_kernel(c(1, 2, 3, 4), 2L, 4L)
+#> [1] 9
+```
+
+Show the generated C:
+
+<details>
+<summary>
+Show generated C for <code>slice_sum_kernel</code>
+</summary>
+
+``` r
 slice_sum_src <- tccq_compile(slice_sum_kernel, mode = "code")
 tccq_c_block(slice_sum_src)
 ```
@@ -569,11 +654,31 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
 }
 ```
 
-The slice bind now lowers to an explicit `view1` node. In the current
-target, that means the compiler can bind a pointer/length view and
-reduce over it without allocating a copied slice first.
+</details>
 
-### Example: generic reducers and reducer-style idioms
+This slice bind lowers to an explicit `view1` node. In the current
+target, that lets the compiler reduce over the slice extent without
+first copying the slice into a fresh vector.
+
+### Reducers and reducer-style idioms
+
+Reducers are lowered through explicit fold machinery, not through
+one-off `sum()`-only code generation branches.
+
+Supported direct reducers include:
+
+- `sum`, `prod`, `min`, `max`, `mean`
+- `any`, `all`
+
+Recognized `Reduce(FUN, x)` surfaces currently include
+reducer-equivalent forms such as:
+
+- `Reduce(`+`, x)`
+- `Reduce(`\*`, x)`
+- `Reduce(`&`, x)`
+- `Reduce(`\|`, x)`
+- `Reduce(min, x)`
+- `Reduce(max, x)`
 
 ``` r
 logic_reduce_kernel <- function(x, y) {
@@ -581,31 +686,55 @@ logic_reduce_kernel <- function(x, y) {
   all((x > 0) & (y > 0))
 }
 
+compiled_logic_reduce_kernel <- tccq_compile(logic_reduce_kernel)
+compiled_logic_reduce_kernel(c(1, 2, 3), c(4, 5, 6))
+#> [1] TRUE
+```
+
+``` r
 reduce_kernel <- function(x) {
   declare(type(x = double(NA)))
   Reduce(`+`, x)
 }
 
-compiled_logic_reduce <- tccq_compile(logic_reduce_kernel)
-compiled_reduce <- tccq_compile(reduce_kernel)
-
-list(
-  logic_reduce = compiled_logic_reduce(c(1, 2, 3), c(4, 5, 6)),
-  reduce_sum = compiled_reduce(c(1, 2, 3, 4))
-)
-#> $logic_reduce
-#> [1] TRUE
-#> 
-#> $reduce_sum
+compiled_reduce_kernel <- tccq_compile(reduce_kernel)
+compiled_reduce_kernel(c(1, 2, 3, 4))
 #> [1] 10
 ```
 
-This still does not claim full base-R `Reduce()` or `apply`-family
-coverage, but it does mean the current compiler can translate a wider
-set of idiomatic array-oriented reduction code than the earlier
-`sum()`-only milestone.
+This is still intentionally narrower than full base-R `Reduce()`
+semantics.
 
-### Example: direct formal mutation is rejected
+### Unsupported calls and explicit boundaries
+
+Unsupported calls are not supposed to disappear silently into
+target-specific special cases. With `fallback = "auto"`, they lower to
+explicit boundary nodes.
+
+``` r
+fallback_kernel <- function(x) {
+  declare(type(x = double()))
+  floor(x)
+}
+
+fallback_ir <- tccq_compile(fallback_kernel, mode = "ir", fallback = "auto")
+fallback_ir$ir$result$tag
+#> [1] "boundary_call"
+fallback_ir$ir$result$api
+#> [1] "r_eval"
+```
+
+In `fallback = "hard"` mode, the same unsupported call is rejected.
+
+``` r
+tryCatch(
+  tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
+  error = function(e) e$message
+)
+#> [1] "unsupported call in fresh compiler: floor. Add a lowerer case or route it through an explicit boundary node."
+```
+
+### Direct formal mutation is rejected
 
 ``` r
 direct_formal_mutation <- function(x, v) {
@@ -621,277 +750,128 @@ tryCatch(
 #> [1] "indexed assignment currently requires a local vector binding. Write y <- x; y[i] <- value; y instead of mutating formal 'x' directly."
 ```
 
-### Example: generate C source
+## Architecture
+
+`tccquickr` is organized as an explicit transformation pipeline rather
+than as a single direct “R expression to C string” step.
+
+### Pipeline
+
+- **frontend**: parse `declare(type(...))` and lower a small R subset
+  into typed IR
+- **middle-end**: validate IR, infer effects, lower reducers, kernelize,
+  fuse, handle explicit boundaries, and derive conservative
+  storage/protection plans
+- **target**: emit C through the R C API
+- **backend**: either return source or compile the emitted C through
+  TinyCC or `R CMD SHLIB`
+
+### Kernel IR concepts
+
+`producer`  
+an element computation over an index domain
+
+`materialize(producer)`  
+allocate an output vector and write producer elements into it
+
+`fold(op, domain, elem)`  
+reduce a producer-like element expression over a loop domain
+
+These are the concepts that make fusion and materialization decisions
+explicit in IR instead of hiding them inside the C emitter.
+
+### Fusion is an explicit rewrite
+
+Before fusion, `kernelize` represents the reduction as a fold over a
+materialized producer. The fusion pass rewrites that to a fold over the
+producer directly.
 
 ``` r
-sum_src <- tccq_compile(fresh_sum_kernel, mode = "code")
-tccq_c_block(sum_src)
-```
+mod0 <- tccquickr:::tccq_frontend(sum_kernel)
+mod0 <- tccquickr:::tccq_lower_module(mod0)
 
-``` c
-#include <R.h>
-#include <Rinternals.h>
-#include <Rmath.h>
-#include <math.h>
-
-#ifndef REAL_RO
-#define REAL_RO(x) REAL(x)
-#endif
-#ifndef INTEGER_RO
-#define INTEGER_RO(x) INTEGER(x)
-#endif
-#ifndef LOGICAL_RO
-#define LOGICAL_RO(x) LOGICAL(x)
-#endif
-#ifndef TCCQ_UNUSED
-# if defined(__GNUC__)
-#  define TCCQ_UNUSED __attribute__((unused))
-# else
-#  define TCCQ_UNUSED
-# endif
-#endif
-
-static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
-  if (idx < 1 || idx > len) {
-    Rf_error("index out of bounds for %s", name);
-  }
-  return idx - 1;
-}
-
-static TCCQ_UNUSED int tccq_lgl_not(int x) {
-  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
-}
-
-static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
-  if (a == 0 || b == 0) return 0;
-  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
-  return 1;
-}
-
-static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
-  if (a == 1 || b == 1) return 1;
-  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
-  return 0;
-}
-
-SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
-  if (TYPEOF(arg_x) != REALSXP) {
-    Rf_error("argument %s has wrong R type", "x");
-  }
-  R_xlen_t n_x = XLENGTH(arg_x);
-  const double *p_x = REAL_RO(arg_x);
-  if (TYPEOF(arg_y) != REALSXP) {
-    Rf_error("argument %s has wrong R type", "y");
-  }
-  R_xlen_t n_y = XLENGTH(arg_y);
-  const double *p_y = REAL_RO(arg_y);
-  int tccq_nprotect = 0;
-  R_xlen_t n_out_lhs_lhs_x = n_x;
-  R_xlen_t n_out_lhs_lhs = n_out_lhs_lhs_x;
-  R_xlen_t n_out_lhs_rhs = n_y;
-  if (n_out_lhs_lhs != n_out_lhs_rhs) {
-    Rf_error("vector length mismatch in composite expression");
-  }
-  R_xlen_t n_out_lhs = n_out_lhs_lhs;
-  R_xlen_t n_out_rhs = n_y;
-  if (n_out_lhs != n_out_rhs) {
-    Rf_error("vector length mismatch in composite expression");
-  }
-  R_xlen_t n_out = n_out_lhs;
-  double acc = 0.0;
-  for (R_xlen_t i = 0; i < n_out; ++i) {
-    double v = (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
-    if (R_IsNA(v)) { acc = NA_REAL; break; }
-    if (R_IsNaN(v)) { acc = R_NaN; break; }
-    acc += v;
-  }
-  SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
-  ++tccq_nprotect;
-  REAL(out)[0] = (double) (acc);
-  UNPROTECT(tccq_nprotect);
-  return out;
-}
-```
-
-The generated C contains one reduction loop and no intermediate vector
-allocation for the reduction itself.
-
-### Example: vector materialization kernel
-
-``` r
-vec_src <- tccq_compile(fresh_vec_kernel, mode = "code")
-tccq_c_block(vec_src)
-```
-
-``` c
-#include <R.h>
-#include <Rinternals.h>
-#include <Rmath.h>
-#include <math.h>
-
-#ifndef REAL_RO
-#define REAL_RO(x) REAL(x)
-#endif
-#ifndef INTEGER_RO
-#define INTEGER_RO(x) INTEGER(x)
-#endif
-#ifndef LOGICAL_RO
-#define LOGICAL_RO(x) LOGICAL(x)
-#endif
-#ifndef TCCQ_UNUSED
-# if defined(__GNUC__)
-#  define TCCQ_UNUSED __attribute__((unused))
-# else
-#  define TCCQ_UNUSED
-# endif
-#endif
-
-static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
-  if (idx < 1 || idx > len) {
-    Rf_error("index out of bounds for %s", name);
-  }
-  return idx - 1;
-}
-
-static TCCQ_UNUSED int tccq_lgl_not(int x) {
-  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
-}
-
-static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
-  if (a == 0 || b == 0) return 0;
-  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
-  return 1;
-}
-
-static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
-  if (a == 1 || b == 1) return 1;
-  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
-  return 0;
-}
-
-SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
-  if (TYPEOF(arg_x) != REALSXP) {
-    Rf_error("argument %s has wrong R type", "x");
-  }
-  R_xlen_t n_x = XLENGTH(arg_x);
-  const double *p_x = REAL_RO(arg_x);
-  if (TYPEOF(arg_y) != REALSXP) {
-    Rf_error("argument %s has wrong R type", "y");
-  }
-  R_xlen_t n_y = XLENGTH(arg_y);
-  const double *p_y = REAL_RO(arg_y);
-  int tccq_nprotect = 0;
-  R_xlen_t n_out_lhs_x = n_x;
-  R_xlen_t n_out_lhs = n_out_lhs_x;
-  R_xlen_t n_out_rhs_lhs = n_y;
-  R_xlen_t n_out_rhs_rhs = n_y;
-  if (n_out_rhs_lhs != n_out_rhs_rhs) {
-    Rf_error("vector length mismatch in composite expression");
-  }
-  R_xlen_t n_out_rhs = n_out_rhs_lhs;
-  if (n_out_lhs != n_out_rhs) {
-    Rf_error("vector length mismatch in composite expression");
-  }
-  R_xlen_t n_out = n_out_lhs;
-  SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
-  ++tccq_nprotect;
-  double *p_out = REAL(out);
-  for (R_xlen_t i = 0; i < n_out; ++i) {
-    p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
-  }
-  UNPROTECT(tccq_nprotect);
-  return out;
-}
-```
-
-This path allocates one output vector and fills it in one loop.
-
-### Optional: compile through TinyCC
-
-``` r
-if (requireNamespace("Rtinycc", quietly = TRUE)) {
-  compiled_sum <- tccq_compile(fresh_sum_kernel)
-  compiled_vec <- tccq_compile(fresh_vec_kernel)
-  compiled_fallback <- tccq_compile(fallback_kernel, fallback = "auto")
-  compiled_assign <- tccq_compile(assign_kernel)
-  compiled_slice_sum <- tccq_compile(slice_sum_kernel)
-
-  x <- as.double(seq(-2, 2, length.out = 10))
-  y <- as.double(seq(1, 3, length.out = 10))
-
-  list(
-    compiled_sum = compiled_sum(x, y),
-    compiled_vec_head = unname(compiled_vec(x, y)[1:4]),
-    compiled_fallback = compiled_fallback(42),
-    compiled_assign = unname(compiled_assign(c(1, 2, 3), 2L, 10)),
-    compiled_slice_sum = compiled_slice_sum(c(1, 2, 3, 4), 2L, 4L)
+before_fusion <- tccquickr:::tccq_run_passes(
+  mod0,
+  passes = list(
+    tccquickr:::tccq_pass_validate_ir(),
+    tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_kernelize()
   )
-}
-#> $compiled_sum
-#> [1] 48.90504
-#> 
-#> $compiled_vec_head
-#> [1] 0.09070257 0.49394330 1.19022755 2.15940797
-#> 
-#> $compiled_fallback
-#> [1] 42
-#> 
-#> $compiled_assign
-#> [1]  1 10  3
-#> 
-#> $compiled_slice_sum
-#> [1] 9
+)
+
+after_fusion <- tccquickr:::tccq_run_passes(
+  mod0,
+  passes = list(
+    tccquickr:::tccq_pass_validate_ir(),
+    tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_kernelize(),
+    tccquickr:::tccq_pass_fusion()
+  )
+)
+
+before_fusion
+#> <tccq_module>
+#>   entry: tccq_entry 
+#>   formals:
+#>    - x : double[NA] 
+#>    - y : double[NA] 
+#>   ir: program 
+#>   kernel: fold 
+#>   result type: double
+after_fusion
+#> <tccq_module>
+#>   entry: tccq_entry 
+#>   formals:
+#>    - x : double[NA] 
+#>    - y : double[NA] 
+#>   ir: program 
+#>   kernel: fold 
+#>   result type: double
 ```
+
+That rewrite system is still small, but the important architectural
+point is that fusion lives in the middle-end rather than being
+discovered accidentally while printing C.
+
+## Validation
+
+Validation is part of the architecture, not an afterthought.
+
+The current package combines:
+
+- hand-written runtime tests for reducers, slicing, views, boundaries,
+  storage behavior, and backends
+- generated differential tests that construct typed R functions
+  programmatically and compare compiled behavior against direct R
+  evaluation
+- cross-backend checks between TinyCC and `R CMD SHLIB`
+
+The goal is not to claim formal proof. The goal is to keep the
+transformation pipeline honest with executable witness tests across IR,
+emitted C, and runtime behavior.
 
 ## Related projects and influences
 
-`tccquickr` is not trying to be identical to any one upstream project,
-but its current direction is easier to understand relative to a few
-concrete references.
+These are reference points, not templates that `tccquickr` is trying to
+copy exactly.
 
-### `quickr`
-
-[`quickr`](https://github.com/t-kalinowski/quickr) is a useful
-comparison for a declared R subset compiler. It demonstrates that a
-strict, typed subset of R can be lowered aggressively and made fast.
-
-### `anvil`
-
-[`anvil`](https://github.com/r-xla/anvil) is a useful comparison for
-explicit transformation architecture and backend thinking. It is broader
-than the goals here, but it is a good reference point for separating
-frontend and backend concerns.
-
-### `SAC` and `sac2c`
-
-[`SAC`](https://sac-home.org/about%3Asac) and the
-[`sac2c`](https://gitlab.sac-home.org/sac-group/sac2c) compiler are the
-main optimization inspiration for the current path here:
-
-- explicit array/kernel IR
-- fusion as an IR rewrite rather than a codegen accident
-- allocation reduction and materialization discipline
-- legality-driven optimization boundaries
-
-## Status
-
-This package is experimental.
-
-The split from [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
-is about separation of concerns:
-
-- [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc) provides the
-  TinyCC / FFI runtime layer
-- `tccquickr` provides the compiler and transformation framework
-- `tccq_*` is the active architecture for explicit IR, mutation
-  barriers, slicing/indexing semantics, and backend-neutral compilation
-  flow
+- [`quickr`](https://github.com/t-kalinowski/quickr): useful comparison
+  for a declared R subset compiler
+- [`anvil`](https://github.com/r-xla/anvil): useful comparison for
+  explicit transformation architecture and backend thinking
+- [`callme`](https://github.com/coolbutuseless/callme): useful reference
+  for a shared-library compile/load workflow around `.Call()`
+- [`SAC`](https://sac-home.org/) and
+  [`sac2c`](https://gitlab.sac-home.org/sac-group/sac2c): main
+  inspiration for explicit array IR, fusion, and
+  allocation/materialization discipline
 
 ## Development
 
-`tccquickr` follows the same repo conventions as the parent package:
+`tccquickr` follows the same basic repo conventions as the parent
+package:
 
-- `README.Rmd` as the source of the GitHub README
-- `roxygen2` for documentation generation
-- `tinytest` under `inst/tinytest`
-- a simple package-local `Makefile` for build/check/test tasks
+- `README.Rmd` is the source of `README.md`
+- `roxygen2` generates documentation
+- `tinytest` lives under `inst/tinytest`
+- a simple package-local `Makefile` drives common build/check/test tasks

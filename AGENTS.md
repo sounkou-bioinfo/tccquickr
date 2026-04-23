@@ -87,8 +87,7 @@ For `tccq`, keep these rules explicit:
 - Generate `.Rd` files from source documentation using `roxygen2`.
 - `README.Rmd` is the source for `README.md`.
 - Keep docs aligned with the current `tccq_*` architecture.
-- Remove stale references to deleted legacy paths or transitional `tccq2_*`
-  naming.
+- Remove stale references to deleted legacy paths or transitional naming.
 - Prefer semantic/runtime tests and structured IR/plan checks over brittle
   source-substring assertions.
 - When adding language coverage, extend the generated/differential validation
