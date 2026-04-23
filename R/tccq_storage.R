@@ -1,12 +1,13 @@
 # tccq_storage.R - conservative storage and return planning helpers
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-tccq_storage_binding <- function(name, type, kind = "owned", source = NULL, mutated = FALSE, contiguous = TRUE) {
+tccq_storage_binding <- function(name, type, kind = "owned", source = NULL, mutated = FALSE, contiguous = TRUE, domain_id = NULL) {
   list(
     name = name,
     type = type,
     kind = kind,
     source = source,
+    domain_id = domain_id,
     mutated = isTRUE(mutated),
     contiguous = isTRUE(contiguous),
     materialize_on_write = isTRUE(mutated) && kind %in% c("alias", "view"),
@@ -65,8 +66,16 @@ tccq_storage_plan <- function(module) {
   locals <- if (!is.null(ir)) tccq_ir_program_locals(ir) else list()
   mutated <- if (!is.null(ir)) tccq_ir_program_mutated_names(ir) else character()
 
+  shape_by_name <- module$shape_facts$by_name %||% list()
+
   bindings <- lapply(names(locals), function(nm) {
-    tccq_storage_binding(nm, locals[[nm]], kind = "owned", mutated = nm %in% mutated)
+    tccq_storage_binding(
+      nm,
+      locals[[nm]],
+      kind = "owned",
+      mutated = nm %in% mutated,
+      domain_id = shape_by_name[[nm]] %||% NULL
+    )
   })
   names(bindings) <- names(locals)
 
@@ -82,7 +91,8 @@ tccq_storage_plan <- function(module) {
           locals[[stmt$name]],
           kind = "alias",
           source = stmt$value$name,
-          mutated = stmt$name %in% mutated
+          mutated = stmt$name %in% mutated,
+          domain_id = shape_by_name[[stmt$name]] %||% NULL
         )
       } else if (tccq_is_view_node(stmt$value)) {
         bindings[[stmt$name]] <- tccq_storage_binding(
@@ -91,7 +101,8 @@ tccq_storage_plan <- function(module) {
           kind = "view",
           source = tccq_ir_view_source_name(stmt$value, bindings = bindings),
           mutated = stmt$name %in% mutated,
-          contiguous = TRUE
+          contiguous = TRUE,
+          domain_id = shape_by_name[[stmt$name]] %||% NULL
         )
       }
     }

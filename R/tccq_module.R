@@ -14,7 +14,8 @@ tccq_module <- function(
   protect_plan = NULL,
   fallback = "hard",
   boundary_context = NULL,
-  storage_plan = NULL
+  storage_plan = NULL,
+  shape_facts = NULL
 ) {
   structure(
     list(
@@ -30,7 +31,8 @@ tccq_module <- function(
       protect_plan = protect_plan,
       fallback = fallback,
       boundary_context = boundary_context,
-      storage_plan = storage_plan
+      storage_plan = storage_plan,
+      shape_facts = shape_facts
     ),
     class = "tccq_module"
   )

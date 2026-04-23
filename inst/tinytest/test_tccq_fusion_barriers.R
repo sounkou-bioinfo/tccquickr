@@ -13,6 +13,7 @@ mod_before <- tccquickr:::tccq_run_passes(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
     tccquickr:::tccq_pass_index_normalize(),
+    tccquickr:::tccq_pass_shape_domains(),
     tccquickr:::tccq_pass_kernelize()
   )
 )
@@ -22,6 +23,7 @@ mod_after <- tccquickr:::tccq_run_passes(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
     tccquickr:::tccq_pass_index_normalize(),
+    tccquickr:::tccq_pass_shape_domains(),
     tccquickr:::tccq_pass_kernelize(),
     tccquickr:::tccq_pass_fusion()
   )
@@ -32,6 +34,7 @@ expect_equal(mod_before$kernel$elem$tag, "materialize")
 expect_equal(mod_after$kernel$tag, "fold")
 expect_equal(mod_after$kernel$elem$tag, "producer")
 expect_equal(mod_after$kernel$domain$vars, mod_after$kernel$elem$domain$vars)
+expect_identical(mod_after$kernel$domain$shape_domain, mod_after$kernel$elem$domain$shape_domain)
 
 x <- as.double(seq(-2, 2, length.out = 12))
 y <- as.double(seq(1, 3, length.out = 12))

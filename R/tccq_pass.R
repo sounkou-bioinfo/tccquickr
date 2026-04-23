@@ -41,6 +41,7 @@ tccq_default_passes <- function() {
     tccq_pass_validate_ir(),
     tccq_pass_effects(),
     tccq_pass_index_normalize(),
+    tccq_pass_shape_domains(),
     tccq_pass_kernelize(),
     tccq_pass_fusion(),
     tccq_pass_boundary_collect(),
@@ -103,17 +104,29 @@ tccq_pass_index_normalize <- function() {
   )
 }
 
+tccq_pass_shape_domains <- function() {
+  tccq_pass(
+    name = "shape_domains",
+    requires = c("ir_valid", "effects_known", "index_normalized"),
+    provides = "shape_domains_known",
+    run = function(module, facts) {
+      analysis <- tccq_shape_analyze_module(module)
+      tccq_module_with(module, ir = analysis$ir, shape_facts = analysis$shape_facts)
+    }
+  )
+}
+
 tccq_pass_kernelize <- function() {
   tccq_pass(
     name = "kernelize",
-    requires = c("ir_valid", "effects_known", "index_normalized"),
+    requires = c("ir_valid", "effects_known", "index_normalized", "shape_domains_known"),
     provides = "kernel_ir",
     run = function(module, facts) {
       ir <- module$ir
 
       make_kernel <- function(expr) {
         if (identical(expr$tag, "reduce")) {
-          domain <- tccq_kernel_domain_from_expr(expr$x)
+          domain <- tccq_kernel_domain_from_expr(expr$x, module = module)
           producer <- tccq_ir_producer(domain = domain, elem = expr$x, type = expr$x$type)
           tccq_ir_fold(
             op = expr$op,
@@ -124,7 +137,7 @@ tccq_pass_kernelize <- function() {
             surface = expr$surface %||% expr$op
           )
         } else if (expr$type$rank > 0L) {
-          domain <- tccq_kernel_domain_from_expr(expr)
+          domain <- tccq_kernel_domain_from_expr(expr, module = module)
           producer <- tccq_ir_producer(domain = domain, elem = expr, type = expr$type)
           tccq_ir_materialize(producer = producer, type = expr$type)
         } else {
@@ -153,9 +166,9 @@ tccq_pass_fusion <- function() {
     run = function(module, facts) {
       kernel <- module$kernel
       if (identical(kernel$tag, "kernel_program")) {
-        kernel$result_kernel <- tccq_fuse_kernel(kernel$result_kernel)
+        kernel$result_kernel <- tccq_fuse_kernel(kernel$result_kernel, module = module)
       } else {
-        kernel <- tccq_fuse_kernel(kernel)
+        kernel <- tccq_fuse_kernel(kernel, module = module)
       }
       tccq_module_with(module, kernel = kernel)
     }
@@ -197,7 +210,7 @@ tccq_pass_boundary_validate <- function() {
 tccq_pass_storage_plan <- function() {
   tccq_pass(
     name = "storage_plan",
-    requires = "legality_checked",
+    requires = c("legality_checked", "shape_domains_known"),
     provides = "storage_plan",
     run = function(module, facts) {
       tccq_module_with(module, storage_plan = tccq_storage_plan(module))

@@ -206,24 +206,65 @@ tccq_c_rw_accessor <- function(mode) {
   )
 }
 
-tccq_c_emit_domain_length <- function(domain, sym) {
+tccq_c_emit_shape_domain_length <- function(shape_domain, sym, module, len_name, preferred_names = NULL) {
+  if (is.null(shape_domain) || is.null(module$shape_facts)) {
+    return(NULL)
+  }
+
+  witnesses <- tccq_shape_domain_witness_names(module$shape_facts, shape_domain)
+  if (!is.null(preferred_names)) {
+    preferred_names <- unique(preferred_names)
+    witnesses <- intersect(witnesses, preferred_names)
+    if (!length(preferred_names) || !setequal(witnesses, preferred_names)) {
+      return(NULL)
+    }
+  }
+  witnesses <- witnesses[witnesses %in% names(sym)]
+  if (!length(witnesses)) {
+    return(NULL)
+  }
+
+  first <- witnesses[[1L]]
+  lines <- paste0("R_xlen_t ", len_name, " = ", sym[[first]]$len, ";")
+
+  if (length(witnesses) > 1L) {
+    for (nm in witnesses[-1L]) {
+      lines <- c(
+        lines,
+        paste0("if (", sym[[nm]]$len, " != ", len_name, ") {"),
+        "  Rf_error(\"vector length mismatch in shared shape domain\");",
+        "}"
+      )
+    }
+  }
+
+  lines
+}
+
+tccq_c_emit_domain_length <- function(domain, sym, module = NULL, len_name = "n_out") {
   if (!identical(domain$tag, "domain")) {
     tccq_abort("expected domain node for loop length emission")
   }
 
+  preferred <- domain$vars %||% character()
+  from_shape <- tccq_c_emit_shape_domain_length(domain$shape_domain %||% NULL, sym, module, len_name, preferred_names = preferred)
+  if (!is.null(from_shape)) {
+    return(from_shape)
+  }
+
   vec_vars <- domain$vars %||% character()
   if (!length(vec_vars)) {
-    return("R_xlen_t n_out = 1;")
+    return(paste0("R_xlen_t ", len_name, " = 1;"))
   }
 
   first <- vec_vars[[1L]]
-  lines <- paste0("R_xlen_t n_out = ", sym[[first]]$len, ";")
+  lines <- paste0("R_xlen_t ", len_name, " = ", sym[[first]]$len, ";")
 
   if (length(vec_vars) > 1L) {
     for (nm in vec_vars[-1L]) {
       lines <- c(
         lines,
-        paste0("if (", sym[[nm]]$len, " != n_out) {"),
+        paste0("if (", sym[[nm]]$len, " != ", len_name, ") {"),
         paste0("  Rf_error(\"vector length mismatch for %s\", ", tccq_c_string(nm), ");"),
         "}"
       )
@@ -233,10 +274,21 @@ tccq_c_emit_domain_length <- function(domain, sym) {
   lines
 }
 
-tccq_c_emit_common_length_named <- function(expr, sym, len_name) {
+tccq_c_emit_common_length_named <- function(expr, sym, len_name, module = NULL) {
   emit_length <- function(node, target) {
     if (is.null(node$type) || node$type$rank == 0L) {
       return(paste0("R_xlen_t ", target, " = 1;"))
+    }
+
+    from_shape <- tccq_c_emit_shape_domain_length(
+      tccq_ir_shape_domain(node),
+      sym,
+      module,
+      target,
+      preferred_names = tccq_ir_vector_vars(node)
+    )
+    if (!is.null(from_shape) && !node$tag %in% c("slice_range", "view1")) {
+      return(from_shape)
     }
 
     switch(
@@ -295,7 +347,7 @@ tccq_c_emit_common_length_named <- function(expr, sym, len_name) {
 }
 
 tccq_c_emit_common_length <- function(module, sym, expr) {
-  tccq_c_emit_common_length_named(expr, sym, "n_out")
+  tccq_c_emit_common_length_named(expr, sym, "n_out", module = module)
 }
 
 tccq_c_expr_length <- function(expr, sym) {
@@ -517,7 +569,7 @@ tccq_c_emit_kernel_materialize <- function(kernel, sym, module) {
   elem <- tccq_c_emit_expr(expr, sym, idx = "i")
 
   c(
-    tccq_c_emit_common_length_named(expr, sym, "n_out"),
+    tccq_c_emit_common_length_named(expr, sym, "n_out", module = module),
     paste0("SEXP out = PROTECT(Rf_allocVector(", out_sexp, ", n_out));"),
     "++tccq_nprotect;",
     paste0(tccq_c_scalar_type_for_mode(mode), " *p_out = ", tccq_c_rw_accessor(mode), "(out);"),
@@ -539,7 +591,7 @@ tccq_c_emit_kernel_fold <- function(kernel, sym, module) {
     elem <- tccq_c_emit_slice_range_elem(expr, sym, idx = "i", prefix = "fold")
     loop_len <- "n_fold"
   } else {
-    setup <- tccq_c_emit_common_length_named(expr, sym, "n_out")
+    setup <- tccq_c_emit_common_length_named(expr, sym, "n_out", module = module)
     elem <- tccq_c_emit_expr(expr, sym, idx = "i")
     loop_len <- "n_out"
   }
@@ -784,7 +836,7 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
     return(tccq_c_emit_bind_slice_range(stmt, sym, module))
   }
 
-  len_lines <- tccq_c_emit_common_length_named(stmt$value, sym, s$len)
+  len_lines <- tccq_c_emit_common_length_named(stmt$value, sym, s$len, module = module)
   elem <- tccq_c_emit_expr(stmt$value, sym, idx = "i")
 
   c(

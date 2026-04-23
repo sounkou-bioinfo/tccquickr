@@ -70,8 +70,10 @@ nested_view_bind_fn <- function(x) {
 nested_view_bind_mod <- tccq_compile(nested_view_bind_fn, mode = "ir")
 expect_equal(nested_view_bind_mod$storage_plan$bindings$y$kind, "view")
 expect_identical(nested_view_bind_mod$storage_plan$bindings$y$source, "x")
+expect_equal(nested_view_bind_mod$shape_facts$domains[[nested_view_bind_mod$shape_facts$by_name$y]]$kind, "slice")
 expect_equal(nested_view_bind_mod$storage_plan$bindings$z$kind, "view")
 expect_identical(nested_view_bind_mod$storage_plan$bindings$z$source, "x")
+expect_identical(nested_view_bind_mod$shape_facts$domains[[nested_view_bind_mod$shape_facts$by_name$z]]$root_name, "x")
 expect_equal(tccq_compile(nested_view_bind_fn)(c(1, 2, 3, 4, 5, 6)), c(3, 4))
 
 alias_view_bind_fn <- function(x) {

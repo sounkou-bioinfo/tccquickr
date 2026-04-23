@@ -47,6 +47,8 @@ Current entry points:
 Responsibilities:
 
 - validate IR shape and effects
+- normalize view/index access chains before C emission
+- derive explicit shape/domain facts for vector expressions and locals
 - convert expressions into explicit kernel IR
 - lower recognized reducers into explicit fold form
 - fuse legal producer/fold patterns
@@ -58,13 +60,14 @@ Current default pass chain:
 1. `validate_ir`
 2. `effects`
 3. `index_normalize`
-4. `kernelize`
-5. `fusion`
-6. `boundary_collect`
-7. `boundary_validate`
-8. `storage_plan`
-9. `allocation_plan`
-10. `protect_plan`
+4. `shape_domains`
+5. `kernelize`
+6. `fusion`
+7. `boundary_collect`
+8. `boundary_validate`
+9. `storage_plan`
+10. `allocation_plan`
+11. `protect_plan`
 
 Important current IR concepts:
 
@@ -215,11 +218,11 @@ Implemented now:
   `any(x > 0)` and `all((x > 0) & (y > 0))`
 - [x] limited `Reduce(FUN, x)` lowering for recognized reducer operators
 - [x] cross-backend generated validation against direct R evaluation
+- [x] explicit view/index normalization before C emission
+- [x] first shape/domain facts for zip/fusion/storage reasoning
 
 Still open:
 
-- [ ] explicit view/index normalization before C emission
-- [ ] shape/domain equivalence facts for zip/fusion/reuse legality
 - [ ] richer semantic allocation/reuse planning before C emission
 - [ ] clearer middle-end ownership of boundary argument materialization
 - [ ] axis-wise reductions and matrix-aware lowering
@@ -233,20 +236,19 @@ Current important limits:
 - allocation planning exists but is still conservative
 - boundary argument materialization should become a clearer middle-end decision
 - view/index normalization is still much smaller than SAC-style loop metadata
-- shape/domain equivalence facts are still largely implicit rather than planned
-  explicitly
+- shape/domain facts exist now, but they are still first-pass vector-only facts
+  rather than a richer symbolic shape system
 - axis reductions / full `apply`-family semantics still require rank-aware IR
 - limited `Reduce(FUN, x)` lowering is not yet a claim of full base-R
   `Reduce()` compatibility
 
 ## Highest-value next steps
 
-1. add an explicit view/index normalization pass before C emission
-2. derive shape/domain equivalence facts that can drive zip/fusion/reuse legality
-3. enrich allocation/materialization/reuse planning so codegen consumes a clearer plan
-4. make boundary argument materialization more explicitly middle-end owned
-5. add rank-aware axis-reduction IR before broader `apply`-family lowering
-6. grow validation from generated cases into a larger maintained corpus
+1. enrich allocation/materialization/reuse planning so codegen consumes a clearer plan
+2. make boundary argument materialization more explicitly middle-end owned
+3. add rank-aware axis-reduction IR before broader `apply`-family lowering
+4. grow validation from generated cases into a larger maintained corpus
+5. deepen shape/domain facts from first-pass vector facts toward richer reuse legality
 
 ## Validation strategy
 

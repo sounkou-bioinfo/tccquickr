@@ -194,18 +194,10 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   R_xlen_t n_y = XLENGTH(arg_y);
   const double *p_y = REAL_RO(arg_y);
   int tccq_nprotect = 0;
-  R_xlen_t n_out_lhs_lhs_x = n_x;
-  R_xlen_t n_out_lhs_lhs = n_out_lhs_lhs_x;
-  R_xlen_t n_out_lhs_rhs = n_y;
-  if (n_out_lhs_lhs != n_out_lhs_rhs) {
-    Rf_error("vector length mismatch in composite expression");
+  R_xlen_t n_out = n_y;
+  if (n_x != n_out) {
+    Rf_error("vector length mismatch in shared shape domain");
   }
-  R_xlen_t n_out_lhs = n_out_lhs_lhs;
-  R_xlen_t n_out_rhs = n_y;
-  if (n_out_lhs != n_out_rhs) {
-    Rf_error("vector length mismatch in composite expression");
-  }
-  R_xlen_t n_out = n_out_lhs;
   double acc = 0.0;
   for (R_xlen_t i = 0; i < n_out; ++i) {
     double v = (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
@@ -331,18 +323,10 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   R_xlen_t n_y = XLENGTH(arg_y);
   const double *p_y = REAL_RO(arg_y);
   int tccq_nprotect = 0;
-  R_xlen_t n_out_lhs_x = n_x;
-  R_xlen_t n_out_lhs = n_out_lhs_x;
-  R_xlen_t n_out_rhs_lhs = n_y;
-  R_xlen_t n_out_rhs_rhs = n_y;
-  if (n_out_rhs_lhs != n_out_rhs_rhs) {
-    Rf_error("vector length mismatch in composite expression");
+  R_xlen_t n_out = n_x;
+  if (n_y != n_out) {
+    Rf_error("vector length mismatch in shared shape domain");
   }
-  R_xlen_t n_out_rhs = n_out_rhs_lhs;
-  if (n_out_lhs != n_out_rhs) {
-    Rf_error("vector length mismatch in composite expression");
-  }
-  R_xlen_t n_out = n_out_lhs;
   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
   ++tccq_nprotect;
   double *p_out = REAL(out);
@@ -762,9 +746,10 @@ than as a single direct “R expression to C string” step.
 
 - **frontend**: parse `declare(type(...))` and lower a small R subset
   into typed IR
-- **middle-end**: validate IR, infer effects, lower reducers, kernelize,
-  fuse, handle explicit boundaries, and derive conservative
-  storage/protection plans
+- **middle-end**: validate IR, infer effects, normalize access paths,
+  derive explicit shape/domain facts, lower reducers, kernelize, fuse,
+  handle explicit boundaries, and derive conservative storage/protection
+  plans
 - **target**: emit C through the R C API
 - **backend**: either return source or compile the emitted C through
   TinyCC or `R CMD SHLIB`
@@ -785,9 +770,10 @@ explicit in IR instead of hiding them inside the C emitter.
 
 ### Fusion is an explicit rewrite
 
-Before fusion, `kernelize` represents the reduction as a fold over a
-materialized producer. The fusion pass rewrites that to a fold over the
-producer directly.
+Before fusion, the middle-end now makes access chains and shape/domain
+facts explicit, then `kernelize` represents the reduction as a fold over
+a materialized producer. The fusion pass rewrites that to a fold over
+the producer directly.
 
 ``` r
 mod0 <- tccquickr:::tccq_frontend(sum_kernel)
@@ -799,6 +785,7 @@ before_fusion <- tccquickr:::tccq_run_passes(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
     tccquickr:::tccq_pass_index_normalize(),
+    tccquickr:::tccq_pass_shape_domains(),
     tccquickr:::tccq_pass_kernelize()
   )
 )
@@ -809,6 +796,7 @@ after_fusion <- tccquickr:::tccq_run_passes(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
     tccquickr:::tccq_pass_index_normalize(),
+    tccquickr:::tccq_pass_shape_domains(),
     tccquickr:::tccq_pass_kernelize(),
     tccquickr:::tccq_pass_fusion()
   )
