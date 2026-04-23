@@ -76,9 +76,15 @@ install.packages(
 )
 ```
 
-## Fresh `tccq` scaffold
+## Current `tccq` compiler
 
-The fresh path is deliberately small in the first milestones.
+`tccq_*` is the current compiler architecture.
+
+The main design rule is that the compiler knows more while it is still
+working with typed R-level IR than after it has emitted C. So legality,
+alias/view semantics, mutation barriers, fallback boundaries, and
+materialization choices should live in the frontend or middle-end
+whenever possible, with the C target mostly consuming those decisions.
 
 ### Current status
 
@@ -91,35 +97,39 @@ Implemented now:
 - [x] unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and
   `sqrt()`
 - [x] `sum(...)` as a fused reduction
-- [x] explicit kernel IR nodes for `producer`, `materialize`, and `fold`
-- [x] statement blocks with local bindings
+- [x] explicit kernel IR nodes for `domain`, `producer`, `materialize`,
+  `fold`, and `scalar_kernel`
+- [x] statement/program IR for local bindings and writes
+- [x] explicit contiguous view IR via `view1`
 - [x] scalar indexed reads `x[i]`
 - [x] contiguous range slices `x[lo:hi]`
 - [x] local indexed writes `y[i] <- v` and local range writes
   `y[lo:hi] <- v`
+- [x] explicit fallback boundary nodes in `fallback = "auto"`
+- [x] conservative storage, allocation, and protect planning passes
+- [x] source-only and TinyCC-backed backends
 
 Planned next:
 
-- [ ] explicit slice/view IR instead of treating slices only as a
-  special-case expression form
-- [ ] richer legality analysis around mutation barriers and
-  materialization points
-- [ ] explicit allocation planning and reuse decisions in the middle-end
+- [ ] richer semantic allocation/reuse planning before C emission
+- [ ] clearer middle-end ownership of boundary argument materialization
+- [ ] more systematic view/index normalization before target codegen
 - [ ] broader indexing forms such as gather/scatter/filter
-- [ ] additional targets/backends beyond the current C + R API emission
-  path
+- [ ] additional C backends beyond the current source-only and
+  TinyCC-backed path
 
-### Intended architecture split
+### Current architecture split
 
 - [x] frontend: parse `declare(type(...))` and lower a small R subset
-- [x] middle-end: validate and kernelize
+- [x] middle-end: validate IR, infer effects, kernelize, fuse, handle
+  boundaries, and derive conservative plans
 - [x] target: emit C using the R C API
 - [x] backend: either return source or compile through TinyCC via
   `Rtinycc`
-- [ ] middle-end: explicit fusion and allocation planning beyond the
-  current basic passes
-- [ ] backend/target expansion beyond the current source-only and
-  TinyCC-backed path
+- [ ] middle-end: richer plan-driven allocation/reuse and view/index
+  normalization
+- [ ] backend expansion toward other C compilation/loading paths such as
+  system compiler or `callme`-style workflows
 
 ### Kernel IR concepts
 
@@ -137,7 +147,7 @@ code emission” toward “fusion represented in IR”.
 
 ### Assignment and slicing rules
 
-The fresh compiler treats these forms differently:
+The current compiler treats these forms differently:
 
 - `a <- expr` is a local binding, not mutation
 - `x[i]` is an indexed read with checked 1-based indexing
@@ -637,7 +647,7 @@ frontend and backend concerns.
 
 [`SAC`](https://sac-home.org/about%3Asac) and the
 [`sac2c`](https://gitlab.sac-home.org/sac-group/sac2c) compiler are the
-main optimization inspiration for the fresh path here:
+main optimization inspiration for the current path here:
 
 - explicit array/kernel IR
 - fusion as an IR rewrite rather than a codegen accident
