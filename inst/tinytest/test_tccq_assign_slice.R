@@ -6,24 +6,26 @@ assignment_block_fn <- function(x) {
   sum(y)
 }
 
-assignment_block_src <- tccq_compile(assignment_block_fn, mode = "code")
-expect_true(grepl("loc_y", assignment_block_src, fixed = TRUE))
+assignment_block_mod <- tccq_compile(assignment_block_fn, mode = "ir")
+expect_equal(assignment_block_mod$storage_plan$bindings$y$kind, "owned")
+expect_identical(assignment_block_mod$storage_plan$result$strategy, "box_scalar")
 
 scalar_index_read_fn <- function(x, i) {
   declare(type(x = double(NA)), type(i = integer()))
   x[i] + 1
 }
 
-scalar_index_read_src <- tccq_compile(scalar_index_read_fn, mode = "code")
-expect_true(grepl("tccq_checked_index1", scalar_index_read_src, fixed = TRUE))
+compiled_index_read <- tccq_compile(scalar_index_read_fn)
+expect_equal(compiled_index_read(c(1, 2, 3), 2L), 3)
 
 range_slice_fn <- function(x, lo, hi) {
   declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
   x[lo:hi]
 }
 
-range_slice_src <- tccq_compile(range_slice_fn, mode = "code")
-expect_true(grepl("Rf_allocVector", range_slice_src, fixed = TRUE))
+range_slice_mod <- tccq_compile(range_slice_fn, mode = "ir")
+expect_identical(range_slice_mod$storage_plan$result$strategy, "materialize_view")
+expect_equal(tccq_compile(range_slice_fn)(c(1, 2, 3, 4), 2L, 4L), c(2, 3, 4))
 
 indexed_assignment_fn <- function(x, i, v) {
   declare(type(x = double(NA)), type(i = integer()), type(v = double()))
@@ -32,9 +34,10 @@ indexed_assignment_fn <- function(x, i, v) {
   y
 }
 
-indexed_assignment_src <- tccq_compile(indexed_assignment_fn, mode = "code")
-expect_true(grepl("loc_y", indexed_assignment_src, fixed = TRUE))
-expect_true(grepl("p_y\\[j_y\\]", indexed_assignment_src))
+indexed_assignment_mod <- tccq_compile(indexed_assignment_fn, mode = "ir")
+expect_equal(indexed_assignment_mod$storage_plan$bindings$y$kind, "alias")
+expect_true(isTRUE(indexed_assignment_mod$storage_plan$bindings$y$materialize_on_write))
+expect_identical(indexed_assignment_mod$storage_plan$result$strategy, "copy_on_write_return_local")
 
 range_assignment_fn <- function(x, v) {
   declare(type(x = double(NA)), type(v = double()))
@@ -43,8 +46,9 @@ range_assignment_fn <- function(x, v) {
   y
 }
 
-range_assignment_src <- tccq_compile(range_assignment_fn, mode = "code")
-expect_true(grepl("n_rng_y", range_assignment_src, fixed = TRUE))
+range_assignment_mod <- tccq_compile(range_assignment_fn, mode = "ir")
+expect_equal(range_assignment_mod$storage_plan$bindings$y$kind, "alias")
+expect_true(isTRUE(range_assignment_mod$storage_plan$bindings$y$materialize_on_write))
 
 direct_formal_mutation_fn <- function(x, v) {
   declare(type(x = double(NA)), type(v = double()))

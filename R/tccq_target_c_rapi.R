@@ -240,8 +240,12 @@ tccq_c_expr_length <- function(expr, sym) {
   tccq_abort("cannot infer inline vector length for expression")
 }
 
+tccq_c_storage_binding <- function(module, name) {
+  module$storage_plan$bindings[[name]] %||% list(kind = "owned")
+}
+
 tccq_c_storage_kind <- function(module, name) {
-  module$storage_plan$aliases[[name]]$kind %||% "owned"
+  tccq_c_storage_binding(module, name)$kind %||% "owned"
 }
 
 tccq_c_owned_flag <- function(sym_entry) {

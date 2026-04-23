@@ -43,8 +43,6 @@ tccq_default_passes <- function() {
     tccq_pass_kernelize(),
     tccq_pass_fusion(),
     tccq_pass_boundary_collect(),
-    tccq_pass_view_normalize(),
-    tccq_pass_boundary_materialize(),
     tccq_pass_boundary_validate(),
     tccq_pass_storage_plan(),
     tccq_pass_allocation_plan(),
@@ -159,32 +157,10 @@ tccq_pass_boundary_collect <- function() {
   )
 }
 
-tccq_pass_view_normalize <- function() {
-  tccq_pass(
-    name = "view_normalize",
-    requires = "boundaries_collected",
-    provides = "views_normalized",
-    run = function(module, facts) {
-      module
-    }
-  )
-}
-
-tccq_pass_boundary_materialize <- function() {
-  tccq_pass(
-    name = "boundary_materialize",
-    requires = "views_normalized",
-    provides = "boundaries_materialized",
-    run = function(module, facts) {
-      module
-    }
-  )
-}
-
 tccq_pass_boundary_validate <- function() {
   tccq_pass(
     name = "boundary_validate",
-    requires = "boundaries_materialized",
+    requires = "boundaries_collected",
     provides = "legality_checked",
     run = function(module, facts) {
       boundaries <- tccq_boundary_nodes(module$kernel)

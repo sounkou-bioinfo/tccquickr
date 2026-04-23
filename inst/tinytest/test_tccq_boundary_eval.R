@@ -10,8 +10,8 @@ expect_equal(fallback_scalar_ir$ir$result$tag, "boundary_call")
 expect_identical(fallback_scalar_ir$ir$result$api, "r_eval")
 expect_identical(fallback_scalar_ir$ir$result$type$mode, "double")
 
-fallback_scalar_src <- tccq_compile(fallback_scalar_fn, mode = "code", fallback = "auto")
-expect_true(grepl("Rf_eval", fallback_scalar_src, fixed = TRUE))
+expect_identical(fallback_scalar_ir$boundary_context$headers, character())
+expect_identical(fallback_scalar_ir$boundary_context$libraries, character())
 expect_identical(tccq_compile(fallback_scalar_fn, fallback = "auto")(42), 42)
 
 fallback_vector_fn <- function(x) {

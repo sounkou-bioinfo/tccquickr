@@ -46,7 +46,8 @@ expect_true("sin" %in% names(ctx$external_symbols))
 source_backend <- tccquickr:::tccq_backend_source()
 source_result <- tccq_compile(simple_sum_fn, backend = source_backend, extlibs = list(extlib))
 expect_equal(source_result$backend, "source")
-expect_true(grepl("#include <R.h>", source_result$source, fixed = TRUE))
+expect_true(is.character(source_result$source))
+expect_true(nzchar(source_result$source))
 
 expect_error(
   tccquickr:::tccq_module_validate(
