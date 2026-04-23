@@ -38,7 +38,7 @@ A compiled callable, C source string, or module IR depending on mode.
 }
 \description{
 This is the package's current compiler path. The current milestone supports declared
-scalar and vector arithmetic, fused \code{sum()} reductions, local bindings,
+scalar and vector arithmetic, generic fold-style reducers, local bindings,
 indexed reads, contiguous slices, and local indexed/range writes.
 }
 \details{

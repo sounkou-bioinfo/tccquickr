@@ -236,12 +236,12 @@ tccq_shlib_makevars <- function(ctx = list()) {
 
   cppflags <- tccq_unique(c(
     option_flags$cppflags,
-    paste0("-I", include_paths)
+    if (length(include_paths)) paste0("-I", include_paths) else character()
   ))
   libs <- tccq_unique(c(
     option_flags$libs,
-    paste0("-L", library_paths),
-    vapply(libraries, tccq_shlib_library_flag, character(1))
+    if (length(library_paths)) paste0("-L", library_paths) else character(),
+    if (length(libraries)) vapply(libraries, tccq_shlib_library_flag, character(1)) else character()
   ))
   cflags <- tccq_unique(c("-fPIC", option_flags$cflags))
 

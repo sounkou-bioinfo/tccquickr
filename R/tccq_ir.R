@@ -28,8 +28,8 @@ tccq_ir_call1 <- function(fun, x, type = x$type) {
   tccq_node("call1", fun = fun, x = x, type = type)
 }
 
-tccq_ir_reduce <- function(op, x, type = tccq_type_scalar("double")) {
-  tccq_node("reduce", op = op, x = x, type = type)
+tccq_ir_reduce <- function(op, x, type = tccq_type_scalar("double"), surface = op) {
+  tccq_node("reduce", op = op, x = x, surface = surface, type = type)
 }
 
 tccq_ir_boundary <- function(kind, reason, input, type, effect = "boundary") {

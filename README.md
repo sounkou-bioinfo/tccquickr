@@ -106,9 +106,11 @@ Implemented now:
 - [x] `double`, `integer`, and `logical` typing
 - [x] scalar arithmetic
 - [x] vector elementwise arithmetic
+- [x] comparison and logical vector expressions
 - [x] unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and
   `sqrt()`
-- [x] `sum(...)` as a fused reduction
+- [x] generic fold-style reducers: `sum`, `prod`, `min`, `max`, `mean`,
+  `any`, and `all`
 - [x] explicit kernel IR nodes for `domain`, `producer`, `materialize`,
   `fold`, and `scalar_kernel`
 - [x] statement/program IR for local bindings and writes
@@ -117,27 +119,31 @@ Implemented now:
 - [x] contiguous range slices `x[lo:hi]`
 - [x] local indexed writes `y[i] <- v` and local range writes
   `y[lo:hi] <- v`
+- [x] limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
 - [x] explicit fallback boundary nodes in `fallback = "auto"`
 - [x] conservative storage, allocation, and protect planning passes
 - [x] compile-time backend/target capability checks for context fields
   and boundary APIs
 - [x] source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`)
   backends
+- [x] generated differential validation over programmatically
+  constructed cases
 
 Planned next:
 
 - [ ] richer semantic allocation/reuse planning before C emission
 - [ ] clearer middle-end ownership of boundary argument materialization
 - [ ] more systematic view/index normalization before target codegen
+- [ ] axis-wise reductions and matrix-aware lowering
 - [ ] broader indexing forms such as gather/scatter/filter
-- [ ] additional C backends beyond the current source-only,
-  TinyCC-backed, and shared-library path
+- [ ] larger harvested validation corpus in addition to generated tests
 
 ### Current architecture split
 
 - [x] frontend: parse `declare(type(...))` and lower a small R subset
-- [x] middle-end: validate IR, infer effects, kernelize, fuse, handle
-  boundaries, and derive conservative plans
+- [x] middle-end: validate IR, infer effects, kernelize, lower
+  recognized reducers, fuse, handle boundaries, and derive conservative
+  plans
 - [x] target: emit C using the R C API
 - [x] backend: return source or compile emitted C through TinyCC or
   `R CMD SHLIB`
@@ -145,6 +151,44 @@ Planned next:
   normalization
 - [ ] backend expansion toward other C compilation/loading paths such as
   additional system compiler or `callme`-style workflows
+
+### Reducer and idiom checklist
+
+Implemented now:
+
+- [x] direct reducers `sum`, `prod`, `min`, `max`, `mean`, `any`, `all`
+- [x] vector comparisons feeding reducers, e.g. `any(x > 0)`
+- [x] vector logical composition feeding reducers,
+  e.g. `all((x > 0) & (y > 0))`
+- [x] reducer lowering through explicit `fold` kernels rather than
+  `sum`-only special casing
+- [x] limited `Reduce(FUN, x)` lowering for recognized reducer operators
+  such as `+`, `*`, `&`, and `|`
+
+Still open:
+
+- [ ] full base-R `Reduce()` surface compatibility
+- [ ] axis-wise reducers such as `rowSums()` / `colSums()`
+- [ ] broader `apply`-family lowering on top of rank-aware IR
+
+### Validation checklist
+
+Implemented now:
+
+- [x] explicit hand-written runtime tests for reducers, slices, views,
+  boundaries, and backends
+- [x] generated differential tests comparing compiled `tccq` code
+  against direct R evaluation
+- [x] cross-backend checks between TinyCC and `R CMD SHLIB`
+
+Still open:
+
+- [ ] larger maintained validation corpus harvested from real
+  array-oriented R code
+- [ ] pass-by-pass translation-validation style checks for more
+  middle-end rewrites
+- [ ] broader edge-case matrices around exact reducer warning/NA
+  behavior
 
 ### Backend selection
 
@@ -337,12 +381,35 @@ tccq_c_block(assign_src)
 #ifndef LOGICAL_RO
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
+#ifndef TCCQ_UNUSED
+# if defined(__GNUC__)
+#  define TCCQ_UNUSED __attribute__((unused))
+# else
+#  define TCCQ_UNUSED
+# endif
+#endif
 
-static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_not(int x) {
+  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
+}
+
+static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
+  if (a == 0 || b == 0) return 0;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
+  if (a == 1 || b == 1) return 1;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 0;
 }
 
 SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
@@ -426,12 +493,35 @@ tccq_c_block(slice_sum_src)
 #ifndef LOGICAL_RO
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
+#ifndef TCCQ_UNUSED
+# if defined(__GNUC__)
+#  define TCCQ_UNUSED __attribute__((unused))
+# else
+#  define TCCQ_UNUSED
+# endif
+#endif
 
-static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_not(int x) {
+  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
+}
+
+static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
+  if (a == 0 || b == 0) return 0;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
+  if (a == 1 || b == 1) return 1;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 0;
 }
 
 SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
@@ -466,11 +556,14 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
   R_xlen_t n_out = n_y;
   double acc = 0.0;
   for (R_xlen_t i = 0; i < n_out; ++i) {
-    acc += (double)(p_y[i]);
+    double v = (double)(p_y[i]);
+    if (R_IsNA(v)) { acc = NA_REAL; break; }
+    if (R_IsNaN(v)) { acc = R_NaN; break; }
+    acc += v;
   }
   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
   ++tccq_nprotect;
-  REAL(out)[0] = acc;
+  REAL(out)[0] = (double) (acc);
   UNPROTECT(tccq_nprotect);
   return out;
 }
@@ -479,6 +572,38 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
 The slice bind now lowers to an explicit `view1` node. In the current
 target, that means the compiler can bind a pointer/length view and
 reduce over it without allocating a copied slice first.
+
+### Example: generic reducers and reducer-style idioms
+
+``` r
+logic_reduce_kernel <- function(x, y) {
+  declare(type(x = double(NA), y = double(NA)))
+  all((x > 0) & (y > 0))
+}
+
+reduce_kernel <- function(x) {
+  declare(type(x = double(NA)))
+  Reduce(`+`, x)
+}
+
+compiled_logic_reduce <- tccq_compile(logic_reduce_kernel)
+compiled_reduce <- tccq_compile(reduce_kernel)
+
+list(
+  logic_reduce = compiled_logic_reduce(c(1, 2, 3), c(4, 5, 6)),
+  reduce_sum = compiled_reduce(c(1, 2, 3, 4))
+)
+#> $logic_reduce
+#> [1] TRUE
+#> 
+#> $reduce_sum
+#> [1] 10
+```
+
+This still does not claim full base-R `Reduce()` or `apply`-family
+coverage, but it does mean the current compiler can translate a wider
+set of idiomatic array-oriented reduction code than the earlier
+`sum()`-only milestone.
 
 ### Example: direct formal mutation is rejected
 
@@ -518,12 +643,35 @@ tccq_c_block(sum_src)
 #ifndef LOGICAL_RO
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
+#ifndef TCCQ_UNUSED
+# if defined(__GNUC__)
+#  define TCCQ_UNUSED __attribute__((unused))
+# else
+#  define TCCQ_UNUSED
+# endif
+#endif
 
-static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_not(int x) {
+  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
+}
+
+static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
+  if (a == 0 || b == 0) return 0;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
+  if (a == 1 || b == 1) return 1;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 0;
 }
 
 SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
@@ -538,17 +686,28 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   R_xlen_t n_y = XLENGTH(arg_y);
   const double *p_y = REAL_RO(arg_y);
   int tccq_nprotect = 0;
-  R_xlen_t n_out = n_x;
-  if (n_y != n_out) {
-    Rf_error("vector length mismatch for %s", "y");
+  R_xlen_t n_out_lhs_lhs_x = n_x;
+  R_xlen_t n_out_lhs_lhs = n_out_lhs_lhs_x;
+  R_xlen_t n_out_lhs_rhs = n_y;
+  if (n_out_lhs_lhs != n_out_lhs_rhs) {
+    Rf_error("vector length mismatch in composite expression");
   }
+  R_xlen_t n_out_lhs = n_out_lhs_lhs;
+  R_xlen_t n_out_rhs = n_y;
+  if (n_out_lhs != n_out_rhs) {
+    Rf_error("vector length mismatch in composite expression");
+  }
+  R_xlen_t n_out = n_out_lhs;
   double acc = 0.0;
   for (R_xlen_t i = 0; i < n_out; ++i) {
-    acc += (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
+    double v = (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
+    if (R_IsNA(v)) { acc = NA_REAL; break; }
+    if (R_IsNaN(v)) { acc = R_NaN; break; }
+    acc += v;
   }
   SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));
   ++tccq_nprotect;
-  REAL(out)[0] = acc;
+  REAL(out)[0] = (double) (acc);
   UNPROTECT(tccq_nprotect);
   return out;
 }
@@ -579,12 +738,35 @@ tccq_c_block(vec_src)
 #ifndef LOGICAL_RO
 #define LOGICAL_RO(x) LOGICAL(x)
 #endif
+#ifndef TCCQ_UNUSED
+# if defined(__GNUC__)
+#  define TCCQ_UNUSED __attribute__((unused))
+# else
+#  define TCCQ_UNUSED
+# endif
+#endif
 
-static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
+static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {
   if (idx < 1 || idx > len) {
     Rf_error("index out of bounds for %s", name);
   }
   return idx - 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_not(int x) {
+  return x == NA_LOGICAL ? NA_LOGICAL : (!x);
+}
+
+static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
+  if (a == 0 || b == 0) return 0;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 1;
+}
+
+static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {
+  if (a == 1 || b == 1) return 1;
+  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
+  return 0;
 }
 
 SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
@@ -599,10 +781,18 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   R_xlen_t n_y = XLENGTH(arg_y);
   const double *p_y = REAL_RO(arg_y);
   int tccq_nprotect = 0;
-  R_xlen_t n_out = n_x;
-  if (n_y != n_out) {
-    Rf_error("vector length mismatch for %s", "y");
+  R_xlen_t n_out_lhs_x = n_x;
+  R_xlen_t n_out_lhs = n_out_lhs_x;
+  R_xlen_t n_out_rhs_lhs = n_y;
+  R_xlen_t n_out_rhs_rhs = n_y;
+  if (n_out_rhs_lhs != n_out_rhs_rhs) {
+    Rf_error("vector length mismatch in composite expression");
   }
+  R_xlen_t n_out_rhs = n_out_rhs_lhs;
+  if (n_out_lhs != n_out_rhs) {
+    Rf_error("vector length mismatch in composite expression");
+  }
+  R_xlen_t n_out = n_out_lhs;
   SEXP out = PROTECT(Rf_allocVector(REALSXP, n_out));
   ++tccq_nprotect;
   double *p_out = REAL(out);

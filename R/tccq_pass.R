@@ -105,7 +105,8 @@ tccq_pass_kernelize <- function() {
             domain = domain,
             elem = tccq_ir_materialize(producer = producer, type = expr$x$type),
             init = 0.0,
-            type = expr$type
+            type = expr$type,
+            surface = expr$surface %||% expr$op
           )
         } else if (expr$type$rank > 0L) {
           domain <- tccq_kernel_domain_from_expr(expr)

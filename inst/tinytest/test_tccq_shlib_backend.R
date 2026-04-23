@@ -29,6 +29,9 @@ expect_identical(shlib_backend$capabilities$system_compiler, TRUE)
 expect_identical(shlib_backend$capabilities$cli, TRUE)
 expect_identical(shlib_backend$capabilities$boundary_apis, "r_eval")
 
+mk_empty <- tccquickr:::tccq_shlib_makevars(list())
+expect_identical(mk_empty, "PKG_CFLAGS=-fPIC")
+
 mk <- tccquickr:::tccq_shlib_makevars(list(
   include_paths = c("", "/opt/include"),
   library_paths = c("", "/opt/lib"),

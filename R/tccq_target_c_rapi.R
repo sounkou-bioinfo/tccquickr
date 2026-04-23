@@ -52,12 +52,35 @@ tccq_c_emit_module <- function(module, ctx = list()) {
     "#ifndef LOGICAL_RO",
     "#define LOGICAL_RO(x) LOGICAL(x)",
     "#endif",
+    "#ifndef TCCQ_UNUSED",
+    "# if defined(__GNUC__)",
+    "#  define TCCQ_UNUSED __attribute__((unused))",
+    "# else",
+    "#  define TCCQ_UNUSED",
+    "# endif",
+    "#endif",
     "",
-    "static R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {",
+    "static TCCQ_UNUSED R_xlen_t tccq_checked_index1(R_xlen_t idx, R_xlen_t len, const char *name) {",
     "  if (idx < 1 || idx > len) {",
     "    Rf_error(\"index out of bounds for %s\", name);",
     "  }",
     "  return idx - 1;",
+    "}",
+    "",
+    "static TCCQ_UNUSED int tccq_lgl_not(int x) {",
+    "  return x == NA_LOGICAL ? NA_LOGICAL : (!x);",
+    "}",
+    "",
+    "static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {",
+    "  if (a == 0 || b == 0) return 0;",
+    "  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;",
+    "  return 1;",
+    "}",
+    "",
+    "static TCCQ_UNUSED int tccq_lgl_or(int a, int b) {",
+    "  if (a == 1 || b == 1) return 1;",
+    "  if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;",
+    "  return 0;",
     "}",
     "",
     paste0("SEXP ", module$entry, "(", params, ") {"),
@@ -201,31 +224,64 @@ tccq_c_emit_domain_length <- function(domain, sym) {
 }
 
 tccq_c_emit_common_length_named <- function(expr, sym, len_name) {
-  if (expr$tag %in% c("slice_range", "view1")) {
-    setup <- tccq_c_emit_slice_range_indices(expr, sym, prefix = len_name)
-    return(c(setup, paste0("R_xlen_t ", len_name, " = n_", len_name, ";")))
-  }
-
-  vec_vars <- tccq_ir_vector_vars(expr)
-  if (!length(vec_vars)) {
-    tccq_abort("vector expression has no vector inputs; cannot infer length")
-  }
-
-  first <- vec_vars[[1L]]
-  lines <- paste0("R_xlen_t ", len_name, " = ", sym[[first]]$len, ";")
-
-  if (length(vec_vars) > 1L) {
-    for (nm in vec_vars[-1L]) {
-      lines <- c(
-        lines,
-        paste0("if (", sym[[nm]]$len, " != ", len_name, ") {"),
-        paste0("  Rf_error(\"vector length mismatch for %s\", ", tccq_c_string(nm), ");"),
-        "}"
-      )
+  emit_length <- function(node, target) {
+    if (is.null(node$type) || node$type$rank == 0L) {
+      return(paste0("R_xlen_t ", target, " = 1;"))
     }
+
+    switch(
+      node$tag,
+      var = paste0("R_xlen_t ", target, " = ", sym[[node$name]]$len, ";"),
+      slice_range = {
+        prefix <- paste0(target, "_view")
+        c(
+          tccq_c_emit_slice_range_indices(node, sym, prefix = prefix),
+          paste0("R_xlen_t ", target, " = n_", prefix, ";")
+        )
+      },
+      view1 = {
+        prefix <- paste0(target, "_view")
+        c(
+          tccq_c_emit_slice_range_indices(node, sym, prefix = prefix),
+          paste0("R_xlen_t ", target, " = n_", prefix, ";")
+        )
+      },
+      unary = c(
+        emit_length(node$x, paste0(target, "_x")),
+        paste0("R_xlen_t ", target, " = ", target, "_x;")
+      ),
+      call1 = c(
+        emit_length(node$x, paste0(target, "_x")),
+        paste0("R_xlen_t ", target, " = ", target, "_x;")
+      ),
+      binary = {
+        left_name <- paste0(target, "_lhs")
+        right_name <- paste0(target, "_rhs")
+        left_vec <- node$lhs$type$rank > 0L
+        right_vec <- node$rhs$type$rank > 0L
+
+        c(
+          emit_length(node$lhs, left_name),
+          emit_length(node$rhs, right_name),
+          if (left_vec && right_vec) c(
+            paste0("if (", left_name, " != ", right_name, ") {"),
+            "  Rf_error(\"vector length mismatch in composite expression\");",
+            "}",
+            paste0("R_xlen_t ", target, " = ", left_name, ";")
+          ) else if (left_vec) {
+            paste0("R_xlen_t ", target, " = ", left_name, ";")
+          } else if (right_vec) {
+            paste0("R_xlen_t ", target, " = ", right_name, ";")
+          } else {
+            paste0("R_xlen_t ", target, " = 1;")
+          }
+        )
+      },
+      tccq_abort("cannot infer vector length for expression tag: ", node$tag)
+    )
   }
 
-  lines
+  emit_length(expr, len_name)
 }
 
 tccq_c_emit_common_length <- function(module, sym, expr) {
@@ -438,7 +494,7 @@ tccq_c_emit_kernel_materialize <- function(kernel, sym, module) {
   elem <- tccq_c_emit_expr(expr, sym, idx = "i")
 
   c(
-    tccq_c_emit_domain_length(producer$domain, sym),
+    tccq_c_emit_common_length_named(expr, sym, "n_out"),
     paste0("SEXP out = PROTECT(Rf_allocVector(", out_sexp, ", n_out));"),
     "++tccq_nprotect;",
     paste0(tccq_c_scalar_type_for_mode(mode), " *p_out = ", tccq_c_rw_accessor(mode), "(out);"),
@@ -453,32 +509,183 @@ tccq_c_emit_kernel_materialize <- function(kernel, sym, module) {
 tccq_c_emit_kernel_fold <- function(kernel, sym, module) {
   producer <- if (identical(kernel$elem$tag, "materialize")) kernel$elem$producer else kernel$elem
   expr <- producer$elem
-
-  if (!identical(kernel$op, "sum")) {
-    tccq_abort("fresh C target only supports sum fold")
-  }
+  tccq_reducer_spec_get(kernel$op)
 
   if (expr$tag %in% c("slice_range", "view1")) {
     setup <- tccq_c_emit_slice_range_indices(expr, sym, prefix = "fold")
     elem <- tccq_c_emit_slice_range_elem(expr, sym, idx = "i", lo_name = "lo_fold")
     loop_len <- "n_fold"
   } else {
-    setup <- tccq_c_emit_domain_length(kernel$domain, sym)
+    setup <- tccq_c_emit_common_length_named(expr, sym, "n_out")
     elem <- tccq_c_emit_expr(expr, sym, idx = "i")
     loop_len <- "n_out"
   }
 
   c(
     setup,
-    "double acc = 0.0;",
-    paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
-    paste0("  acc += (double)(", elem, ");"),
-    "}",
-    "SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));",
-    "++tccq_nprotect;",
-    "REAL(out)[0] = acc;",
+    if (identical(kernel$surface %||% kernel$op, "Reduce")) c(
+      paste0("if (", loop_len, " == 0) {"),
+      "  UNPROTECT(tccq_nprotect);",
+      "  return R_NilValue;",
+      "}"
+    ),
+    tccq_c_emit_reducer_fold_lines(kernel$op, result_type = kernel$type, input_type = expr$type, elem = elem, loop_len = loop_len),
     "UNPROTECT(tccq_nprotect);",
     "return out;"
+  )
+}
+
+tccq_c_emit_missing_check <- function(expr, type) {
+  switch(
+    type$mode,
+    double = paste0("ISNAN((double)(", expr, "))"),
+    integer = paste0("((int)(", expr, ") == NA_INTEGER)"),
+    logical = paste0("((int)(", expr, ") == NA_LOGICAL)"),
+    raw = "0",
+    tccq_abort("unsupported missing-value check mode: ", type$mode)
+  )
+}
+
+tccq_c_emit_reducer_fold_lines <- function(op, result_type, input_type, elem, loop_len) {
+  missing_check <- tccq_c_emit_missing_check(elem, input_type)
+
+  if (op %in% c("sum", "prod") && identical(input_type$mode, "double")) {
+    return(switch(
+      op,
+      sum = c(
+        "double acc = 0.0;",
+        paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+        paste0("  double v = (double)(", elem, ");"),
+        "  if (R_IsNA(v)) { acc = NA_REAL; break; }",
+        "  if (R_IsNaN(v)) { acc = R_NaN; break; }",
+        "  acc += v;",
+        "}",
+        tccq_c_scalar_sexp_alloc("double", "out", "acc")
+      ),
+      prod = c(
+        "double acc = 1.0;",
+        paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+        paste0("  double v = (double)(", elem, ");"),
+        "  if (R_IsNA(v)) { acc = NA_REAL; break; }",
+        "  if (R_IsNaN(v)) { acc = R_NaN; break; }",
+        "  acc *= v;",
+        "}",
+        tccq_c_scalar_sexp_alloc("double", "out", "acc")
+      )
+    ))
+  }
+
+  if (op %in% c("min", "max", "mean") && identical(input_type$mode, "double")) {
+    return(switch(
+      op,
+      min = c(
+        "double acc = R_PosInf;",
+        "int seen_nan = 0;",
+        "int seen_na = 0;",
+        paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+        paste0("  double v = (double)(", elem, ");"),
+        "  if (R_IsNA(v)) { seen_na = 1; continue; }",
+        "  if (R_IsNaN(v)) { seen_nan = 1; continue; }",
+        "  if (v < acc) acc = v;",
+        "}",
+        "double min_res = seen_na ? NA_REAL : (seen_nan ? R_NaN : acc);",
+        tccq_c_scalar_sexp_alloc("double", "out", "min_res")
+      ),
+      max = c(
+        "double acc = R_NegInf;",
+        "int seen_nan = 0;",
+        "int seen_na = 0;",
+        paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+        paste0("  double v = (double)(", elem, ");"),
+        "  if (R_IsNA(v)) { seen_na = 1; continue; }",
+        "  if (R_IsNaN(v)) { seen_nan = 1; continue; }",
+        "  if (v > acc) acc = v;",
+        "}",
+        "double max_res = seen_na ? NA_REAL : (seen_nan ? R_NaN : acc);",
+        tccq_c_scalar_sexp_alloc("double", "out", "max_res")
+      ),
+      mean = c(
+        "double acc = 0.0;",
+        "int seen_nan = 0;",
+        "int seen_na = 0;",
+        paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+        paste0("  double v = (double)(", elem, ");"),
+        "  if (R_IsNA(v)) { seen_na = 1; continue; }",
+        "  if (R_IsNaN(v)) { seen_nan = 1; continue; }",
+        "  acc += v;",
+        "}",
+        paste0("double mean_res = seen_na ? NA_REAL : (seen_nan ? R_NaN : (", loop_len, " == 0 ? R_NaN : (acc / (double)", loop_len, ")));"),
+        tccq_c_scalar_sexp_alloc("double", "out", "mean_res")
+      )
+    ))
+  }
+
+  switch(
+    op,
+    sum = c(
+      "double acc = 0.0;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  if (", missing_check, ") { acc = NA_REAL; break; }"),
+      paste0("  acc += (double)(", elem, ");"),
+      "}",
+      tccq_c_scalar_sexp_alloc("double", "out", "acc")
+    ),
+    prod = c(
+      "double acc = 1.0;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  if (", missing_check, ") { acc = NA_REAL; break; }"),
+      paste0("  acc *= (double)(", elem, ");"),
+      "}",
+      tccq_c_scalar_sexp_alloc("double", "out", "acc")
+    ),
+    min = c(
+      "double acc = R_PosInf;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  if (", missing_check, ") { acc = NA_REAL; break; }"),
+      paste0("  double v = (double)(", elem, ");"),
+      "  if (v < acc) acc = v;",
+      "}",
+      tccq_c_scalar_sexp_alloc("double", "out", "acc")
+    ),
+    max = c(
+      "double acc = R_NegInf;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  if (", missing_check, ") { acc = NA_REAL; break; }"),
+      paste0("  double v = (double)(", elem, ");"),
+      "  if (v > acc) acc = v;",
+      "}",
+      tccq_c_scalar_sexp_alloc("double", "out", "acc")
+    ),
+    mean = c(
+      "double acc = 0.0;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  if (", missing_check, ") { acc = NA_REAL; break; }"),
+      paste0("  acc += (double)(", elem, ");"),
+      "}",
+      paste0("double mean_res = ISNAN(acc) ? acc : (", loop_len, " == 0 ? R_NaN : (acc / (double)", loop_len, "));"),
+      tccq_c_scalar_sexp_alloc("double", "out", "mean_res")
+    ),
+    any = c(
+      "int acc = 0;",
+      "int seen_na = 0;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  int v = (int)(", elem, ");"),
+      "  if (v == NA_LOGICAL) { seen_na = 1; } else if (v) { acc = 1; break; }",
+      "}",
+      "int any_res = acc ? 1 : (seen_na ? NA_LOGICAL : 0);",
+      tccq_c_scalar_sexp_alloc("logical", "out", "any_res")
+    ),
+    all = c(
+      "int acc = 1;",
+      "int seen_na = 0;",
+      paste0("for (R_xlen_t i = 0; i < ", loop_len, "; ++i) {"),
+      paste0("  int v = (int)(", elem, ");"),
+      "  if (v == NA_LOGICAL) { seen_na = 1; } else if (!v) { acc = 0; break; }",
+      "}",
+      "int all_res = (!acc) ? 0 : (seen_na ? NA_LOGICAL : 1);",
+      tccq_c_scalar_sexp_alloc("logical", "out", "all_res")
+    ),
+    tccq_abort("unsupported reducer in C fold emission: ", op)
   )
 }
 
@@ -741,6 +948,7 @@ tccq_c_emit_unary <- function(node, sym, idx = NULL) {
   switch(
     node$op,
     `-` = paste0("(-(", x, "))"),
+    `!` = paste0("tccq_lgl_not((int)(", x, "))"),
     tccq_abort("unsupported unary op: ", node$op)
   )
 }
@@ -751,6 +959,22 @@ tccq_c_emit_binary <- function(node, sym, idx = NULL) {
 
   if (identical(node$op, "^")) {
     return(paste0("pow((double)(", lhs, "), (double)(", rhs, "))"))
+  }
+
+  if (identical(node$op, "&")) {
+    return(paste0("tccq_lgl_and((int)(", lhs, "), (int)(", rhs, "))"))
+  }
+
+  if (identical(node$op, "|")) {
+    return(paste0("tccq_lgl_or((int)(", lhs, "), (int)(", rhs, "))"))
+  }
+
+  if (node$op %in% c("<", "<=", ">", ">=", "==", "!=")) {
+    lhs_na <- tccq_c_emit_missing_check(lhs, node$lhs$type)
+    rhs_na <- tccq_c_emit_missing_check(rhs, node$rhs$type)
+    return(paste0(
+      "((", lhs_na, " || ", rhs_na, ") ? NA_LOGICAL : (((", lhs, ") ", node$op, " (", rhs, ")) ? 1 : 0))"
+    ))
   }
 
   paste0("((", lhs, ") ", node$op, " (", rhs, "))")

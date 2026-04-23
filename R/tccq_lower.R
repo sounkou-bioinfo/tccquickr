@@ -150,7 +150,16 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
     return(tccq_lower_binary(head, args, env, fallback = fallback))
   }
 
-  if (head %in% c("*", "/", "^")) {
+  if (identical(head, "!")) {
+    if (length(args) != 1L) {
+      tccq_abort("! expects exactly one argument")
+    }
+    x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
+    tccq_type_result_mode_logic(x$type, op = "!")
+    return(tccq_ir_unary("!", x, type = tccq_type(mode = "logical", rank = x$type$rank, dims = x$type$dims)))
+  }
+
+  if (head %in% c("*", "/", "^", "<", "<=", ">", ">=", "==", "!=", "&", "|")) {
     return(tccq_lower_binary(head, args, env, fallback = fallback))
   }
 
@@ -170,15 +179,12 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
     return(tccq_ir_call1(head, x, type = out_type))
   }
 
-  if (identical(head, "sum")) {
-    if (length(args) != 1L) {
-      tccq_abort("fresh compiler currently supports sum(x) with one argument")
-    }
-    x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
-    if (!tccq_type_is_numeric(x$type)) {
-      tccq_abort("sum() requires numeric/logical input")
-    }
-    return(tccq_ir_reduce("sum", x, type = tccq_type_scalar("double")))
+  if (head %in% tccq_supported_reducer_names()) {
+    return(tccq_lower_reducer_call(head, args, env, fallback = fallback))
+  }
+
+  if (identical(head, "Reduce")) {
+    return(tccq_lower_reduce_family(args, env, fallback = fallback))
   }
 
   if (identical(head, "length")) {
@@ -245,7 +251,17 @@ tccq_lower_binary <- function(op, args, env, fallback = "hard") {
   }
   lhs <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
   rhs <- tccq_lower_expr(args[[2L]], env, fallback = fallback)
-  out_mode <- tccq_type_result_mode_arith(lhs$type, rhs$type, op = op)
+
+  out_mode <- if (op %in% c("+", "-", "*", "/", "^")) {
+    tccq_type_result_mode_arith(lhs$type, rhs$type, op = op)
+  } else if (op %in% c("<", "<=", ">", ">=", "==", "!=")) {
+    tccq_type_result_mode_compare(lhs$type, rhs$type, op = op)
+  } else if (op %in% c("&", "|")) {
+    tccq_type_result_mode_logic(lhs$type, rhs$type, op = op)
+  } else {
+    tccq_abort("unsupported binary operator in fresh compiler: ", op)
+  }
+
   out_type <- tccq_type_broadcast(lhs$type, rhs$type, mode = out_mode)
   tccq_ir_binary(op, lhs, rhs, type = out_type)
 }

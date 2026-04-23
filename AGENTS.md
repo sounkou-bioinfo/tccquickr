@@ -25,8 +25,9 @@ Treat `tccq_*` as the only active compiler architecture.
 The intended split is:
 
 - frontend: `declare(type(...))` parsing plus typed lowering from R AST to IR
-- middle-end: validation, effects, kernelization, fusion, boundary handling,
-  storage planning, allocation planning, and protection planning
+- middle-end: validation, effects, kernelization, fusion, reducer handling,
+  boundary handling, storage planning, allocation planning, and protection
+  planning
 - target: C + R C API emission
 - backend: source-only output, TinyCC via `Rtinycc`, or shared-library
   compilation through `R CMD SHLIB`, with room for further C-only backends such
@@ -68,6 +69,13 @@ For `tccq`, keep these rules explicit:
 - `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
 - direct mutation of formals such as `x[i] <- v` is rejected for now
 - rebinding an already-bound local name is rejected for now
+- comparison and logical vector code should stay explicit in IR rather than
+  being hidden in target-only lowering
+- reducers should go through the reducer registry / fold path rather than
+  adding one-off codegen-only special cases
+- limited `Reduce(FUN, x)` lowering is acceptable only for recognized reducer
+  surfaces within the current subset; do not reason about it as full base-R
+  `Reduce()` semantics yet
 - do not fuse across `store_index`, `store_range`, or explicit boundary nodes
 - unsupported calls only cross into fallback through explicit boundary nodes
 - views may stay borrowed in IR, but writes, boundary crossing, and return paths
@@ -83,3 +91,8 @@ For `tccq`, keep these rules explicit:
   naming.
 - Prefer semantic/runtime tests and structured IR/plan checks over brittle
   source-substring assertions.
+- When adding language coverage, extend the generated/differential validation
+  suite so compiled behavior is compared against direct R evaluation over many
+  programmatically constructed cases.
+- Treat corpus growth as part of the architecture work: generated tests come
+  first, and harvested real-world/base-R-style cases can be added on top.

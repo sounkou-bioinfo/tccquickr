@@ -48,6 +48,7 @@ Responsibilities:
 
 - validate IR shape and effects
 - convert expressions into explicit kernel IR
+- lower recognized reducers into explicit fold form
 - fuse legal producer/fold patterns
 - collect and validate explicit boundary nodes
 - derive conservative storage, allocation, and protection plans
@@ -186,8 +187,11 @@ Current supported core:
 
 - declared scalar and vector inputs
 - scalar and elementwise arithmetic
+- comparison and logical vector expressions
 - unary math calls such as `sin()` and `exp()`
-- fused `sum()` reductions
+- generic fold-style reducers: `sum`, `prod`, `min`, `max`, `mean`, `any`, and
+  `all`
+- limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
 - local bindings
 - scalar indexed reads
 - contiguous slices/views
@@ -195,6 +199,25 @@ Current supported core:
 - explicit fallback boundaries
 - source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`) compilation
   modes
+- generated differential validation over programmatically constructed cases
+
+## Architecture closeout checklist
+
+Implemented now:
+
+- [x] explicit fold IR for more than one reducer surface
+- [x] comparison/logical vector expressions needed for reducer idioms such as
+  `any(x > 0)` and `all((x > 0) & (y > 0))`
+- [x] limited `Reduce(FUN, x)` lowering for recognized reducer operators
+- [x] cross-backend generated validation against direct R evaluation
+
+Still open:
+
+- [ ] richer semantic allocation/reuse planning before C emission
+- [ ] clearer middle-end ownership of boundary argument materialization
+- [ ] more systematic view/index normalization before C emission
+- [ ] axis-wise reductions and matrix-aware lowering
+- [ ] larger harvested validation corpus in addition to generated tests
 
 Current important limits:
 
@@ -204,14 +227,36 @@ Current important limits:
 - allocation planning exists but is still conservative
 - boundary argument materialization should become a clearer middle-end decision
 - view/index normalization is still much smaller than SAC-style loop metadata
+- axis reductions / full `apply`-family semantics still require rank-aware IR
+- limited `Reduce(FUN, x)` lowering is not yet a claim of full base-R
+  `Reduce()` compatibility
 
 ## Highest-value next steps
 
 1. enrich allocation/materialization planning so codegen consumes a clearer plan
 2. make boundary argument materialization more explicitly middle-end owned
 3. normalize view/index metadata more systematically before C emission
-4. tighten target/backend capability declarations
-5. improve inspectable compile artifacts for debugging and review
+4. add rank-aware axis-reduction IR before broader `apply`-family lowering
+5. grow validation from generated cases into a larger maintained corpus
+
+## Validation strategy
+
+The current validation direction is intentionally executable rather than merely
+aspirational.
+
+Implemented now:
+
+- explicit tinytests for core semantics and backends
+- generated differential tests comparing compiled results against direct R
+  evaluation
+- cross-backend comparisons between TinyCC and `R CMD SHLIB`
+
+Still to grow:
+
+- larger generated grammars over the supported subset
+- pass-by-pass translation validation for middle-end rewrites
+- harvested corpora from real array-oriented/base-R-style programs where the
+  supported subset overlaps
 
 ## Backend note: TinyCC and `callme`
 

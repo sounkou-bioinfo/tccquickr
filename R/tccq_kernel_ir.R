@@ -14,8 +14,8 @@ tccq_ir_materialize <- function(producer, type = producer$type) {
   tccq_node("materialize", producer = producer, type = type)
 }
 
-tccq_ir_fold <- function(op, domain, elem, init = NULL, type = tccq_type_scalar("double")) {
-  tccq_node("fold", op = op, domain = domain, elem = elem, init = init, type = type)
+tccq_ir_fold <- function(op, domain, elem, init = NULL, type = tccq_type_scalar("double"), surface = op) {
+  tccq_node("fold", op = op, domain = domain, elem = elem, init = init, surface = surface, type = type)
 }
 
 tccq_ir_scalar_kernel <- function(expr) {

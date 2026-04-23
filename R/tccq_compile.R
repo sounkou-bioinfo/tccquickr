@@ -4,7 +4,7 @@
 #' Fresh experimental R-to-C compiler scaffold
 #'
 #' This is the package's current compiler path. The current milestone supports declared
-#' scalar and vector arithmetic, fused `sum()` reductions, local bindings,
+#' scalar and vector arithmetic, generic fold-style reducers, local bindings,
 #' indexed reads, contiguous slices, and local indexed/range writes.
 #'
 #' Current statement semantics are intentionally strict: rebinding a local name

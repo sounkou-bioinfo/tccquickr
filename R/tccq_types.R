@@ -56,6 +56,10 @@ tccq_type_is_numeric <- function(type) {
   type$mode %in% c("double", "integer", "logical")
 }
 
+tccq_type_is_logical <- function(type) {
+  identical(type$mode, "logical")
+}
+
 tccq_type_to_string <- function(type) {
   if (type$rank == 0L) {
     return(type$mode)
@@ -72,6 +76,20 @@ tccq_type_result_mode_arith <- function(a, b, op = NULL) {
   }
   if (a$mode == "integer" || b$mode == "integer") {
     return("integer")
+  }
+  "logical"
+}
+
+tccq_type_result_mode_compare <- function(a, b, op = NULL) {
+  if (!tccq_type_is_numeric(a) || !tccq_type_is_numeric(b)) {
+    tccq_abort("comparison requires numeric/logical operands")
+  }
+  "logical"
+}
+
+tccq_type_result_mode_logic <- function(a, b = NULL, op = NULL) {
+  if (!tccq_type_is_logical(a) || (!is.null(b) && !tccq_type_is_logical(b))) {
+    tccq_abort("logical operators require logical operands")
   }
   "logical"
 }
