@@ -179,6 +179,10 @@ The reuse and with-loop machinery in `sac2c` is not something to copy
 literally, but it is a strong reminder that high-value optimization decisions
 belong in compiler analysis, not in backend folklore.
 
+See also `docs/sac2c-study-notes.md` for a focused internal reread of the most
+relevant SaC papers, with-loop/reuse implementation details, and the macro-
+heavy runtime architecture that we do not want to replicate directly.
+
 ## Current limits
 
 `tccq_*` is still intentionally narrow.
@@ -213,9 +217,10 @@ Implemented now:
 
 Still open:
 
+- [ ] explicit view/index normalization before C emission
+- [ ] shape/domain equivalence facts for zip/fusion/reuse legality
 - [ ] richer semantic allocation/reuse planning before C emission
 - [ ] clearer middle-end ownership of boundary argument materialization
-- [ ] more systematic view/index normalization before C emission
 - [ ] axis-wise reductions and matrix-aware lowering
 - [ ] larger harvested validation corpus in addition to generated tests
 
@@ -227,17 +232,20 @@ Current important limits:
 - allocation planning exists but is still conservative
 - boundary argument materialization should become a clearer middle-end decision
 - view/index normalization is still much smaller than SAC-style loop metadata
+- shape/domain equivalence facts are still largely implicit rather than planned
+  explicitly
 - axis reductions / full `apply`-family semantics still require rank-aware IR
 - limited `Reduce(FUN, x)` lowering is not yet a claim of full base-R
   `Reduce()` compatibility
 
 ## Highest-value next steps
 
-1. enrich allocation/materialization planning so codegen consumes a clearer plan
-2. make boundary argument materialization more explicitly middle-end owned
-3. normalize view/index metadata more systematically before C emission
-4. add rank-aware axis-reduction IR before broader `apply`-family lowering
-5. grow validation from generated cases into a larger maintained corpus
+1. add an explicit view/index normalization pass before C emission
+2. derive shape/domain equivalence facts that can drive zip/fusion/reuse legality
+3. enrich allocation/materialization/reuse planning so codegen consumes a clearer plan
+4. make boundary argument materialization more explicitly middle-end owned
+5. add rank-aware axis-reduction IR before broader `apply`-family lowering
+6. grow validation from generated cases into a larger maintained corpus
 
 ## Validation strategy
 
