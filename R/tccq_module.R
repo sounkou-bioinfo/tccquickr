@@ -1,4 +1,4 @@
-# tccq_module.R - fresh compiler module object
+# tccq_module.R - tccq module object
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 tccq_module <- function(

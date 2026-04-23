@@ -1,7 +1,7 @@
-# tccq_compile.R - public fresh compiler entry point
+# tccq_compile.R - public tccq entry point
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-#' Fresh experimental R-to-C compiler scaffold
+#' Experimental tccq R-to-C compiler entry point
 #'
 #' This is the package's current compiler path. The current milestone supports declared
 #' scalar and vector arithmetic, generic fold-style reducers, local bindings,

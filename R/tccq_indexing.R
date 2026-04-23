@@ -1,4 +1,4 @@
-# tccq_indexing.R - assignment and indexing helpers for the fresh compiler
+# tccq_indexing.R - assignment and indexing helpers for tccq
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 tccq_is_assignment_call <- function(expr) {
@@ -37,7 +37,7 @@ tccq_subscript_parts <- function(expr) {
 
   args <- as.list(expr[-1L])
   if (length(args) != 2L) {
-    tccq_abort("fresh compiler supports one-dimensional x[i] only")
+    tccq_abort("tccq currently supports one-dimensional x[i] only")
   }
 
   list(base = args[[1L]], index = args[[2L]])

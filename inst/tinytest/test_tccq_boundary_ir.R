@@ -7,7 +7,7 @@ unsupported_call_fn <- function(x) {
 
 expect_error(
   tccq_compile(unsupported_call_fn, mode = "ir", fallback = "hard"),
-  pattern = "unsupported call in fresh compiler"
+  pattern = "unsupported call in tccq"
 )
 
 mod_auto <- tccq_compile(unsupported_call_fn, mode = "ir", fallback = "auto")

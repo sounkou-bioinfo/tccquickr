@@ -1,4 +1,4 @@
-# tccq_print.R - compact printers for fresh compiler objects
+# tccq_print.R - compact printers for tccq objects
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 #' Format a `tccq` type

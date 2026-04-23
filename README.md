@@ -731,7 +731,7 @@ tryCatch(
   tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
   error = function(e) e$message
 )
-#> [1] "unsupported call in fresh compiler: floor. Add a lowerer case or route it through an explicit boundary node."
+#> [1] "unsupported call in tccq: floor. Add a lowerer case or route it through an explicit boundary node."
 ```
 
 ### Direct formal mutation is rejected

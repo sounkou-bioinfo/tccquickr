@@ -1,4 +1,4 @@
-# tccq_utils.R - fresh compiler utility helpers
+# tccq_utils.R - tccq utility helpers
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 `%||%` <- function(x, y) {

@@ -1,4 +1,4 @@
-# tccq_types.R - tiny typed shape system for the fresh compiler
+# tccq_types.R - tiny typed shape system for tccq
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 tccq_type <- function(mode, rank = 0L, dims = NULL) {

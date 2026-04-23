@@ -81,7 +81,7 @@ tccq_pass_effects <- function() {
         if (eff %in% c("boundary", "r_eval")) {
           return(invisible(NULL))
         }
-        tccq_abort("unsupported effect in fresh compiler: ", eff, " on node ", n$tag)
+        tccq_abort("unsupported effect in tccq: ", eff, " on node ", n$tag)
       })
       module
     }

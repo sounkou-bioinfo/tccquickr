@@ -64,7 +64,7 @@ tccq_supported_reducer_names <- function() {
 tccq_reducer_spec_get <- function(name) {
   spec <- tccq_reducer_specs()[[name]]
   if (is.null(spec)) {
-    tccq_abort("unsupported reducer in fresh compiler: ", name)
+    tccq_abort("unsupported reducer in tccq: ", name)
   }
   spec
 }

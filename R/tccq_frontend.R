@@ -13,13 +13,13 @@ tccq_frontend <- function(fn, entry = "tccq_entry") {
   }
 
   if (!length(formal_names)) {
-    tccq_abort("fresh compiler expects at least one formal argument")
+    tccq_abort("tccq expects at least one formal argument")
   }
 
   missing <- setdiff(formal_names, names(parsed$types))
   if (length(missing)) {
     tccq_abort(
-      "fresh compiler requires declare(type(...)) annotations for every formal; missing: ",
+      "tccq requires declare(type(...)) annotations for every formal; missing: ",
       paste(missing, collapse = ", ")
     )
   }
@@ -80,7 +80,7 @@ tccq_parse_declare_call <- function(expr) {
       out <- modifyList(out, tccq_parse_type_decl(arg))
     } else {
       tccq_abort(
-        "fresh compiler currently supports declare(type(x = double(NA), ...)) only"
+        "tccq currently supports declare(type(x = double(NA), ...)) only"
       )
     }
   }

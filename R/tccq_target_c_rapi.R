@@ -1,4 +1,4 @@
-# tccq_target_c_rapi.R - C + R C API target for the fresh compiler
+# tccq_target_c_rapi.R - C + R C API target for tccq
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 tccq_target_c_rapi <- function() {
@@ -795,7 +795,7 @@ tccq_c_emit_stmt_store_range <- function(stmt, sym, module) {
     tccq_abort("range assignment target must be a vector: ", stmt$name)
   }
   if (!tccq_is_scalar_rhs_for_assignment(stmt$value)) {
-    tccq_abort("fresh compiler currently supports scalar RHS range assignment only")
+    tccq_abort("tccq currently supports scalar RHS range assignment only")
   }
 
   id <- tccq_c_ident(stmt$name)

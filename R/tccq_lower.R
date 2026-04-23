@@ -1,4 +1,4 @@
-# tccq_lower.R - lower R expressions to fresh expression IR
+# tccq_lower.R - lower R expressions to tccq IR
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 tccq_lower_module <- function(module) {
@@ -84,7 +84,7 @@ tccq_lower_stmt <- function(expr, env, local_names, fallback = "hard") {
 
     value <- tccq_lower_expr(rhs, env, fallback = fallback)
     if (!tccq_is_scalar_rhs_for_assignment(value)) {
-      tccq_abort("fresh compiler currently supports scalar RHS assignment only")
+      tccq_abort("tccq currently supports scalar RHS assignment only")
     }
 
     if (tccq_is_colon_call(parts$index)) {
@@ -123,7 +123,7 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
   if (is.symbol(expr)) {
     nm <- as.character(expr)
     if (!nm %in% names(env)) {
-      tccq_abort("unknown symbol in fresh compiler: ", nm)
+      tccq_abort("unknown symbol in tccq: ", nm)
     }
     return(tccq_ir_var(nm, env[[nm]]))
   }
@@ -197,7 +197,7 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
 
   if (identical(head, "[")) {
     if (length(args) != 2L) {
-      tccq_abort("fresh compiler supports one-dimensional x[i] only")
+      tccq_abort("tccq currently supports one-dimensional x[i] only")
     }
 
     x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
@@ -231,7 +231,7 @@ tccq_lower_boundary_or_abort <- function(expr, head, args, env, fallback = "hard
   fallback <- match.arg(fallback, c("auto", "hard"))
   if (identical(fallback, "hard")) {
     tccq_abort(
-      "unsupported call in fresh compiler: ", head,
+      "unsupported call in tccq: ", head,
       ". Add a lowerer case or route it through an explicit boundary node."
     )
   }
@@ -259,7 +259,7 @@ tccq_lower_binary <- function(op, args, env, fallback = "hard") {
   } else if (op %in% c("&", "|")) {
     tccq_type_result_mode_logic(lhs$type, rhs$type, op = op)
   } else {
-    tccq_abort("unsupported binary operator in fresh compiler: ", op)
+    tccq_abort("unsupported binary operator in tccq: ", op)
   }
 
   out_type <- tccq_type_broadcast(lhs$type, rhs$type, mode = out_mode)
