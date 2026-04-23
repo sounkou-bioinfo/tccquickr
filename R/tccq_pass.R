@@ -40,6 +40,7 @@ tccq_default_passes <- function() {
   list(
     tccq_pass_validate_ir(),
     tccq_pass_effects(),
+    tccq_pass_index_normalize(),
     tccq_pass_kernelize(),
     tccq_pass_fusion(),
     tccq_pass_boundary_collect(),
@@ -88,10 +89,24 @@ tccq_pass_effects <- function() {
   )
 }
 
+tccq_pass_index_normalize <- function() {
+  tccq_pass(
+    name = "index_normalize",
+    requires = c("ir_valid", "effects_known"),
+    provides = "index_normalized",
+    run = function(module, facts) {
+      ir <- tccq_ir_attach_normalized_access(module$ir)
+      ir <- tccq_ir_hoist_access_program(ir, reserved_names = module$formal_names)
+      ir <- tccq_ir_attach_normalized_access(ir)
+      tccq_module_with(module, ir = ir)
+    }
+  )
+}
+
 tccq_pass_kernelize <- function() {
   tccq_pass(
     name = "kernelize",
-    requires = c("ir_valid", "effects_known"),
+    requires = c("ir_valid", "effects_known", "index_normalized"),
     provides = "kernel_ir",
     run = function(module, facts) {
       ir <- module$ir

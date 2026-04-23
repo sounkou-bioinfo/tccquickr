@@ -165,8 +165,11 @@ tccq_ir_walk <- function(node, f) {
   visit <- function(x) {
     if (is.list(x) && !is.null(x$tag)) {
       f(x)
-      for (child in x) {
-        visit(child)
+      for (nm in names(x)) {
+        if (identical(nm, "normalized_access")) {
+          next
+        }
+        visit(x[[nm]])
       }
     } else if (is.list(x)) {
       for (child in x) {

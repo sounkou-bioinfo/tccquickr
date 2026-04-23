@@ -57,13 +57,14 @@ Current default pass chain:
 
 1. `validate_ir`
 2. `effects`
-3. `kernelize`
-4. `fusion`
-5. `boundary_collect`
-6. `boundary_validate`
-7. `storage_plan`
-8. `allocation_plan`
-9. `protect_plan`
+3. `index_normalize`
+4. `kernelize`
+5. `fusion`
+6. `boundary_collect`
+7. `boundary_validate`
+8. `storage_plan`
+9. `allocation_plan`
+10. `protect_plan`
 
 Important current IR concepts:
 

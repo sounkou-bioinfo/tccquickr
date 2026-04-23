@@ -630,13 +630,16 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
   }
   int v_hi = INTEGER_RO(arg_hi)[0];
   int tccq_nprotect = 0;
-  R_xlen_t lo_n_y = tccq_checked_index1((R_xlen_t)(v_lo), n_x, "x");
-  R_xlen_t hi_n_y = tccq_checked_index1((R_xlen_t)(v_hi), n_x, "x");
-  if (hi_n_y < lo_n_y) { Rf_error("decreasing slices are not supported"); }
-  R_xlen_t n_n_y = hi_n_y - lo_n_y + 1;
+  R_xlen_t off_n_y = 0;
+  R_xlen_t n_n_y = n_x;
+  R_xlen_t rel_lo_n_y_1 = tccq_checked_index1((R_xlen_t)(v_lo), n_n_y, "x");
+  R_xlen_t rel_hi_n_y_1 = tccq_checked_index1((R_xlen_t)(v_hi), n_n_y, "x");
+  if (rel_hi_n_y_1 < rel_lo_n_y_1) { Rf_error("decreasing slices are not supported"); }
+  off_n_y = off_n_y + rel_lo_n_y_1;
+  n_n_y = rel_hi_n_y_1 - rel_lo_n_y_1 + 1;
   R_xlen_t n_y = n_n_y;
   SEXP loc_y = R_NilValue;
-  double *p_y = (double *) (p_x + lo_n_y);
+  double *p_y = (double *) (p_x + off_n_y);
   int own_y = 0;
   R_xlen_t n_out = n_y;
   double acc = 0.0;
@@ -795,6 +798,7 @@ before_fusion <- tccquickr:::tccq_run_passes(
   passes = list(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_index_normalize(),
     tccquickr:::tccq_pass_kernelize()
   )
 )
@@ -804,6 +808,7 @@ after_fusion <- tccquickr:::tccq_run_passes(
   passes = list(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_index_normalize(),
     tccquickr:::tccq_pass_kernelize(),
     tccquickr:::tccq_pass_fusion()
   )

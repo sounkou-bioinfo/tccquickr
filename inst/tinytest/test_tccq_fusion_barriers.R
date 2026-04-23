@@ -12,6 +12,7 @@ mod_before <- tccquickr:::tccq_run_passes(
   passes = list(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_index_normalize(),
     tccquickr:::tccq_pass_kernelize()
   )
 )
@@ -20,6 +21,7 @@ mod_after <- tccquickr:::tccq_run_passes(
   passes = list(
     tccquickr:::tccq_pass_validate_ir(),
     tccquickr:::tccq_pass_effects(),
+    tccquickr:::tccq_pass_index_normalize(),
     tccquickr:::tccq_pass_kernelize(),
     tccquickr:::tccq_pass_fusion()
   )

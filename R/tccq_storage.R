@@ -85,12 +85,11 @@ tccq_storage_plan <- function(module) {
           mutated = stmt$name %in% mutated
         )
       } else if (tccq_is_view_node(stmt$value)) {
-        base_name <- if (identical(stmt$value$x$tag, "var")) stmt$value$x$name else NA_character_
         bindings[[stmt$name]] <- tccq_storage_binding(
           stmt$name,
           locals[[stmt$name]],
           kind = "view",
-          source = base_name,
+          source = tccq_ir_view_source_name(stmt$value, bindings = bindings),
           mutated = stmt$name %in% mutated,
           contiguous = TRUE
         )

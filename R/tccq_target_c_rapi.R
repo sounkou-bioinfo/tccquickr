@@ -124,6 +124,16 @@ tccq_c_symbol_table <- function(module) {
     )
   }
 
+  c_names <- vapply(out, function(s) tccq_c_ident(s$name), character(1))
+  if (anyDuplicated(c_names)) {
+    dup <- unique(c_names[duplicated(c_names)])
+    tccq_abort(
+      "tccq names collide after C identifier normalization: ",
+      paste(dup, collapse = ", "),
+      ". Rename formals/locals to distinct C identifiers."
+    )
+  }
+
   out
 }
 
@@ -449,6 +459,19 @@ tccq_c_emit_kernel_scalar <- function(kernel, sym, module) {
 
   mode <- kernel$type$mode
   out_sexp <- tccq_sexptype_for_mode(mode)
+
+  if (identical(kernel$expr$tag, "index") && !is.null(tccq_ir_normalized_access(kernel$expr))) {
+    expr <- tccq_c_emit_access_elem(kernel$expr, sym, prefix = "scalar_idx", idx = NULL)
+    return(c(
+      tccq_c_emit_access_setup(kernel$expr, sym, prefix = "scalar_idx"),
+      paste0("SEXP out = PROTECT(Rf_allocVector(", out_sexp, ", 1));"),
+      "++tccq_nprotect;",
+      tccq_c_emit_assign_scalar("out", mode, "0", expr),
+      "UNPROTECT(tccq_nprotect);",
+      "return out;"
+    ))
+  }
+
   expr <- tccq_c_emit_expr(kernel$expr, sym, idx = NULL)
 
   c(
@@ -513,7 +536,7 @@ tccq_c_emit_kernel_fold <- function(kernel, sym, module) {
 
   if (expr$tag %in% c("slice_range", "view1")) {
     setup <- tccq_c_emit_slice_range_indices(expr, sym, prefix = "fold")
-    elem <- tccq_c_emit_slice_range_elem(expr, sym, idx = "i", lo_name = "lo_fold")
+    elem <- tccq_c_emit_slice_range_elem(expr, sym, idx = "i", prefix = "fold")
     loop_len <- "n_fold"
   } else {
     setup <- tccq_c_emit_common_length_named(expr, sym, "n_out")
@@ -721,6 +744,17 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
   type <- stmt$type
 
   if (type$rank == 0L) {
+    if (identical(stmt$value$tag, "index") && !is.null(tccq_ir_normalized_access(stmt$value))) {
+      expr <- tccq_c_emit_access_elem(stmt$value, sym, prefix = s$val, idx = NULL)
+      return(c(
+        tccq_c_emit_access_setup(stmt$value, sym, prefix = s$val),
+        paste0(
+          tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
+          " = (", tccq_c_scalar_type_for_mode(type$mode), ")(", expr, ");"
+        )
+      ))
+    }
+
     expr <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
     return(paste0(
       tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
@@ -816,36 +850,109 @@ tccq_c_emit_stmt_store_range <- function(stmt, sym, module) {
   )
 }
 
-tccq_c_emit_slice_range_indices <- function(node, sym, prefix) {
-  if (!identical(node$x$tag, "var")) {
-    tccq_abort("view currently supports direct variable base only")
+tccq_c_access_plan <- function(node) {
+  plan <- tccq_ir_normalized_access(node)
+  if (is.null(plan) || is.null(plan$base_name)) {
+    tccq_abort(
+      "tccq currently supports x[i] / x[lo:hi] only when the base is a direct variable ",
+      "or a normalized access chain. Bind the composite vector expression first."
+    )
   }
-
-  base <- sym[[node$x$name]]
-  start <- tccq_c_emit_expr(node$start, sym, idx = NULL)
-  stop <- tccq_c_emit_expr(node$stop, sym, idx = NULL)
-
-  c(
-    paste0("R_xlen_t lo_", prefix, " = tccq_checked_index1((R_xlen_t)(", start, "), ", base$len, ", ", tccq_c_string(node$x$name), ");"),
-    paste0("R_xlen_t hi_", prefix, " = tccq_checked_index1((R_xlen_t)(", stop, "), ", base$len, ", ", tccq_c_string(node$x$name), ");"),
-    paste0("if (hi_", prefix, " < lo_", prefix, ") { Rf_error(\"decreasing slices are not supported\"); }"),
-    paste0("R_xlen_t n_", prefix, " = hi_", prefix, " - lo_", prefix, " + 1;")
-  )
+  plan
 }
 
-tccq_c_emit_slice_range_elem <- function(node, sym, idx, lo_name) {
-  if (!identical(node$x$tag, "var")) {
-    tccq_abort("view currently supports direct variable base only")
+tccq_c_access_base_symbol <- function(node, sym) {
+  plan <- tccq_c_access_plan(node)
+  base <- sym[[plan$base_name]]
+  if (is.null(base)) {
+    tccq_abort("unknown normalized access base symbol: ", plan$base_name)
   }
-  base <- sym[[node$x$name]]
-  paste0(base$ptr, "[", lo_name, " + ", idx, "]")
+  base
+}
+
+tccq_c_access_final_kind <- function(node) {
+  plan <- tccq_c_access_plan(node)
+  if (!length(plan$steps)) {
+    return("base")
+  }
+  plan$steps[[length(plan$steps)]]$kind
+}
+
+tccq_c_emit_access_setup <- function(node, sym, prefix) {
+  plan <- tccq_c_access_plan(node)
+  base <- tccq_c_access_base_symbol(node, sym)
+  lines <- c(
+    paste0("R_xlen_t off_", prefix, " = 0;"),
+    paste0("R_xlen_t n_", prefix, " = ", base$len, ";")
+  )
+
+  if (!length(plan$steps)) {
+    return(lines)
+  }
+
+  for (i in seq_along(plan$steps)) {
+    step <- plan$steps[[i]]
+    if (identical(step$kind, "slice")) {
+      start <- tccq_c_emit_expr(step$start, sym, idx = NULL)
+      stop <- tccq_c_emit_expr(step$stop, sym, idx = NULL)
+      lines <- c(
+        lines,
+        paste0("R_xlen_t rel_lo_", prefix, "_", i, " = tccq_checked_index1((R_xlen_t)(", start, "), n_", prefix, ", ", tccq_c_string(plan$base_name), ");"),
+        paste0("R_xlen_t rel_hi_", prefix, "_", i, " = tccq_checked_index1((R_xlen_t)(", stop, "), n_", prefix, ", ", tccq_c_string(plan$base_name), ");"),
+        paste0("if (rel_hi_", prefix, "_", i, " < rel_lo_", prefix, "_", i, ") { Rf_error(\"decreasing slices are not supported\"); }"),
+        paste0("off_", prefix, " = off_", prefix, " + rel_lo_", prefix, "_", i, ";"),
+        paste0("n_", prefix, " = rel_hi_", prefix, "_", i, " - rel_lo_", prefix, "_", i, " + 1;")
+      )
+    } else if (identical(step$kind, "index")) {
+      index <- tccq_c_emit_expr(step$index, sym, idx = NULL)
+      lines <- c(
+        lines,
+        paste0("R_xlen_t rel_idx_", prefix, "_", i, " = tccq_checked_index1((R_xlen_t)(", index, "), n_", prefix, ", ", tccq_c_string(plan$base_name), ");"),
+        paste0("off_", prefix, " = off_", prefix, " + rel_idx_", prefix, "_", i, ";"),
+        paste0("n_", prefix, " = 1;")
+      )
+    } else {
+      tccq_abort("unsupported normalized access step kind: ", step$kind)
+    }
+  }
+
+  lines
+}
+
+tccq_c_emit_access_elem <- function(node, sym, prefix, idx = NULL) {
+  base <- tccq_c_access_base_symbol(node, sym)
+  final_kind <- tccq_c_access_final_kind(node)
+
+  if (identical(final_kind, "index")) {
+    return(paste0(base$ptr, "[off_", prefix, "]"))
+  }
+
+  if (is.null(idx)) {
+    tccq_abort("normalized slice/view access requires an element index in C emission")
+  }
+
+  paste0(base$ptr, "[off_", prefix, " + ", idx, "]")
+}
+
+tccq_c_emit_slice_range_indices <- function(node, sym, prefix) {
+  if (!identical(tccq_c_access_final_kind(node), "slice")) {
+    tccq_abort("slice/view length emission requires a normalized slice result")
+  }
+  tccq_c_emit_access_setup(node, sym, prefix)
+}
+
+tccq_c_emit_slice_range_elem <- function(node, sym, idx, prefix) {
+  if (!identical(tccq_c_access_final_kind(node), "slice")) {
+    tccq_abort("slice/view element emission requires a normalized slice result")
+  }
+  tccq_c_emit_access_elem(node, sym, prefix, idx = idx)
 }
 
 tccq_c_emit_materialize_slice_range <- function(node, sym, out_name, out_ptr) {
   mode <- node$type$mode
   ctype <- tccq_c_scalar_type_for_mode(mode)
   setup <- tccq_c_emit_slice_range_indices(node, sym, prefix = out_name)
-  elem <- tccq_c_emit_slice_range_elem(node, sym, idx = "i", lo_name = paste0("lo_", out_name))
+  elem <- tccq_c_emit_slice_range_elem(node, sym, idx = "i", prefix = out_name)
 
   c(
     setup,
@@ -865,7 +972,7 @@ tccq_c_emit_bind_slice_range <- function(stmt, sym, module) {
   mode <- stmt$type$mode
   ctype <- tccq_c_scalar_type_for_mode(mode)
   setup <- tccq_c_emit_slice_range_indices(stmt$value, sym, prefix = s$len)
-  base <- sym[[stmt$value$x$name]]
+  base <- tccq_c_access_base_symbol(stmt$value, sym)
   own_flag <- tccq_c_owned_flag(s)
 
   if (identical(tccq_c_storage_kind(module, stmt$name), "view")) {
@@ -873,12 +980,12 @@ tccq_c_emit_bind_slice_range <- function(stmt, sym, module) {
       setup,
       paste0("R_xlen_t ", s$len, " = n_", s$len, ";"),
       paste0("SEXP ", s$sexp, " = R_NilValue;"),
-      paste0(ctype, " *", s$ptr, " = (", ctype, " *) (", base$ptr, " + lo_", s$len, ");"),
+      paste0(ctype, " *", s$ptr, " = (", ctype, " *) (", base$ptr, " + off_", s$len, ");"),
       paste0("int ", own_flag, " = 0;")
     ))
   }
 
-  elem <- tccq_c_emit_slice_range_elem(stmt$value, sym, idx = "i", lo_name = paste0("lo_", s$len))
+  elem <- tccq_c_emit_slice_range_elem(stmt$value, sym, idx = "i", prefix = s$len)
   c(
     setup,
     paste0("R_xlen_t ", s$len, " = n_", s$len, ";"),
