@@ -28,8 +28,9 @@ The intended split is:
 - middle-end: validation, effects, kernelization, fusion, boundary handling,
   storage planning, allocation planning, and protection planning
 - target: C + R C API emission
-- backend: source-only output, TinyCC via `Rtinycc`, and later other C
-  compilation/loading backends such as system-compiler or `callme`-style paths
+- backend: source-only output, TinyCC via `Rtinycc`, or shared-library
+  compilation through `R CMD SHLIB`, with room for further C-only backends such
+  as other system-compiler or `callme`-style paths
 
 Do not introduce parallel replacement paths lightly. New compiler work should
 land in `tccq_*` unless the task is explicitly about a temporary migration or

@@ -44,8 +44,9 @@ The current design direction is centered on the fresh `tccq_*` path:
 - explicit middle-end IR for producers, materialization, folds, statements, and
   legality barriers
 - C emission through the R C API
-- swappable backends, with source-only output and TinyCC via
-  [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
+- swappable C backends, with source-only output, TinyCC via
+  [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc), and shared-library
+  compilation through `R CMD SHLIB`
 
 The package depends on [`Rtinycc`](https://github.com/sounkou-bioinfo/Rtinycc)
 for the underlying TinyCC toolchain, libtcc runtime, FFI compilation pipeline,
@@ -119,7 +120,7 @@ Implemented now:
 - [x] local indexed writes `y[i] <- v` and local range writes `y[lo:hi] <- v`
 - [x] explicit fallback boundary nodes in `fallback = "auto"`
 - [x] conservative storage, allocation, and protect planning passes
-- [x] source-only and TinyCC-backed backends
+- [x] source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`) backends
 
 Planned next:
 
@@ -127,16 +128,16 @@ Planned next:
 - [ ] clearer middle-end ownership of boundary argument materialization
 - [ ] more systematic view/index normalization before target codegen
 - [ ] broader indexing forms such as gather/scatter/filter
-- [ ] additional C backends beyond the current source-only and TinyCC-backed path
+- [ ] additional C backends beyond the current source-only, TinyCC-backed, and shared-library path
 
 ### Current architecture split
 
 - [x] frontend: parse `declare(type(...))` and lower a small R subset
 - [x] middle-end: validate IR, infer effects, kernelize, fuse, handle boundaries, and derive conservative plans
 - [x] target: emit C using the R C API
-- [x] backend: either return source or compile through TinyCC via `Rtinycc`
+- [x] backend: return source or compile emitted C through TinyCC or `R CMD SHLIB`
 - [ ] middle-end: richer plan-driven allocation/reuse and view/index normalization
-- [ ] backend expansion toward other C compilation/loading paths such as system compiler or `callme`-style workflows
+- [ ] backend expansion toward other C compilation/loading paths such as additional system compiler or `callme`-style workflows
 
 ### Kernel IR concepts
 

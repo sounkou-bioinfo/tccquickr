@@ -98,13 +98,14 @@ Current backends:
 
 - `tccq_backend_source()`
 - `tccq_backend_tinycc()`
+- `tccq_backend_shlib()`
 
 Planned direction:
 
 - keep the main target in C
 - add more C compilation/loading backends before adding new target languages
-- likely candidates are a system-compiler / `R CMD SHLIB` path or a
-  `callme`-style backend alongside TinyCC
+- extend beyond the current TinyCC and `R CMD SHLIB` paths only when the extra
+  deployment mode is genuinely useful
 
 ## Current semantic model
 
@@ -185,7 +186,8 @@ Current supported core:
 - contiguous slices/views
 - local indexed and range writes
 - explicit fallback boundaries
-- source-only and TinyCC-backed compilation modes
+- source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`) compilation
+  modes
 
 Current important limits:
 

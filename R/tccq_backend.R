@@ -86,3 +86,138 @@ tccq_backend_tinycc <- function() {
     }
   )
 }
+
+tccq_backend_shlib <- function() {
+  tccq_backend(
+    name = "shlib",
+    capabilities = list(
+      c = TRUE,
+      compile = TRUE,
+      r_api = TRUE,
+      in_memory = FALSE,
+      cli = TRUE,
+      shared_library = TRUE,
+      system_compiler = TRUE
+    ),
+    compile = function(module, target, ctx = list()) {
+      tccq_backend_compile_shlib(module, target, ctx)
+    }
+  )
+}
+
+tccq_backend_compile_shlib <- function(module, target, ctx = list()) {
+  src <- target$emit(module, ctx)
+  src <- tccq_shlib_source_with_headers(src, ctx$headers %||% character())
+
+  build_dir <- tccq_shlib_build_dir(module)
+  dir.create(build_dir, recursive = TRUE, showWarnings = FALSE)
+  stem <- file.path(build_dir, module$entry)
+  c_file <- paste0(stem, ".c")
+  dll_file <- paste0(stem, .Platform$dynlib.ext)
+  makevars_file <- file.path(build_dir, "Makevars")
+
+  writeLines(src, c_file, useBytes = TRUE)
+  makevars <- tccq_shlib_makevars(ctx)
+  writeLines(makevars, makevars_file, useBytes = TRUE)
+
+  r_bin <- file.path(R.home(component = "bin"), "R")
+  oldwd <- getwd()
+  on.exit(setwd(oldwd), add = TRUE)
+  setwd(build_dir)
+
+  log <- suppressWarnings(system2(
+    command = r_bin,
+    args = c("CMD", "SHLIB", basename(c_file)),
+    stdout = TRUE,
+    stderr = TRUE
+  ))
+  status <- attr(log, "status") %||% 0L
+
+  if (!identical(as.integer(status), 0L) || !file.exists(dll_file)) {
+    tccq_abort(
+      "R CMD SHLIB failed for entry '", module$entry, "'",
+      if (length(log)) paste0("\n", paste(log, collapse = "\n")) else ""
+    )
+  }
+
+  compiled <- dyn.load(dll_file)
+  symbol <- getNativeSymbolInfo(module$entry, PACKAGE = compiled)
+  callable <- local({
+    .symbol <- symbol
+    .dll <- compiled
+    function(...) {
+      base::.Call(.symbol, ...)
+    }
+  })
+
+  list(
+    backend = "shlib",
+    source = src,
+    compiled = compiled,
+    callable = callable,
+    module = module,
+    dll_path = dll_file,
+    build_dir = build_dir,
+    build_log = log
+  )
+}
+
+tccq_shlib_build_dir <- function(module) {
+  tempfile(pattern = paste0("tccq_", tccq_c_ident(module$entry), "_"), tmpdir = tempdir())
+}
+
+tccq_shlib_source_with_headers <- function(src, headers = character()) {
+  headers <- tccq_unique(headers %||% character())
+  if (!length(headers)) {
+    return(src)
+  }
+  paste(c(headers, "", src), collapse = "\n")
+}
+
+tccq_shlib_makevars <- function(ctx = list()) {
+  ctx <- ctx %||% list()
+  option_flags <- tccq_shlib_partition_options(ctx$options %||% character())
+
+  cppflags <- c(
+    option_flags$cppflags,
+    paste0("-I", ctx$include_paths %||% character())
+  )
+  libs <- c(
+    option_flags$libs,
+    paste0("-L", ctx$library_paths %||% character()),
+    vapply(ctx$libraries %||% character(), tccq_shlib_library_flag, character(1))
+  )
+  cflags <- tccq_unique(c("-fPIC", option_flags$cflags))
+
+  Filter(nzchar, c(
+    if (length(cppflags)) paste0("PKG_CPPFLAGS=", paste(cppflags, collapse = " ")),
+    if (length(cflags)) paste0("PKG_CFLAGS=", paste(cflags, collapse = " ")),
+    if (length(libs)) paste0("PKG_LIBS=", paste(libs, collapse = " "))
+  ))
+}
+
+tccq_shlib_partition_options <- function(options = character()) {
+  options <- options %||% character()
+  if (!length(options)) {
+    return(list(cflags = character(), cppflags = character(), libs = character()))
+  }
+
+  cpp_idx <- grepl("^-(I|D|U)", options)
+  lib_idx <- grepl("^-(L|l|Wl,)", options)
+
+  list(
+    cflags = options[!(cpp_idx | lib_idx)],
+    cppflags = options[cpp_idx],
+    libs = options[lib_idx]
+  )
+}
+
+tccq_shlib_library_flag <- function(lib) {
+  if (!nzchar(lib)) {
+    return(lib)
+  }
+  if (grepl("^-l", lib) || grepl("^-L", lib) || grepl("^/", lib)) {
+    return(lib)
+  }
+  paste0("-l", lib)
+}
