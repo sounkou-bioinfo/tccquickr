@@ -70,31 +70,10 @@ make_input_sets <- function(n_sets = 5L) {
 
 set.seed(20260423)
 input_sets <- make_input_sets(6L)
-
-is_arm64_platform <- function() {
-  machine <- Sys.info()[["machine"]]
-  if (is.null(machine) || is.na(machine)) {
-    machine <- ""
-  }
-  arch <- R.version$arch
-  if (is.null(arch) || is.na(arch)) {
-    arch <- ""
-  }
-  machine <- tolower(machine)
-  arch <- tolower(arch)
-  grepl("arm64|aarch64", machine) || grepl("arm64|aarch64", arch)
-}
-
-# TinyCC's arm64 code generator can abort the whole R process for some of the
-# randomized stress cases in this file (for example on macOS ARM64, with
-# `Assertion failed: (0), function load, file arm64-gen.c`).  Because this is a
-# native abort rather than an R condition, it cannot be caught with
-# expect_error(). Keep generated differential validation on the system-compiler
-# backend there; smaller focused tests still exercise TinyCC on ARM64.
-backends <- list(shlib = tccq_backend_shlib())
-if (!is_arm64_platform()) {
-  backends <- c(list(tinycc = tccq_backend_tinycc()), backends)
-}
+backends <- list(
+  tinycc = tccq_backend_tinycc(),
+  shlib = tccq_backend_shlib()
+)
 
 numeric_reducers <- c("sum", "prod", "min", "max", "mean")
 logical_reducers <- c("any", "all")
@@ -160,12 +139,10 @@ for (case in cases) {
         expect_equal(got, expected, tolerance = 1e-10)
       }
     }
-    if (all(c("tinycc", "shlib") %in% names(compiled))) {
-      expect_equal(
-        do.call(compiled[["tinycc"]], args),
-        do.call(compiled[["shlib"]], args),
-        tolerance = 1e-10
-      )
-    }
+    expect_equal(
+      do.call(compiled[["tinycc"]], args),
+      do.call(compiled[["shlib"]], args),
+      tolerance = 1e-10
+    )
   }
 }
