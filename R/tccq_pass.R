@@ -226,19 +226,7 @@ tccq_pass_allocation_plan <- function() {
     requires = c("legality_checked", "storage_plan"),
     provides = "alloc_plan",
     run = function(module, facts) {
-      kernel <- module$kernel
-      output <- switch(
-        kernel$tag,
-        scalar_kernel = list(kind = "scalar_result", protect = TRUE),
-        materialize = list(kind = "vector_result", protect = TRUE),
-        fold = list(kind = "scalar_result", protect = TRUE),
-        kernel_program = list(kind = "program_result", protect = TRUE),
-        tccq_abort("unknown kernel tag for allocation plan: ", kernel$tag)
-      )
-      tccq_module_with(
-        module,
-        alloc_plan = list(output = output, temporaries = list(), reuse = list())
-      )
+      tccq_module_with(module, alloc_plan = tccq_allocation_plan(module))
     }
   )
 }

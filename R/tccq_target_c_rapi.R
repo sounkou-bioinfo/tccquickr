@@ -972,6 +972,39 @@ tccq_c_emit_kernel_scalar <- function(kernel, sym, module) {
   )
 }
 
+tccq_c_result_reuse_plan <- function(module) {
+  plan <- module$alloc_plan$reuse$result_buffer %||% NULL
+  if (is.null(plan) || !identical(plan$strategy, "reuse_owned_local_result")) {
+    return(NULL)
+  }
+  plan
+}
+
+tccq_c_emit_reuse_result_buffer <- function(expr, sym, module, reuse) {
+  s <- sym[[reuse$name]]
+  if (is.null(s) || !identical(s$kind, "local") || s$type$rank != 1L) {
+    tccq_abort("invalid result reuse local: ", reuse$name %||% "<NULL>")
+  }
+
+  mode <- expr$type$mode
+  ctype <- tccq_c_scalar_type_for_mode(mode)
+  elem <- tccq_c_emit_expr(expr, sym, idx = "i")
+
+  c(
+    tccq_c_emit_common_length_named(expr, sym, "n_out", module = module),
+    paste0("if (n_out != ", s$len, ") {"),
+    "  Rf_error(\"reused output length mismatch\");",
+    "}",
+    paste0("SEXP out = ", s$sexp, ";"),
+    paste0(ctype, " *p_out = ", s$ptr, ";"),
+    "for (R_xlen_t i = 0; i < n_out; ++i) {",
+    paste0("  p_out[i] = (", ctype, ")(", elem, ");"),
+    "}",
+    "UNPROTECT(tccq_nprotect);",
+    "return out;"
+  )
+}
+
 tccq_c_emit_kernel_materialize <- function(kernel, sym, module) {
   mode <- kernel$type$mode
   out_sexp <- tccq_sexptype_for_mode(mode)
@@ -1001,6 +1034,11 @@ tccq_c_emit_kernel_materialize <- function(kernel, sym, module) {
 
   if (expr$tag %in% c("slice_range", "view1")) {
     return(tccq_c_emit_materialize_slice_range(expr, sym, out_name = "out", out_ptr = "p_out"))
+  }
+
+  reuse <- tccq_c_result_reuse_plan(module)
+  if (!is.null(reuse)) {
+    return(tccq_c_emit_reuse_result_buffer(expr, sym, module, reuse))
   }
 
   elem <- tccq_c_emit_expr(expr, sym, idx = "i")
