@@ -29,3 +29,17 @@ source_result <- tccquickr:::tccq_compile(
 expect_equal(source_result$backend, "source")
 expect_true(is.character(source_result$source))
 expect_true(inherits(source_result$module, "tccq_module"))
+
+float_unary_minus_call_kernel <- function(x) {
+  declare(type(x = double(NA)))
+  prod(-cos(x))
+}
+
+float_neg_code <- tccquickr:::tccq_compile(float_unary_minus_call_kernel, mode = "code")
+expect_false(grepl("(-(cos", float_neg_code, fixed = TRUE))
+expect_true(grepl("((-1.0) * (double)(cos", float_neg_code, fixed = TRUE))
+expect_equal(
+  tccquickr:::tccq_compile(float_unary_minus_call_kernel)(as.double(1:3)),
+  prod(-cos(as.double(1:3))),
+  tolerance = 1e-10
+)

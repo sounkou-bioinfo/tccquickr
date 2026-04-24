@@ -1609,7 +1609,17 @@ tccq_c_emit_unary <- function(node, sym, idx = NULL) {
   x <- tccq_c_emit_expr(node$x, sym, idx)
   switch(
     node$op,
-    `-` = paste0("(-(", x, "))"),
+    `-` = {
+      if (identical(node$type$mode, "double")) {
+        # TinyCC's ARM64 backend can abort in its generic floating unary-minus
+        # path (`load()` mixed int/float register assertion). Emit floating
+        # negation as a binary multiply so it uses the backend's ordinary
+        # floating binary-op path instead.
+        paste0("((-1.0) * (double)(", x, "))")
+      } else {
+        paste0("(-(", x, "))")
+      }
+    },
     `!` = paste0("tccq_lgl_not((int)(", x, "))"),
     tccq_abort("unsupported unary op: ", node$op)
   )
