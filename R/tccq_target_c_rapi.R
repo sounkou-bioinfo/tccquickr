@@ -1262,6 +1262,41 @@ tccq_c_emit_kernel_program <- function(kernel, sym, module) {
   )
 }
 
+tccq_c_bind_reuse_plan <- function(module, name) {
+  plan <- module$alloc_plan$reuse$bindings[[name]] %||% NULL
+  if (is.null(plan) || !identical(plan$strategy, "reuse_owned_local_bind")) {
+    return(NULL)
+  }
+  plan
+}
+
+tccq_c_emit_reuse_bind_buffer <- function(stmt, sym, module, reuse) {
+  s <- sym[[stmt$name]]
+  source <- sym[[reuse$source]]
+  if (is.null(s) || !identical(s$kind, "local") || s$type$rank != 1L) {
+    tccq_abort("invalid bind reuse target: ", stmt$name %||% "<NULL>")
+  }
+  if (is.null(source) || !identical(source$kind, "local") || source$type$rank != 1L) {
+    tccq_abort("invalid bind reuse source: ", reuse$source %||% "<NULL>")
+  }
+
+  ctype <- tccq_c_scalar_type_for_mode(stmt$type$mode)
+  elem <- tccq_c_emit_expr(stmt$value, sym, idx = "i")
+
+  c(
+    tccq_c_emit_common_length_named(stmt$value, sym, s$len, module = module),
+    paste0("if (", s$len, " != ", source$len, ") {"),
+    "  Rf_error(\"reused local length mismatch\");",
+    "}",
+    paste0("SEXP ", s$sexp, " = ", source$sexp, ";"),
+    paste0(ctype, " *", s$ptr, " = ", source$ptr, ";"),
+    paste0("int ", tccq_c_owned_flag(s), " = 1;"),
+    paste0("for (R_xlen_t i = 0; i < ", s$len, "; ++i) {"),
+    paste0("  ", s$ptr, "[i] = (", ctype, ")(", elem, ");"),
+    "}"
+  )
+}
+
 tccq_c_emit_stmt <- function(stmt, sym, module, stmt_index = NULL) {
   switch(
     stmt$tag,
@@ -1389,6 +1424,11 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
   storage_kind <- tccq_c_storage_kind(module, stmt$name)
   own_flag <- tccq_c_owned_flag(s)
   ctype <- tccq_c_scalar_type_for_mode(type$mode)
+
+  reuse <- tccq_c_bind_reuse_plan(module, stmt$name)
+  if (!is.null(reuse)) {
+    return(tccq_c_emit_reuse_bind_buffer(stmt, sym, module, reuse))
+  }
 
   if (identical(storage_kind, "alias") && identical(stmt$value$tag, "var")) {
     base <- sym[[stmt$value$name]]
