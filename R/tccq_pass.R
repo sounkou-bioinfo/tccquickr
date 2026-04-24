@@ -181,7 +181,9 @@ tccq_pass_boundary_collect <- function() {
     requires = "fusion_done",
     provides = "boundaries_collected",
     run = function(module, facts) {
-      tccq_module_with(module, boundary_context = tccq_boundary_context(module$kernel))
+      ir <- tccq_boundary_annotate_ids(module$ir)
+      kernel <- tccq_boundary_annotate_ids(module$kernel)
+      tccq_module_with(module, ir = ir, kernel = kernel, boundary_context = tccq_boundary_context(kernel))
     }
   )
 }

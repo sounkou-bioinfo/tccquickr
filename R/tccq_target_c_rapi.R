@@ -461,30 +461,50 @@ tccq_c_expr_length_needs_eval <- function(node) {
   )
 }
 
-tccq_c_expr_length_data_vars <- function(node) {
+tccq_c_expr_length_data_vars <- function(node, module = NULL) {
   if (!is.list(node) || is.null(node$tag)) {
     return(character())
   }
 
   if (is.null(node$type) || node$type$rank == 0L) {
-    return(tccq_c_expr_data_vars(node))
+    return(tccq_c_expr_data_vars(node, module = module))
   }
 
   switch(
     node$tag,
     var = character(),
-    unary = tccq_c_expr_length_data_vars(node$x),
-    call1 = tccq_c_expr_length_data_vars(node$x),
-    binary = tccq_unique(c(tccq_c_expr_length_data_vars(node$lhs), tccq_c_expr_length_data_vars(node$rhs))),
-    slice_range = tccq_unique(c(tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
-    view1 = tccq_unique(c(tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
-    boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_data_vars), use.names = FALSE)),
-    len = tccq_c_expr_length_data_vars(node$x),
+    unary = tccq_c_expr_length_data_vars(node$x, module = module),
+    call1 = tccq_c_expr_length_data_vars(node$x, module = module),
+    binary = tccq_unique(c(tccq_c_expr_length_data_vars(node$lhs, module = module), tccq_c_expr_length_data_vars(node$rhs, module = module))),
+    slice_range = tccq_unique(c(tccq_c_expr_data_vars(node$start, module = module), tccq_c_expr_data_vars(node$stop, module = module))),
+    view1 = tccq_unique(c(tccq_c_expr_data_vars(node$start, module = module), tccq_c_expr_data_vars(node$stop, module = module))),
+    boundary_call = tccq_unique(unlist(Map(
+      function(arg, i) tccq_c_boundary_arg_data_vars(arg, module, node, i),
+      node$args %||% list(),
+      seq_along(node$args %||% list())
+    ), use.names = FALSE)),
+    len = tccq_c_expr_length_data_vars(node$x, module = module),
     character()
   )
 }
 
-tccq_c_expr_data_vars <- function(node) {
+tccq_c_boundary_arg_data_vars <- function(arg, module, boundary, arg_index) {
+  plan <- if (!is.null(module)) tccq_c_boundary_arg_plan(module, boundary, arg_index) else NULL
+  strategy <- plan$strategy %||% NULL
+
+  if (is.list(arg) && identical(arg$tag, "var") && !is.null(arg$type) && arg$type$rank > 0L) {
+    if (!is.null(strategy) && strategy %in% c("pass_formal", "pass_local", "pass_source")) {
+      return(character())
+    }
+    if (identical(strategy, "materialize_local")) {
+      return(arg$name)
+    }
+  }
+
+  tccq_c_expr_data_vars(arg, module = module)
+}
+
+tccq_c_expr_data_vars <- function(node, module = NULL) {
   if (!is.list(node) || is.null(node$tag)) {
     return(character())
   }
@@ -493,15 +513,19 @@ tccq_c_expr_data_vars <- function(node) {
     node$tag,
     const = character(),
     var = if (!is.null(node$type) && node$type$rank > 0L) node$name else character(),
-    unary = tccq_c_expr_data_vars(node$x),
-    call1 = tccq_c_expr_data_vars(node$x),
-    binary = tccq_unique(c(tccq_c_expr_data_vars(node$lhs), tccq_c_expr_data_vars(node$rhs))),
-    reduce = tccq_c_expr_data_vars(node$x),
-    len = tccq_c_expr_length_data_vars(node$x),
-    index = tccq_unique(c(tccq_c_expr_data_vars(node$x), tccq_c_expr_data_vars(node$index))),
-    slice_range = tccq_unique(c(tccq_c_expr_data_vars(node$x), tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
-    view1 = tccq_unique(c(tccq_c_expr_data_vars(node$x), tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
-    boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_data_vars), use.names = FALSE)),
+    unary = tccq_c_expr_data_vars(node$x, module = module),
+    call1 = tccq_c_expr_data_vars(node$x, module = module),
+    binary = tccq_unique(c(tccq_c_expr_data_vars(node$lhs, module = module), tccq_c_expr_data_vars(node$rhs, module = module))),
+    reduce = tccq_c_expr_data_vars(node$x, module = module),
+    len = tccq_c_expr_length_data_vars(node$x, module = module),
+    index = tccq_unique(c(tccq_c_expr_data_vars(node$x, module = module), tccq_c_expr_data_vars(node$index, module = module))),
+    slice_range = tccq_unique(c(tccq_c_expr_data_vars(node$x, module = module), tccq_c_expr_data_vars(node$start, module = module), tccq_c_expr_data_vars(node$stop, module = module))),
+    view1 = tccq_unique(c(tccq_c_expr_data_vars(node$x, module = module), tccq_c_expr_data_vars(node$start, module = module), tccq_c_expr_data_vars(node$stop, module = module))),
+    boundary_call = tccq_unique(unlist(Map(
+      function(arg, i) tccq_c_boundary_arg_data_vars(arg, module, node, i),
+      node$args %||% list(),
+      seq_along(node$args %||% list())
+    ), use.names = FALSE)),
     character()
   )
 }
@@ -518,14 +542,14 @@ tccq_c_stmt_data_vars <- function(stmt, module) {
       if (kind %in% c("alias", "view")) {
         value <- stmt$value
         if (is.list(value) && value$tag %in% c("slice_range", "view1")) {
-          return(tccq_unique(c(tccq_c_expr_data_vars(value$start), tccq_c_expr_data_vars(value$stop))))
+          return(tccq_unique(c(tccq_c_expr_data_vars(value$start, module = module), tccq_c_expr_data_vars(value$stop, module = module))))
         }
         return(character())
       }
-      tccq_c_expr_data_vars(stmt$value)
+      tccq_c_expr_data_vars(stmt$value, module = module)
     },
-    store_index = tccq_unique(c(stmt$name, tccq_c_expr_data_vars(stmt$index), tccq_c_expr_data_vars(stmt$value))),
-    store_range = tccq_unique(c(stmt$name, tccq_c_expr_data_vars(stmt$start), tccq_c_expr_data_vars(stmt$stop), tccq_c_expr_data_vars(stmt$value))),
+    store_index = tccq_unique(c(stmt$name, tccq_c_expr_data_vars(stmt$index, module = module), tccq_c_expr_data_vars(stmt$value, module = module))),
+    store_range = tccq_unique(c(stmt$name, tccq_c_expr_data_vars(stmt$start, module = module), tccq_c_expr_data_vars(stmt$stop, module = module), tccq_c_expr_data_vars(stmt$value, module = module))),
     character()
   )
 }
@@ -674,7 +698,7 @@ tccq_c_module_data_vars <- function(module) {
 
   data <- tccq_unique(c(
     unlist(lapply(ir$stmts %||% list(), tccq_c_stmt_data_vars, module = module), use.names = FALSE),
-    tccq_c_expr_data_vars(ir$result),
+    tccq_c_expr_data_vars(ir$result, module = module),
     barrier_vars
   ))
 
@@ -753,13 +777,39 @@ tccq_c_scalar_sexp_alloc <- function(mode, sexp_name, expr) {
   )
 }
 
-tccq_c_emit_boundary_arg <- function(arg, sym, module, name) {
+tccq_c_boundary_arg_plan <- function(module, boundary, arg_index) {
+  boundary_id <- boundary$boundary_id %||% NULL
+  if (is.null(boundary_id)) {
+    return(NULL)
+  }
+  plans <- module$storage_plan$boundary_args[[as.character(boundary_id)]] %||% NULL
+  if (is.null(plans) || length(plans) < arg_index) {
+    return(NULL)
+  }
+  plans[[arg_index]]
+}
+
+tccq_c_emit_boundary_arg <- function(arg, sym, module, name, boundary = NULL, arg_index = NULL) {
+  plan <- if (!is.null(boundary) && !is.null(arg_index)) tccq_c_boundary_arg_plan(module, boundary, arg_index) else NULL
+
   if (identical(arg$tag, "var")) {
     s <- sym[[arg$name]]
     if (is.null(s)) {
       tccq_abort("unknown symbol in boundary arg: ", arg$name)
     }
     if (arg$type$rank > 0L) {
+      strategy <- plan$strategy %||% NULL
+      if (!is.null(strategy) && strategy %in% c("pass_formal", "pass_local", "pass_source")) {
+        sexp_name <- plan$sexp %||% arg$name
+        sexp_sym <- sym[[sexp_name]]
+        if (is.null(sexp_sym)) {
+          tccq_abort("unknown planned boundary arg SEXP: ", sexp_name)
+        }
+        return(list(lines = character(), sexp = sexp_sym$sexp))
+      }
+      if (identical(strategy, "materialize_local")) {
+        return(list(lines = c(tccq_c_emit_materialize_local(arg$name, sym, module)), sexp = s$sexp))
+      }
       if (identical(s$kind, "formal")) {
         return(list(lines = character(), sexp = s$sexp))
       }
@@ -798,7 +848,14 @@ tccq_c_emit_boundary_call <- function(node, sym, module, expect_sexp = TRUE, pre
   arg_lines <- character()
   arg_sexps <- character()
   for (i in seq_along(node$args)) {
-    tmp <- tccq_c_emit_boundary_arg(node$args[[i]], sym, module, paste0("arg_", prefix, "_", i))
+    tmp <- tccq_c_emit_boundary_arg(
+      node$args[[i]],
+      sym,
+      module,
+      paste0("arg_", prefix, "_", i),
+      boundary = node,
+      arg_index = i
+    )
     arg_lines <- c(arg_lines, tmp$lines)
     arg_sexps[[i]] <- tmp$sexp
   }

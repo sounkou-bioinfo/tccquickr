@@ -63,6 +63,34 @@ tccq_boundary_nodes <- function(node) {
   out
 }
 
+tccq_boundary_annotate_ids <- function(node) {
+  counter <- 0L
+
+  annotate <- function(x) {
+    if (!is.list(x) || inherits(x, "tccq_type")) {
+      return(x)
+    }
+
+    if (!is.null(x$tag)) {
+      if (tccq_is_boundary_node(x)) {
+        counter <<- counter + 1L
+        x$boundary_id <- counter
+      }
+      for (nm in names(x)) {
+        if (nm %in% c("tag", "type", "effect", "barrier", "normalized_access", "metadata", "boundary_id")) {
+          next
+        }
+        x[[nm]] <- annotate(x[[nm]])
+      }
+      return(x)
+    }
+
+    lapply(x, annotate)
+  }
+
+  annotate(node)
+}
+
 tccq_boundary_context <- function(node) {
   boundaries <- tccq_boundary_nodes(node)
   if (!length(boundaries)) {

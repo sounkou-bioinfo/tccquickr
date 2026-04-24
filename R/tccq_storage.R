@@ -209,6 +209,142 @@ tccq_storage_result_plan <- function(module, bindings) {
   )
 }
 
+tccq_storage_alias_formal_source <- function(name, bindings, formal_names) {
+  seen <- character()
+  cur <- name
+
+  repeat {
+    if (cur %in% seen) {
+      return(NULL)
+    }
+    seen <- c(seen, cur)
+
+    binding <- bindings[[cur]] %||% NULL
+    if (is.null(binding) || !identical(binding$kind, "alias") || isTRUE(binding$mutated)) {
+      return(NULL)
+    }
+
+    source <- binding$source %||% NULL
+    if (is.null(source) || is.na(source)) {
+      return(NULL)
+    }
+    if (source %in% formal_names) {
+      return(source)
+    }
+    if (!source %in% names(bindings)) {
+      return(NULL)
+    }
+    cur <- source
+  }
+}
+
+tccq_storage_boundary_arg_plan <- function(arg, arg_index, boundary, bindings, formal_names) {
+  boundary_id <- boundary$boundary_id %||% NA_integer_
+  materialize_args <- boundary$materialize_args %||% logical()
+  materialize <- length(materialize_args) >= arg_index && isTRUE(materialize_args[[arg_index]])
+
+  if (!is.list(arg) || is.null(arg$tag) || !identical(arg$tag, "var")) {
+    return(list(
+      boundary_id = boundary_id,
+      arg_index = arg_index,
+      name = NULL,
+      strategy = if (is.list(arg) && !is.null(arg$type) && arg$type$rank == 0L) "box_scalar" else "unsupported_vector_expr",
+      materialize_required = materialize
+    ))
+  }
+
+  if (is.null(arg$type) || arg$type$rank == 0L) {
+    return(list(
+      boundary_id = boundary_id,
+      arg_index = arg_index,
+      name = arg$name,
+      strategy = if (arg$name %in% formal_names) "pass_formal_scalar" else "box_scalar",
+      materialize_required = materialize
+    ))
+  }
+
+  if (arg$name %in% formal_names) {
+    return(list(
+      boundary_id = boundary_id,
+      arg_index = arg_index,
+      name = arg$name,
+      strategy = "pass_formal",
+      sexp = arg$name,
+      materialize_required = materialize
+    ))
+  }
+
+  binding <- bindings[[arg$name]] %||% NULL
+  if (is.null(binding)) {
+    return(list(
+      boundary_id = boundary_id,
+      arg_index = arg_index,
+      name = arg$name,
+      strategy = "materialize_local",
+      sexp = arg$name,
+      materialize_required = materialize
+    ))
+  }
+
+  formal_source <- tccq_storage_alias_formal_source(arg$name, bindings, formal_names)
+  if (!is.null(formal_source)) {
+    return(list(
+      boundary_id = boundary_id,
+      arg_index = arg_index,
+      name = arg$name,
+      strategy = "pass_source",
+      source = formal_source,
+      sexp = formal_source,
+      materialize_required = materialize
+    ))
+  }
+
+  if (identical(binding$kind, "owned")) {
+    return(list(
+      boundary_id = boundary_id,
+      arg_index = arg_index,
+      name = arg$name,
+      strategy = "pass_local",
+      sexp = arg$name,
+      materialize_required = materialize
+    ))
+  }
+
+  list(
+    boundary_id = boundary_id,
+    arg_index = arg_index,
+    name = arg$name,
+    strategy = "materialize_local",
+    sexp = arg$name,
+    materialize_required = materialize
+  )
+}
+
+tccq_storage_boundary_arg_plans <- function(module, bindings) {
+  boundaries <- tccq_boundary_nodes(module$kernel)
+  if (!length(boundaries)) {
+    return(list())
+  }
+
+  out <- list()
+  for (boundary in boundaries) {
+    boundary_id <- boundary$boundary_id %||% (length(out) + 1L)
+    args <- boundary$args %||% list()
+    plans <- vector("list", length(args))
+    for (i in seq_along(args)) {
+      plans[[i]] <- tccq_storage_boundary_arg_plan(
+        args[[i]],
+        arg_index = i,
+        boundary = boundary,
+        bindings = bindings,
+        formal_names = module$formal_names
+      )
+    }
+    out[[as.character(boundary_id)]] <- plans
+  }
+  out
+}
+
 tccq_storage_plan <- function(module) {
   ir <- module$ir
   locals <- if (!is.null(ir)) tccq_ir_program_locals(ir) else list()
@@ -258,6 +394,7 @@ tccq_storage_plan <- function(module) {
 
   aliases <- bindings[vapply(bindings, function(x) x$kind %in% c("alias", "view"), logical(1))]
   write_barriers <- tccq_storage_write_barrier_plan(ir, bindings)
+  boundary_args <- tccq_storage_boundary_arg_plans(module, bindings)
   result <- tccq_storage_result_plan(module, bindings)
 
   list(
@@ -268,6 +405,7 @@ tccq_storage_plan <- function(module) {
     direct_return = identical(result$strategy, "return_owned_local"),
     result = result,
     views = names(Filter(function(x) identical(x$kind, "view"), bindings)),
-    write_barriers = write_barriers
+    write_barriers = write_barriers,
+    boundary_args = boundary_args
   )
 }
