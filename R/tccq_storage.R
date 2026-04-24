@@ -16,6 +16,154 @@ tccq_storage_binding <- function(name, type, kind = "owned", source = NULL, muta
   )
 }
 
+tccq_storage_stmt_read_vars <- function(stmt) {
+  if (!is.list(stmt) || is.null(stmt$tag)) {
+    return(character())
+  }
+
+  switch(
+    stmt$tag,
+    bind = tccq_ir_vars(stmt$value),
+    store_index = tccq_unique(c(tccq_ir_vars(stmt$index), tccq_ir_vars(stmt$value))),
+    store_range = tccq_unique(c(tccq_ir_vars(stmt$start), tccq_ir_vars(stmt$stop), tccq_ir_vars(stmt$value))),
+    character()
+  )
+}
+
+tccq_storage_write_barrier_plan <- function(ir, bindings) {
+  if (is.null(ir) || !identical(ir$tag, "program") || !length(ir$stmts)) {
+    return(list())
+  }
+
+  stmts <- ir$stmts
+  bind_index <- list()
+  for (i in seq_along(stmts)) {
+    if (identical(stmts[[i]]$tag, "bind")) {
+      bind_index[[stmts[[i]]$name]] <- i
+    }
+  }
+
+  reads_after <- vector("list", length(stmts))
+  future_reads <- tccq_ir_vars(ir$result)
+  for (i in rev(seq_along(stmts))) {
+    reads_after[[i]] <- future_reads
+    future_reads <- tccq_unique(c(tccq_storage_stmt_read_vars(stmts[[i]]), future_reads))
+  }
+
+  local_names <- names(bindings)
+  current_owned <- setNames(lapply(bindings, function(x) identical(x$kind, "owned")), local_names)
+  current_generation <- setNames(as.list(rep(0L, length(local_names))), local_names)
+  borrowed_generation <- list()
+  out <- list()
+
+  source_generation <- function(source) {
+    if (is.null(source) || is.na(source) || !source %in% names(current_generation)) {
+      return(0L)
+    }
+    current_generation[[source]] %||% 0L
+  }
+
+  depends_on <- function(name, target) {
+    seen <- character()
+    cur <- name
+    repeat {
+      if (cur %in% seen) {
+        return(FALSE)
+      }
+      seen <- c(seen, cur)
+      binding <- bindings[[cur]] %||% NULL
+      source <- binding$source %||% NA_character_
+      if (is.na(source) || is.null(source)) {
+        return(FALSE)
+      }
+      if (identical(source, target)) {
+        return(TRUE)
+      }
+      if (!source %in% names(bindings)) {
+        return(FALSE)
+      }
+      cur <- source
+    }
+  }
+
+  bind_generation_source <- function(stmt, binding) {
+    if (identical(binding$kind, "view")) {
+      plan <- tccq_ir_normalized_access(stmt$value)
+      base_name <- plan$base_name %||% NULL
+      if (!is.null(base_name)) {
+        return(base_name)
+      }
+    }
+    binding$source %||% NULL
+  }
+
+  for (i in seq_along(stmts)) {
+    stmt <- stmts[[i]]
+
+    if (identical(stmt$tag, "bind")) {
+      binding <- bindings[[stmt$name]] %||% NULL
+      if (!is.null(binding)) {
+        if (identical(binding$kind, "owned")) {
+          current_owned[[stmt$name]] <- TRUE
+          current_generation[[stmt$name]] <- 0L
+        } else if (binding$kind %in% c("alias", "view")) {
+          current_owned[[stmt$name]] <- FALSE
+          current_generation[[stmt$name]] <- source_generation(bind_generation_source(stmt, binding))
+          borrowed_generation[[stmt$name]] <- current_generation[[stmt$name]]
+        }
+      }
+      next
+    }
+
+    if (!stmt$tag %in% c("store_index", "store_range")) {
+      next
+    }
+
+    target <- stmt$name
+    target_owned <- isTRUE(current_owned[[target]])
+    target_generation <- current_generation[[target]] %||% 0L
+    needed_reads <- tccq_unique(c(tccq_storage_stmt_read_vars(stmt), reads_after[[i]]))
+    materialize <- character()
+
+    if (isTRUE(target_owned)) {
+      for (borrowed_name in names(borrowed_generation)) {
+        if (!borrowed_name %in% needed_reads) {
+          next
+        }
+        if (is.null(bind_index[[borrowed_name]]) || bind_index[[borrowed_name]] >= i) {
+          next
+        }
+        if (depends_on(borrowed_name, target) && identical(borrowed_generation[[borrowed_name]], target_generation)) {
+          materialize <- c(materialize, borrowed_name)
+        }
+      }
+    }
+
+    materialize <- tccq_unique(materialize)
+    out[[as.character(i)]] <- list(
+      stmt_index = i,
+      target = target,
+      target_owned_before_write = target_owned,
+      target_generation = target_generation,
+      materialize_views = materialize
+    )
+
+    for (borrowed_name in materialize) {
+      current_owned[[borrowed_name]] <- TRUE
+      current_generation[[borrowed_name]] <- (current_generation[[borrowed_name]] %||% 0L) + 1L
+      borrowed_generation[[borrowed_name]] <- NULL
+    }
+
+    if (!isTRUE(target_owned)) {
+      current_owned[[target]] <- TRUE
+      current_generation[[target]] <- target_generation + 1L
+      borrowed_generation[[target]] <- NULL
+    }
+  }
+
+  out
+}
+
 tccq_storage_result_plan <- function(module, bindings) {
   kernel <- module$kernel
   if (is.null(kernel)) {
@@ -109,6 +257,7 @@ tccq_storage_plan <- function(module) {
   }
 
   aliases <- bindings[vapply(bindings, function(x) x$kind %in% c("alias", "view"), logical(1))]
+  write_barriers <- tccq_storage_write_barrier_plan(ir, bindings)
   result <- tccq_storage_result_plan(module, bindings)
 
   list(
@@ -118,6 +267,7 @@ tccq_storage_plan <- function(module) {
     mutated = mutated,
     direct_return = identical(result$strategy, "return_owned_local"),
     result = result,
-    views = names(Filter(function(x) identical(x$kind, "view"), bindings))
+    views = names(Filter(function(x) identical(x$kind, "view"), bindings)),
+    write_barriers = write_barriers
   )
 }

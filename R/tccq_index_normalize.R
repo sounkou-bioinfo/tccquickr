@@ -84,10 +84,10 @@ tccq_ir_hoist_access_program <- function(node, reserved_names = character()) {
   used_names <- tccq_unique(c(reserved_names, tccq_ir_vars(node), names(tccq_ir_program_locals(node))))
   used_c_names <- tccq_unique(vapply(used_names, tccq_c_ident, character(1)))
   counter <- 0L
-  fresh_name <- function() {
+  fresh_name <- function(prefix = "tccq_idx_tmp_") {
     repeat {
       counter <<- counter + 1L
-      nm <- paste0("tccq_idx_tmp_", counter)
+      nm <- paste0(prefix, counter)
       c_nm <- tccq_c_ident(nm)
       if (!nm %in% used_names && !c_nm %in% used_c_names) {
         used_names <<- c(used_names, nm)
@@ -163,8 +163,27 @@ tccq_ir_hoist_access_program <- function(node, reserved_names = character()) {
         list(stmts = x$stmts, expr = expr)
       },
       len = {
-        x <- hoist_expr(expr$x, allow_root_access = FALSE)
+        if (is.list(expr$x) && identical(expr$x$tag, "boundary_call")) {
+          stmts <- list()
+          args <- vector("list", length(expr$x$args))
+          for (i in seq_along(expr$x$args)) {
+            arg <- hoist_expr(expr$x$args[[i]], allow_root_access = FALSE)
+            stmts <- c(stmts, arg$stmts)
+            args[[i]] <- arg$expr
+          }
+          expr$x$args <- args
+          x <- list(stmts = stmts, expr = expr$x)
+        } else {
+          x <- hoist_expr(expr$x, allow_root_access = FALSE)
+        }
         expr$x <- x$expr
+        if (!identical(expr$x$tag, "var")) {
+          nm <- fresh_name("tccq_len_tmp_")
+          return(list(
+            stmts = c(x$stmts, list(tccq_ir_bind(nm, expr))),
+            expr = tccq_ir_var(nm, expr$type)
+          ))
+        }
         list(stmts = x$stmts, expr = expr)
       },
       boundary_call = {
@@ -176,6 +195,13 @@ tccq_ir_hoist_access_program <- function(node, reserved_names = character()) {
           args[[i]] <- arg$expr
         }
         expr$args <- args
+        if (!allow_root_access && !is.null(expr$type) && expr$type$rank == 0L) {
+          nm <- fresh_name("tccq_boundary_tmp_")
+          return(list(
+            stmts = c(stmts, list(tccq_ir_bind(nm, expr))),
+            expr = tccq_ir_var(nm, expr$type)
+          ))
+        }
         list(stmts = stmts, expr = expr)
       },
       list(stmts = list(), expr = expr)

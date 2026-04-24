@@ -45,7 +45,7 @@ tccq_ir_boundary <- function(kind, reason, input, type, effect = "boundary") {
 }
 
 tccq_ir_len <- function(x) {
-  tccq_node("len", x = x, type = tccq_type_scalar("integer"))
+  tccq_node("len", x = x, type = tccq_type_scalar("xlen"))
 }
 
 # Program and statement IR ----------------------------------------------------

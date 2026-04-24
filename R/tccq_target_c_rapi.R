@@ -42,6 +42,7 @@ tccq_c_emit_module <- function(module, ctx = list()) {
     "#include <Rinternals.h>",
     "#include <Rmath.h>",
     "#include <math.h>",
+    "#include <limits.h>",
     "",
     "#ifndef REAL_RO",
     "#define REAL_RO(x) REAL(x)",
@@ -137,8 +138,20 @@ tccq_c_symbol_table <- function(module) {
   out
 }
 
+tccq_c_emit_scalar_value_length_check <- function(s, value_vars, label) {
+  if (!s$name %in% value_vars) {
+    return(character())
+  }
+  c(
+    paste0("if (", s$len, " != 1) {"),
+    paste0("  Rf_error(\"scalar value %s has runtime length %lld; vector-valued scalar use is not supported\", ", tccq_c_string(label), ", (long long)", s$len, ");"),
+    "}"
+  )
+}
+
 tccq_c_emit_argument_setup <- function(module, sym) {
   lines <- character()
+  scalar_value_vars <- tccq_c_module_scalar_value_vars(module)
 
   for (nm in module$formal_names) {
     s <- sym[[nm]]
@@ -156,21 +169,25 @@ tccq_c_emit_argument_setup <- function(module, sym) {
     if (type$rank == 0L) {
       lines <- c(
         lines,
-        paste0("if (XLENGTH(", s$arg, ") < 1) {"),
+        paste0("R_xlen_t ", s$len, " = XLENGTH(", s$arg, ");"),
+        paste0("if (", s$len, " < 1) {"),
         paste0("  Rf_error(\"scalar argument %s is empty\", ", cname, ");"),
         "}",
+        tccq_c_emit_scalar_value_length_check(s, scalar_value_vars, nm),
         paste0(
           tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
           " = ", tccq_c_ro_accessor(type$mode), "(", s$arg, ")[0];"
         )
       )
     } else if (type$rank == 1L) {
+      cache <- paste0("tccq_arg_ptr_cache_", tccq_c_ident(nm))
       lines <- c(
         lines,
         paste0("R_xlen_t ", s$len, " = XLENGTH(", s$arg, ");"),
+        paste0("const ", tccq_c_scalar_type_for_mode(type$mode), " *", cache, " = NULL;"),
         paste0(
-          "const ", tccq_c_scalar_type_for_mode(type$mode), " *", s$ptr,
-          " = ", tccq_c_ro_accessor(type$mode), "(", s$arg, ");"
+          "#define ", s$ptr, " (", cache, " == NULL ? (", cache, " = ",
+          tccq_c_ro_accessor(type$mode), "(", s$arg, ")) : ", cache, ")"
         )
       )
     } else {
@@ -274,10 +291,60 @@ tccq_c_emit_domain_length <- function(domain, sym, module = NULL, len_name = "n_
   lines
 }
 
+tccq_c_emit_scalar_length_setup <- function(node, sym, module, len_name) {
+  if (identical(node$tag, "const")) {
+    return(paste0("R_xlen_t ", len_name, " = 1;"))
+  }
+
+  if (identical(node$tag, "var")) {
+    s <- sym[[node$name]]
+    if (is.null(s)) {
+      tccq_abort("unknown C symbol for scalar length: ", node$name)
+    }
+    return(paste0("R_xlen_t ", len_name, " = ", s$len, ";"))
+  }
+
+  if (identical(node$tag, "boundary_call")) {
+    prefix <- tccq_c_ident(len_name)
+    return(c(
+      tccq_c_emit_boundary_call(node, sym, module, expect_sexp = FALSE, prefix = prefix),
+      paste0("R_xlen_t ", len_name, " = XLENGTH(val_", prefix, ");")
+    ))
+  }
+
+  if (node$tag %in% c("unary", "call1")) {
+    return(c(
+      tccq_c_emit_scalar_length_setup(node$x, sym, module, paste0(len_name, "_x")),
+      paste0("R_xlen_t ", len_name, " = ", len_name, "_x;")
+    ))
+  }
+
+  if (identical(node$tag, "binary")) {
+    lhs_name <- paste0(len_name, "_lhs")
+    rhs_name <- paste0(len_name, "_rhs")
+    return(c(
+      tccq_c_emit_scalar_length_setup(node$lhs, sym, module, lhs_name),
+      tccq_c_emit_scalar_length_setup(node$rhs, sym, module, rhs_name),
+      paste0("if (", lhs_name, " != 1 && ", rhs_name, " != 1 && ", lhs_name, " != ", rhs_name, ") {"),
+      "  Rf_error(\"scalar expression length mismatch\");",
+      "}",
+      paste0("R_xlen_t ", len_name, " = ", lhs_name, " != 1 ? ", lhs_name, " : ", rhs_name, ";")
+    ))
+  }
+
+  expr <- tccq_c_emit_expr(node, sym, idx = NULL)
+  ctype <- tccq_c_scalar_type_for_mode(node$type$mode)
+  c(
+    paste0(ctype, " ", len_name, "_value = (", ctype, ")(", expr, ");"),
+    paste0("(void)", len_name, "_value;"),
+    paste0("R_xlen_t ", len_name, " = 1;")
+  )
+}
+
 tccq_c_emit_common_length_named <- function(expr, sym, len_name, module = NULL) {
   emit_length <- function(node, target) {
     if (is.null(node$type) || node$type$rank == 0L) {
-      return(paste0("R_xlen_t ", target, " = 1;"))
+      return(tccq_c_emit_scalar_length_setup(node, sym, module, target))
     }
 
     from_shape <- tccq_c_emit_shape_domain_length(
@@ -287,7 +354,7 @@ tccq_c_emit_common_length_named <- function(expr, sym, len_name, module = NULL) 
       target,
       preferred_names = tccq_ir_vector_vars(node)
     )
-    if (!is.null(from_shape) && !node$tag %in% c("slice_range", "view1")) {
+    if (!is.null(from_shape) && !node$tag %in% c("slice_range", "view1") && !tccq_c_expr_length_needs_eval(node)) {
       return(from_shape)
     }
 
@@ -316,6 +383,13 @@ tccq_c_emit_common_length_named <- function(expr, sym, len_name, module = NULL) 
         emit_length(node$x, paste0(target, "_x")),
         paste0("R_xlen_t ", target, " = ", target, "_x;")
       ),
+      boundary_call = {
+        prefix <- tccq_c_ident(target)
+        c(
+          tccq_c_emit_boundary_call(node, sym, module, expect_sexp = FALSE, prefix = prefix),
+          paste0("R_xlen_t ", target, " = XLENGTH(val_", prefix, ");")
+        )
+      },
       binary = {
         left_name <- paste0(target, "_lhs")
         right_name <- paste0(target, "_rhs")
@@ -364,6 +438,202 @@ tccq_c_expr_length <- function(expr, sym) {
   tccq_abort("cannot infer inline vector length for expression")
 }
 
+tccq_c_expr_length_needs_eval <- function(node) {
+  if (!is.list(node) || is.null(node$tag)) {
+    return(FALSE)
+  }
+
+  if (is.null(node$type) || node$type$rank == 0L) {
+    return(!node$tag %in% c("var", "const"))
+  }
+
+  switch(
+    node$tag,
+    var = FALSE,
+    unary = tccq_c_expr_length_needs_eval(node$x),
+    call1 = tccq_c_expr_length_needs_eval(node$x),
+    binary = tccq_c_expr_length_needs_eval(node$lhs) || tccq_c_expr_length_needs_eval(node$rhs),
+    slice_range = tccq_c_expr_length_needs_eval(node$start) || tccq_c_expr_length_needs_eval(node$stop),
+    view1 = tccq_c_expr_length_needs_eval(node$start) || tccq_c_expr_length_needs_eval(node$stop),
+    boundary_call = TRUE,
+    len = tccq_c_expr_length_needs_eval(node$x),
+    FALSE
+  )
+}
+
+tccq_c_expr_length_data_vars <- function(node) {
+  if (!is.list(node) || is.null(node$tag)) {
+    return(character())
+  }
+
+  if (is.null(node$type) || node$type$rank == 0L) {
+    return(tccq_c_expr_data_vars(node))
+  }
+
+  switch(
+    node$tag,
+    var = character(),
+    unary = tccq_c_expr_length_data_vars(node$x),
+    call1 = tccq_c_expr_length_data_vars(node$x),
+    binary = tccq_unique(c(tccq_c_expr_length_data_vars(node$lhs), tccq_c_expr_length_data_vars(node$rhs))),
+    slice_range = tccq_unique(c(tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
+    view1 = tccq_unique(c(tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
+    boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_data_vars), use.names = FALSE)),
+    len = tccq_c_expr_length_data_vars(node$x),
+    character()
+  )
+}
+
+tccq_c_expr_data_vars <- function(node) {
+  if (!is.list(node) || is.null(node$tag)) {
+    return(character())
+  }
+
+  switch(
+    node$tag,
+    const = character(),
+    var = if (!is.null(node$type) && node$type$rank > 0L) node$name else character(),
+    unary = tccq_c_expr_data_vars(node$x),
+    call1 = tccq_c_expr_data_vars(node$x),
+    binary = tccq_unique(c(tccq_c_expr_data_vars(node$lhs), tccq_c_expr_data_vars(node$rhs))),
+    reduce = tccq_c_expr_data_vars(node$x),
+    len = tccq_c_expr_length_data_vars(node$x),
+    index = tccq_unique(c(tccq_c_expr_data_vars(node$x), tccq_c_expr_data_vars(node$index))),
+    slice_range = tccq_unique(c(tccq_c_expr_data_vars(node$x), tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
+    view1 = tccq_unique(c(tccq_c_expr_data_vars(node$x), tccq_c_expr_data_vars(node$start), tccq_c_expr_data_vars(node$stop))),
+    boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_data_vars), use.names = FALSE)),
+    character()
+  )
+}
+
+tccq_c_stmt_data_vars <- function(stmt, module) {
+  if (!is.list(stmt) || is.null(stmt$tag)) {
+    return(character())
+  }
+
+  switch(
+    stmt$tag,
+    bind = {
+      kind <- tccq_c_storage_kind(module, stmt$name)
+      if (kind %in% c("alias", "view")) {
+        value <- stmt$value
+        if (is.list(value) && value$tag %in% c("slice_range", "view1")) {
+          return(tccq_unique(c(tccq_c_expr_data_vars(value$start), tccq_c_expr_data_vars(value$stop))))
+        }
+        return(character())
+      }
+      tccq_c_expr_data_vars(stmt$value)
+    },
+    store_index = tccq_unique(c(stmt$name, tccq_c_expr_data_vars(stmt$index), tccq_c_expr_data_vars(stmt$value))),
+    store_range = tccq_unique(c(stmt$name, tccq_c_expr_data_vars(stmt$start), tccq_c_expr_data_vars(stmt$stop), tccq_c_expr_data_vars(stmt$value))),
+    character()
+  )
+}
+
+tccq_c_expr_scalar_value_vars <- function(node) {
+  if (!is.list(node) || is.null(node$tag)) {
+    return(character())
+  }
+
+  switch(
+    node$tag,
+    const = character(),
+    var = if (!is.null(node$type) && node$type$rank == 0L) node$name else character(),
+    unary = tccq_c_expr_scalar_value_vars(node$x),
+    call1 = tccq_c_expr_scalar_value_vars(node$x),
+    binary = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$lhs), tccq_c_expr_scalar_value_vars(node$rhs))),
+    reduce = tccq_c_expr_scalar_value_vars(node$x),
+    len = tccq_c_expr_length_data_vars(node$x),
+    index = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$index))),
+    slice_range = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
+    view1 = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
+    boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_scalar_value_vars), use.names = FALSE)),
+    character()
+  )
+}
+
+tccq_c_stmt_scalar_value_vars <- function(stmt) {
+  if (!is.list(stmt) || is.null(stmt$tag)) {
+    return(character())
+  }
+
+  switch(
+    stmt$tag,
+    store_index = tccq_unique(c(tccq_c_expr_scalar_value_vars(stmt$index), tccq_c_expr_scalar_value_vars(stmt$value))),
+    store_range = tccq_unique(c(tccq_c_expr_scalar_value_vars(stmt$start), tccq_c_expr_scalar_value_vars(stmt$stop), tccq_c_expr_scalar_value_vars(stmt$value))),
+    character()
+  )
+}
+
+tccq_c_module_scalar_value_vars <- function(module) {
+  ir <- module$ir
+  if (is.null(ir) || !identical(ir$tag, "program")) {
+    return(tccq_c_expr_scalar_value_vars(ir))
+  }
+
+  value_vars <- tccq_unique(c(
+    tccq_c_expr_scalar_value_vars(ir$result),
+    unlist(lapply(ir$stmts %||% list(), tccq_c_stmt_scalar_value_vars), use.names = FALSE)
+  ))
+
+  repeat {
+    before <- value_vars
+    for (stmt in ir$stmts %||% list()) {
+      if (!identical(stmt$tag, "bind") || !stmt$name %in% value_vars) {
+        next
+      }
+      value_vars <- tccq_unique(c(value_vars, tccq_c_expr_scalar_value_vars(stmt$value)))
+    }
+    if (setequal(before, value_vars)) {
+      break
+    }
+  }
+
+  value_vars
+}
+
+tccq_c_module_data_vars <- function(module) {
+  ir <- module$ir
+  if (is.null(ir) || !identical(ir$tag, "program")) {
+    return(tccq_c_expr_data_vars(ir))
+  }
+
+  barrier_vars <- unlist(lapply(
+    module$storage_plan$write_barriers %||% list(),
+    function(x) x$materialize_views %||% character()
+  ), use.names = FALSE)
+
+  data <- tccq_unique(c(
+    unlist(lapply(ir$stmts %||% list(), tccq_c_stmt_data_vars, module = module), use.names = FALSE),
+    tccq_c_expr_data_vars(ir$result),
+    barrier_vars
+  ))
+
+  repeat {
+    before <- data
+    for (stmt in ir$stmts %||% list()) {
+      if (!identical(stmt$tag, "bind") || !stmt$name %in% data) {
+        next
+      }
+      kind <- tccq_c_storage_kind(module, stmt$name)
+      if (identical(kind, "alias") && identical(stmt$value$tag, "var") && stmt$value$type$rank > 0L) {
+        data <- tccq_unique(c(data, stmt$value$name))
+      } else if (identical(kind, "view")) {
+        plan <- tccq_ir_normalized_access(stmt$value)
+        base_name <- plan$base_name %||% if (is.list(stmt$value$x) && identical(stmt$value$x$tag, "var")) stmt$value$x$name else NULL
+        if (!is.null(base_name)) {
+          data <- tccq_unique(c(data, base_name))
+        }
+      }
+    }
+    if (setequal(before, data)) {
+      break
+    }
+  }
+
+  data
+}
+
 tccq_c_storage_binding <- function(module, name) {
   module$storage_plan$bindings[[name]] %||% list(kind = "owned")
 }
@@ -399,6 +669,17 @@ tccq_c_scalar_sexp_alloc <- function(mode, sexp_name, expr) {
       "++tccq_nprotect;",
       paste0("RAW(", sexp_name, ")[0] = (Rbyte) (", expr, ");")
     ),
+    xlen = c(
+      paste0("R_xlen_t ", sexp_name, "_xlen = (R_xlen_t)(", expr, ");"),
+      paste0("int ", sexp_name, "_fits_int = ", sexp_name, "_xlen >= (R_xlen_t)INT_MIN && ", sexp_name, "_xlen <= (R_xlen_t)INT_MAX;"),
+      paste0("SEXP ", sexp_name, " = PROTECT(Rf_allocVector(", sexp_name, "_fits_int ? INTSXP : REALSXP, 1));"),
+      "++tccq_nprotect;",
+      paste0("if (", sexp_name, "_fits_int) {"),
+      paste0("  INTEGER(", sexp_name, ")[0] = (int)", sexp_name, "_xlen;"),
+      "} else {",
+      paste0("  REAL(", sexp_name, ")[0] = (double)", sexp_name, "_xlen;"),
+      "}"
+    ),
     tccq_abort("unsupported scalar boxing mode: ", mode)
   )
 }
@@ -430,7 +711,7 @@ tccq_c_emit_boundary_arg <- function(arg, sym, module, name) {
   tccq_abort("boundary args currently support direct vars or scalar expressions only")
 }
 
-tccq_c_emit_boundary_call <- function(node, sym, module, expect_sexp = TRUE) {
+tccq_c_emit_boundary_call <- function(node, sym, module, expect_sexp = TRUE, prefix = "boundary") {
   if (!identical(node$api, "r_eval")) {
     tccq_abort("only r_eval boundary emission is supported in this milestone")
   }
@@ -441,20 +722,24 @@ tccq_c_emit_boundary_call <- function(node, sym, module, expect_sexp = TRUE) {
     tccq_abort("r_eval boundary emission currently requires a simple function symbol head")
   }
 
+  prefix <- tccq_c_ident(prefix)
+  call_name <- paste0("call_", prefix)
+  val_name <- paste0("val_", prefix)
+
   arg_lines <- character()
   arg_sexps <- character()
   for (i in seq_along(node$args)) {
-    tmp <- tccq_c_emit_boundary_arg(node$args[[i]], sym, module, paste0("arg_boundary_", i))
+    tmp <- tccq_c_emit_boundary_arg(node$args[[i]], sym, module, paste0("arg_", prefix, "_", i))
     arg_lines <- c(arg_lines, tmp$lines)
     arg_sexps[[i]] <- tmp$sexp
   }
 
   lang_line <- switch(
     as.character(length(arg_sexps)),
-    `0` = "SEXP call_boundary = PROTECT(Rf_lang1(Rf_install(\"HEAD\")));",
-    `1` = paste0("SEXP call_boundary = PROTECT(Rf_lang2(Rf_install(\"HEAD\"), ", arg_sexps[[1L]], "));"),
-    `2` = paste0("SEXP call_boundary = PROTECT(Rf_lang3(Rf_install(\"HEAD\"), ", arg_sexps[[1L]], ", ", arg_sexps[[2L]], "));"),
-    `3` = paste0("SEXP call_boundary = PROTECT(Rf_lang4(Rf_install(\"HEAD\"), ", arg_sexps[[1L]], ", ", arg_sexps[[2L]], ", ", arg_sexps[[3L]], "));"),
+    `0` = paste0("SEXP ", call_name, " = PROTECT(Rf_lang1(Rf_install(\"HEAD\")));"),
+    `1` = paste0("SEXP ", call_name, " = PROTECT(Rf_lang2(Rf_install(\"HEAD\"), ", arg_sexps[[1L]], "));"),
+    `2` = paste0("SEXP ", call_name, " = PROTECT(Rf_lang3(Rf_install(\"HEAD\"), ", arg_sexps[[1L]], ", ", arg_sexps[[2L]], "));"),
+    `3` = paste0("SEXP ", call_name, " = PROTECT(Rf_lang4(Rf_install(\"HEAD\"), ", arg_sexps[[1L]], ", ", arg_sexps[[2L]], ", ", arg_sexps[[3L]], "));"),
     tccq_abort("r_eval boundary emission currently supports up to 3 arguments")
   )
   lang_line <- sub("HEAD", head, lang_line, fixed = TRUE)
@@ -463,9 +748,9 @@ tccq_c_emit_boundary_call <- function(node, sym, module, expect_sexp = TRUE) {
     arg_lines,
     lang_line,
     "++tccq_nprotect;",
-    "SEXP val_boundary = PROTECT(Rf_eval(call_boundary, R_GlobalEnv));",
+    paste0("SEXP ", val_name, " = PROTECT(Rf_eval(", call_name, ", R_GlobalEnv));"),
     "++tccq_nprotect;",
-    if (isTRUE(expect_sexp)) c("UNPROTECT(tccq_nprotect);", "return val_boundary;") else character()
+    if (isTRUE(expect_sexp)) c("UNPROTECT(tccq_nprotect);", paste0("return ", val_name, ";")) else character()
   )
 }
 
@@ -512,6 +797,24 @@ tccq_c_emit_kernel_scalar <- function(kernel, sym, module) {
   mode <- kernel$type$mode
   out_sexp <- tccq_sexptype_for_mode(mode)
 
+  if (identical(kernel$expr$tag, "len")) {
+    return(c(
+      tccq_c_emit_len_setup(kernel$expr, sym, module, "n_len"),
+      "if (n_len <= (R_xlen_t)INT_MAX) {",
+      "  SEXP out = PROTECT(Rf_allocVector(INTSXP, 1));",
+      "  ++tccq_nprotect;",
+      "  INTEGER(out)[0] = (int)n_len;",
+      "  UNPROTECT(tccq_nprotect);",
+      "  return out;",
+      "}",
+      "SEXP out = PROTECT(Rf_allocVector(REALSXP, 1));",
+      "++tccq_nprotect;",
+      "REAL(out)[0] = (double)n_len;",
+      "UNPROTECT(tccq_nprotect);",
+      "return out;"
+    ))
+  }
+
   if (identical(kernel$expr$tag, "index") && !is.null(tccq_ir_normalized_access(kernel$expr))) {
     expr <- tccq_c_emit_access_elem(kernel$expr, sym, prefix = "scalar_idx", idx = NULL)
     return(c(
@@ -525,6 +828,14 @@ tccq_c_emit_kernel_scalar <- function(kernel, sym, module) {
   }
 
   expr <- tccq_c_emit_expr(kernel$expr, sym, idx = NULL)
+
+  if (identical(mode, "xlen")) {
+    return(c(
+      tccq_c_scalar_sexp_alloc("xlen", "out", expr),
+      "UNPROTECT(tccq_nprotect);",
+      "return out;"
+    ))
+  }
 
   c(
     paste0("SEXP out = PROTECT(Rf_allocVector(", out_sexp, ", 1));"),
@@ -617,6 +928,7 @@ tccq_c_emit_missing_check <- function(expr, type) {
     integer = paste0("((int)(", expr, ") == NA_INTEGER)"),
     logical = paste0("((int)(", expr, ") == NA_LOGICAL)"),
     raw = "0",
+    xlen = "0",
     tccq_abort("unsupported missing-value check mode: ", type$mode)
   )
 }
@@ -765,8 +1077,17 @@ tccq_c_emit_reducer_fold_lines <- function(op, result_type, input_type, elem, lo
 }
 
 tccq_c_emit_kernel_program <- function(kernel, sym, module) {
+  stmt_lines <- unlist(
+    Map(
+      function(stmt, idx) tccq_c_emit_stmt(stmt, sym = sym, module = module, stmt_index = idx),
+      kernel$stmts,
+      seq_along(kernel$stmts)
+    ),
+    use.names = FALSE
+  )
+
   c(
-    unlist(lapply(kernel$stmts, tccq_c_emit_stmt, sym = sym, module = module), use.names = FALSE),
+    stmt_lines,
     switch(
       kernel$result_kernel$tag,
       scalar_kernel = tccq_c_emit_kernel_scalar(kernel$result_kernel, sym, module),
@@ -777,14 +1098,35 @@ tccq_c_emit_kernel_program <- function(kernel, sym, module) {
   )
 }
 
-tccq_c_emit_stmt <- function(stmt, sym, module) {
+tccq_c_emit_stmt <- function(stmt, sym, module, stmt_index = NULL) {
   switch(
     stmt$tag,
     bind = tccq_c_emit_stmt_bind(stmt, sym, module),
-    store_index = tccq_c_emit_stmt_store_index(stmt, sym, module),
-    store_range = tccq_c_emit_stmt_store_range(stmt, sym, module),
+    store_index = tccq_c_emit_stmt_store_index(stmt, sym, module, stmt_index = stmt_index),
+    store_range = tccq_c_emit_stmt_store_range(stmt, sym, module, stmt_index = stmt_index),
     tccq_abort("unsupported statement tag: ", stmt$tag)
   )
+}
+
+tccq_c_emit_len_setup <- function(node, sym, module, len_name) {
+  if (!identical(node$tag, "len")) {
+    tccq_abort("expected length node for length setup")
+  }
+
+  x <- node$x
+  if (is.null(x$type) || x$type$rank == 0L) {
+    return(tccq_c_emit_scalar_length_setup(x, sym, module, len_name))
+  }
+
+  if (identical(x$tag, "var")) {
+    s <- sym[[x$name]]
+    if (is.null(s)) {
+      tccq_abort("unknown C symbol for length(): ", x$name)
+    }
+    return(paste0("R_xlen_t ", len_name, " = ", s$len, ";"))
+  }
+
+  tccq_c_emit_common_length_named(x, sym, len_name, module = module)
 }
 
 tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
@@ -794,12 +1136,70 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
   }
 
   type <- stmt$type
+  scalar_value_vars <- tccq_c_module_scalar_value_vars(module)
 
   if (type$rank == 0L) {
+    if (identical(stmt$value$tag, "len")) {
+      len_name <- paste0(s$val, "_len")
+      return(c(
+        tccq_c_emit_len_setup(stmt$value, sym, module, len_name),
+        paste0("R_xlen_t ", s$len, " = 1;"),
+        tccq_c_emit_scalar_value_length_check(s, scalar_value_vars, stmt$name),
+        paste0(
+          tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
+          " = (", tccq_c_scalar_type_for_mode(type$mode), ")(", len_name, ");"
+        )
+      ))
+    }
+
+    if (identical(stmt$value$tag, "boundary_call")) {
+      prefix <- tccq_c_ident(s$val)
+      val_name <- paste0("val_", prefix)
+      common <- c(
+        tccq_c_emit_boundary_call(stmt$value, sym, module, expect_sexp = FALSE, prefix = prefix),
+        paste0("R_xlen_t ", s$len, " = XLENGTH(", val_name, ");"),
+        paste0("if (", s$len, " < 1) {"),
+        "  Rf_error(\"boundary scalar result is empty\");",
+        "}",
+        tccq_c_emit_scalar_value_length_check(s, scalar_value_vars, stmt$name)
+      )
+      if (identical(type$mode, "xlen")) {
+        return(c(
+          common,
+          paste0("R_xlen_t ", s$val, ";"),
+          paste0("if (TYPEOF(", val_name, ") == INTSXP) {"),
+          paste0("  int tmp_", prefix, " = INTEGER(", val_name, ")[0];"),
+          paste0("  if (tmp_", prefix, " == NA_INTEGER) Rf_error(\"boundary xlen scalar result is NA\");"),
+          paste0("  ", s$val, " = (R_xlen_t)tmp_", prefix, ";"),
+          paste0("} else if (TYPEOF(", val_name, ") == REALSXP) {"),
+          paste0("  double tmp_", prefix, " = REAL(", val_name, ")[0];"),
+          paste0("  if (!R_FINITE(tmp_", prefix, ") || floor(tmp_", prefix, ") != tmp_", prefix, " || tmp_", prefix, " < -(double)R_XLEN_T_MAX || tmp_", prefix, " > (double)R_XLEN_T_MAX) {"),
+          "    Rf_error(\"boundary xlen scalar result is not an integer-like finite length\");",
+          "  }",
+          paste0("  ", s$val, " = (R_xlen_t)tmp_", prefix, ";"),
+          "} else {",
+          "  Rf_error(\"boundary xlen scalar result has wrong R type\");",
+          "}"
+        ))
+      }
+      return(c(
+        common,
+        paste0("if (TYPEOF(", val_name, ") != ", tccq_sexptype_for_mode(type$mode), ") {"),
+        "  Rf_error(\"boundary scalar result has wrong R type\");",
+        "}",
+        paste0(
+          tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
+          " = ", tccq_c_ro_accessor(type$mode), "(", val_name, ")[0];"
+        )
+      ))
+    }
+
     if (identical(stmt$value$tag, "index") && !is.null(tccq_ir_normalized_access(stmt$value))) {
       expr <- tccq_c_emit_access_elem(stmt$value, sym, prefix = s$val, idx = NULL)
       return(c(
         tccq_c_emit_access_setup(stmt$value, sym, prefix = s$val),
+        paste0("R_xlen_t ", s$len, " = 1;"),
+        tccq_c_emit_scalar_value_length_check(s, scalar_value_vars, stmt$name),
         paste0(
           tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
           " = (", tccq_c_scalar_type_for_mode(type$mode), ")(", expr, ");"
@@ -808,9 +1208,13 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
     }
 
     expr <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
-    return(paste0(
-      tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
-      " = (", tccq_c_scalar_type_for_mode(type$mode), ")(", expr, ");"
+    return(c(
+      tccq_c_emit_scalar_length_setup(stmt$value, sym, module, s$len),
+      tccq_c_emit_scalar_value_length_check(s, scalar_value_vars, stmt$name),
+      paste0(
+        tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
+        " = (", tccq_c_scalar_type_for_mode(type$mode), ")(", expr, ");"
+      )
     ))
   }
 
@@ -824,10 +1228,15 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
 
   if (identical(storage_kind, "alias") && identical(stmt$value$tag, "var")) {
     base <- sym[[stmt$value$name]]
+    ptr_init <- if (stmt$name %in% tccq_c_module_data_vars(module)) {
+      paste0("(", ctype, " *) ", base$ptr)
+    } else {
+      "NULL"
+    }
     return(c(
       paste0("R_xlen_t ", s$len, " = ", base$len, ";"),
       paste0("SEXP ", s$sexp, " = R_NilValue;"),
-      paste0(ctype, " *", s$ptr, " = (", ctype, " *) ", base$ptr, ";"),
+      paste0(ctype, " *", s$ptr, " = ", ptr_init, ";"),
       paste0("int ", own_flag, " = 0;")
     ))
   }
@@ -851,7 +1260,21 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
   )
 }
 
-tccq_c_emit_stmt_store_index <- function(stmt, sym, module) {
+tccq_c_emit_materialize_before_write <- function(module, sym, stmt_index) {
+  if (is.null(stmt_index)) {
+    return(character())
+  }
+
+  barrier <- module$storage_plan$write_barriers[[as.character(stmt_index)]] %||% NULL
+  views <- barrier$materialize_views %||% character()
+  if (!length(views)) {
+    return(character())
+  }
+
+  unlist(lapply(views, tccq_c_emit_materialize_local, sym = sym, module = module), use.names = FALSE)
+}
+
+tccq_c_emit_stmt_store_index <- function(stmt, sym, module, stmt_index = NULL) {
   s <- sym[[stmt$name]]
   if (is.null(s) || !identical(s$kind, "local")) {
     tccq_abort("indexed assignment target must be a local vector: ", stmt$name)
@@ -864,15 +1287,17 @@ tccq_c_emit_stmt_store_index <- function(stmt, sym, module) {
   value <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   id <- tccq_c_ident(stmt$name)
+  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
 
   c(
+    tccq_c_emit_materialize_before_write(module, sym, stmt_index),
     if (!identical(tccq_c_storage_kind(module, stmt$name), "owned")) tccq_c_emit_materialize_local(stmt$name, sym, module),
-    paste0("R_xlen_t j_", id, " = tccq_checked_index1((R_xlen_t)(", index, "), ", s$len, ", ", tccq_c_string(stmt$name), ");"),
-    paste0(s$ptr, "[j_", id, "] = (", ctype, ")(", value, ");")
+    paste0("R_xlen_t j_", tmp_id, " = tccq_checked_index1((R_xlen_t)(", index, "), ", s$len, ", ", tccq_c_string(stmt$name), ");"),
+    paste0(s$ptr, "[j_", tmp_id, "] = (", ctype, ")(", value, ");")
   )
 }
 
-tccq_c_emit_stmt_store_range <- function(stmt, sym, module) {
+tccq_c_emit_stmt_store_range <- function(stmt, sym, module, stmt_index = NULL) {
   s <- sym[[stmt$name]]
   if (is.null(s) || !identical(s$kind, "local")) {
     tccq_abort("range assignment target must be a local vector: ", stmt$name)
@@ -885,19 +1310,22 @@ tccq_c_emit_stmt_store_range <- function(stmt, sym, module) {
   }
 
   id <- tccq_c_ident(stmt$name)
+  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
   start <- tccq_c_emit_expr(stmt$start, sym, idx = NULL)
   stop <- tccq_c_emit_expr(stmt$stop, sym, idx = NULL)
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   rhs_value <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
 
   c(
+    tccq_c_emit_materialize_before_write(module, sym, stmt_index),
     if (!identical(tccq_c_storage_kind(module, stmt$name), "owned")) tccq_c_emit_materialize_local(stmt$name, sym, module),
-    paste0("R_xlen_t lo_", id, " = tccq_checked_index1((R_xlen_t)(", start, "), ", s$len, ", ", tccq_c_string(stmt$name), ");"),
-    paste0("R_xlen_t hi_", id, " = tccq_checked_index1((R_xlen_t)(", stop, "), ", s$len, ", ", tccq_c_string(stmt$name), ");"),
-    paste0("if (hi_", id, " < lo_", id, ") { Rf_error(\"decreasing ranges are not supported in indexed assignment\"); }"),
-    paste0("R_xlen_t n_rng_", id, " = hi_", id, " - lo_", id, " + 1;"),
-    paste0("for (R_xlen_t i = 0; i < n_rng_", id, "; ++i) {"),
-    paste0("  ", s$ptr, "[lo_", id, " + i] = (", ctype, ")(", rhs_value, ");"),
+    paste0("R_xlen_t lo_", tmp_id, " = tccq_checked_index1((R_xlen_t)(", start, "), ", s$len, ", ", tccq_c_string(stmt$name), ");"),
+    paste0("R_xlen_t hi_", tmp_id, " = tccq_checked_index1((R_xlen_t)(", stop, "), ", s$len, ", ", tccq_c_string(stmt$name), ");"),
+    paste0("if (hi_", tmp_id, " < lo_", tmp_id, ") { Rf_error(\"decreasing ranges are not supported in indexed assignment\"); }"),
+    paste0("R_xlen_t n_rng_", tmp_id, " = hi_", tmp_id, " - lo_", tmp_id, " + 1;"),
+    paste0(ctype, " rhs_", tmp_id, " = (", ctype, ")(", rhs_value, ");"),
+    paste0("for (R_xlen_t i = 0; i < n_rng_", tmp_id, "; ++i) {"),
+    paste0("  ", s$ptr, "[lo_", tmp_id, " + i] = rhs_", tmp_id, ";"),
     "}"
   )
 }
@@ -1028,11 +1456,16 @@ tccq_c_emit_bind_slice_range <- function(stmt, sym, module) {
   own_flag <- tccq_c_owned_flag(s)
 
   if (identical(tccq_c_storage_kind(module, stmt$name), "view")) {
+    ptr_init <- if (stmt$name %in% tccq_c_module_data_vars(module)) {
+      paste0("(", ctype, " *) (", base$ptr, " + off_", s$len, ")")
+    } else {
+      "NULL"
+    }
     return(c(
       setup,
       paste0("R_xlen_t ", s$len, " = n_", s$len, ";"),
       paste0("SEXP ", s$sexp, " = R_NilValue;"),
-      paste0(ctype, " *", s$ptr, " = (", ctype, " *) (", base$ptr, " + off_", s$len, ");"),
+      paste0(ctype, " *", s$ptr, " = ", ptr_init, ";"),
       paste0("int ", own_flag, " = 0;")
     ))
   }
@@ -1058,6 +1491,7 @@ tccq_c_emit_assign_scalar <- function(out, mode, index, expr) {
     integer = paste0("INTEGER(", out, ")[", index, "] = (int)(", expr, ");"),
     logical = paste0("LOGICAL(", out, ")[", index, "] = (int)(", expr, ");"),
     raw = paste0("RAW(", out, ")[", index, "] = (Rbyte)(", expr, ");"),
+    xlen = tccq_abort("xlen scalar assignment requires dynamic boxing"),
     tccq_abort("unsupported scalar assign mode: ", mode)
   )
 }
@@ -1120,6 +1554,14 @@ tccq_c_emit_binary <- function(node, sym, idx = NULL) {
     return(paste0("pow((double)(", lhs, "), (double)(", rhs, "))"))
   }
 
+  if (identical(node$op, "/")) {
+    return(paste0("((double)(", lhs, ") / (double)(", rhs, "))"))
+  }
+
+  if (node$op %in% c("+", "-", "*") && identical(node$type$mode, "double")) {
+    return(paste0("((double)(", lhs, ") ", node$op, " (double)(", rhs, "))"))
+  }
+
   if (identical(node$op, "&")) {
     return(paste0("tccq_lgl_and((int)(", lhs, "), (int)(", rhs, "))"))
   }
@@ -1156,17 +1598,27 @@ tccq_c_emit_call1 <- function(node, sym, idx = NULL) {
 }
 
 tccq_c_emit_len <- function(node, sym) {
+  if (node$x$type$rank == 0L) {
+    if (identical(node$x$tag, "const")) {
+      return("1")
+    }
+    if (identical(node$x$tag, "var")) {
+      s <- sym[[node$x$name]]
+      if (is.null(s)) {
+        tccq_abort("unknown C symbol for length(): ", node$x$name)
+      }
+      return(paste0("(R_xlen_t)", s$len))
+    }
+    tccq_abort("scalar length expression should have been hoisted before C emission")
+  }
   if (!identical(node$x$tag, "var")) {
-    tccq_abort("length() currently supports direct variables only")
+    tccq_abort("non-variable vector length should have been hoisted before C emission")
   }
   s <- sym[[node$x$name]]
   if (is.null(s)) {
     tccq_abort("unknown C symbol for length(): ", node$x$name)
   }
-  if (node$x$type$rank == 0L) {
-    return("1")
-  }
-  paste0("(int)", s$len)
+  paste0("(R_xlen_t)", s$len)
 }
 
 tccq_c_emit_index <- function(node, sym, idx = NULL) {

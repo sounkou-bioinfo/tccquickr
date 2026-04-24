@@ -6,7 +6,7 @@ tccq_type <- function(mode, rank = 0L, dims = NULL) {
   if (identical(mode, "numeric")) {
     mode <- "double"
   }
-  if (!mode %in% c("double", "integer", "logical", "raw")) {
+  if (!mode %in% c("double", "integer", "logical", "raw", "xlen")) {
     tccq_abort("unsupported mode: ", mode)
   }
 
@@ -53,7 +53,7 @@ tccq_type_is_matrix <- function(type) {
 }
 
 tccq_type_is_numeric <- function(type) {
-  type$mode %in% c("double", "integer", "logical")
+  type$mode %in% c("double", "integer", "logical", "xlen")
 }
 
 tccq_type_is_logical <- function(type) {
@@ -73,6 +73,12 @@ tccq_type_result_mode_arith <- function(a, b, op = NULL) {
   }
   if (identical(op, "/") || identical(op, "^") || a$mode == "double" || b$mode == "double") {
     return("double")
+  }
+  if (a$mode == "xlen" || b$mode == "xlen") {
+    if (identical(op, "*") || a$rank > 0L || b$rank > 0L) {
+      return("double")
+    }
+    return("xlen")
   }
   if (a$mode == "integer" || b$mode == "integer") {
     return("integer")
@@ -121,6 +127,7 @@ tccq_sexptype_for_mode <- function(mode) {
     integer = "INTSXP",
     logical = "LGLSXP",
     raw = "RAWSXP",
+    xlen = "REALSXP",
     tccq_abort("unsupported R mode for SEXP: ", mode)
   )
 }
@@ -132,6 +139,7 @@ tccq_c_scalar_type_for_mode <- function(mode) {
     integer = "int",
     logical = "int",
     raw = "unsigned char",
+    xlen = "R_xlen_t",
     tccq_abort("unsupported C scalar mode: ", mode)
   )
 }
@@ -158,6 +166,7 @@ tccq_c_const_literal <- function(value, mode) {
       }
     },
     raw = paste0(as.integer(value)),
+    xlen = paste0(as.integer(value)),
     tccq_abort("unsupported literal mode: ", mode)
   )
 }
