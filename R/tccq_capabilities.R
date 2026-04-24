@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 tccq_target_capabilities <- function(...) {
-  modifyList(
+  utils::modifyList(
     list(
       c = FALSE,
       r_api = FALSE,
@@ -14,7 +14,7 @@ tccq_target_capabilities <- function(...) {
 }
 
 tccq_backend_capabilities <- function(...) {
-  modifyList(
+  utils::modifyList(
     list(
       c = FALSE,
       compile = FALSE,

@@ -530,6 +530,58 @@ tccq_c_stmt_data_vars <- function(stmt, module) {
   )
 }
 
+tccq_c_access_scalar_value_vars <- function(node) {
+  plan <- tccq_ir_normalized_access(node)
+  if (is.null(plan)) {
+    return(character())
+  }
+
+  vars <- character()
+  for (step in plan$steps %||% list()) {
+    if (identical(step$kind, "slice")) {
+      vars <- c(vars, tccq_c_expr_scalar_value_vars(step$start), tccq_c_expr_scalar_value_vars(step$stop))
+    } else if (identical(step$kind, "index")) {
+      vars <- c(vars, tccq_c_expr_scalar_value_vars(step$index))
+    }
+  }
+  tccq_unique(vars)
+}
+
+tccq_c_expr_length_scalar_value_vars <- function(node) {
+  if (!is.list(node) || is.null(node$tag)) {
+    return(character())
+  }
+
+  if (!is.null(node$type) && node$type$rank == 0L) {
+    return(switch(
+      node$tag,
+      const = character(),
+      var = character(),
+      unary = tccq_c_expr_length_scalar_value_vars(node$x),
+      call1 = tccq_c_expr_length_scalar_value_vars(node$x),
+      binary = tccq_unique(c(tccq_c_expr_length_scalar_value_vars(node$lhs), tccq_c_expr_length_scalar_value_vars(node$rhs))),
+      index = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$index))),
+      boundary_call = character(),
+      len = tccq_c_expr_length_scalar_value_vars(node$x),
+      tccq_c_expr_scalar_value_vars(node)
+    ))
+  }
+
+  switch(
+    node$tag,
+    var = character(),
+    unary = tccq_c_expr_length_scalar_value_vars(node$x),
+    call1 = tccq_c_expr_length_scalar_value_vars(node$x),
+    binary = tccq_unique(c(tccq_c_expr_length_scalar_value_vars(node$lhs), tccq_c_expr_length_scalar_value_vars(node$rhs))),
+    slice_range = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
+    view1 = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
+    index = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$index))),
+    boundary_call = character(),
+    len = tccq_c_expr_length_scalar_value_vars(node$x),
+    character()
+  )
+}
+
 tccq_c_expr_scalar_value_vars <- function(node) {
   if (!is.list(node) || is.null(node$tag)) {
     return(character())
@@ -543,10 +595,10 @@ tccq_c_expr_scalar_value_vars <- function(node) {
     call1 = tccq_c_expr_scalar_value_vars(node$x),
     binary = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$lhs), tccq_c_expr_scalar_value_vars(node$rhs))),
     reduce = tccq_c_expr_scalar_value_vars(node$x),
-    len = tccq_c_expr_length_data_vars(node$x),
-    index = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$index))),
-    slice_range = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
-    view1 = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
+    len = tccq_c_expr_length_scalar_value_vars(node$x),
+    index = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$index))),
+    slice_range = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
+    view1 = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
     boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_scalar_value_vars), use.names = FALSE)),
     character()
   )
@@ -565,6 +617,22 @@ tccq_c_stmt_scalar_value_vars <- function(stmt) {
   )
 }
 
+tccq_c_stmt_eager_scalar_value_vars <- function(stmt) {
+  if (!is.list(stmt) || !identical(stmt$tag, "bind") || is.null(stmt$type) || stmt$type$rank == 0L) {
+    return(character())
+  }
+
+  if (is.list(stmt$value) && stmt$value$tag %in% c("slice_range", "view1", "index")) {
+    return(tccq_c_access_scalar_value_vars(stmt$value))
+  }
+
+  if (is.list(stmt$value) && identical(stmt$value$tag, "var")) {
+    return(character())
+  }
+
+  tccq_c_expr_scalar_value_vars(stmt$value)
+}
+
 tccq_c_module_scalar_value_vars <- function(module) {
   ir <- module$ir
   if (is.null(ir) || !identical(ir$tag, "program")) {
@@ -573,7 +641,8 @@ tccq_c_module_scalar_value_vars <- function(module) {
 
   value_vars <- tccq_unique(c(
     tccq_c_expr_scalar_value_vars(ir$result),
-    unlist(lapply(ir$stmts %||% list(), tccq_c_stmt_scalar_value_vars), use.names = FALSE)
+    unlist(lapply(ir$stmts %||% list(), tccq_c_stmt_scalar_value_vars), use.names = FALSE),
+    unlist(lapply(ir$stmts %||% list(), tccq_c_stmt_eager_scalar_value_vars), use.names = FALSE)
   ))
 
   repeat {

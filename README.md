@@ -850,7 +850,7 @@ copy exactly.
 
 - [`quickr`](https://github.com/t-kalinowski/quickr): useful comparison
   for a declared R subset compiler
-- [`anvil`](https://github.com/r-xla/anvil): useful comparison for
+- [`anvil`](https://github.com/r-xla/anvl): useful comparison for
   explicit transformation architecture and backend thinking
 - [`callme`](https://github.com/coolbutuseless/callme): useful reference
   for a shared-library compile/load workflow around `.Call()`

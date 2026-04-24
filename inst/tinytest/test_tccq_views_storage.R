@@ -176,6 +176,35 @@ expect_equal(
   c(2, 3)
 )
 
+view_rejects_vector_bounds_fn <- function(x, lo, hi) {
+  declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
+  y <- x[lo:hi]
+  y
+}
+
+expect_error(tccq_compile(view_rejects_vector_bounds_fn)(as.double(1:5), 1:2, 3:4), "runtime length")
+expect_error(
+  tccq_compile(view_rejects_vector_bounds_fn, backend = tccq_backend_shlib())(as.double(1:5), 1:2, 3:4),
+  "runtime length"
+)
+
+snapshot_view_rejects_vector_bounds_fn <- function(x, lo, hi, v) {
+  declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()), type(v = double()))
+  y <- x + 0
+  z <- y[lo:hi]
+  y[1] <- v
+  z
+}
+
+expect_error(
+  tccq_compile(snapshot_view_rejects_vector_bounds_fn)(as.double(1:5), 1:2, 3:4, 99),
+  "runtime length"
+)
+expect_error(
+  tccq_compile(snapshot_view_rejects_vector_bounds_fn, backend = tccq_backend_shlib())(as.double(1:5), 1:2, 3:4, 99),
+  "runtime length"
+)
+
 materialized_snapshot_alias_fn <- function(x, v, w) {
   declare(type(x = double(NA)), type(v = double()), type(w = double()))
   y <- x + 0

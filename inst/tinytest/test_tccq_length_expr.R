@@ -11,6 +11,28 @@ expect_equal(
   3L
 )
 
+length_slice_rejects_vector_bounds_fn <- function(x, lo, hi) {
+  declare(type(x = double(NA)), type(lo = integer()), type(hi = integer()))
+  length(x[lo:hi])
+}
+
+expect_error(tccq_compile(length_slice_rejects_vector_bounds_fn)(as.double(1:5), 1:2, 3:4), "runtime length")
+expect_error(
+  tccq_compile(length_slice_rejects_vector_bounds_fn, backend = tccq_backend_shlib())(as.double(1:5), 1:2, 3:4),
+  "runtime length"
+)
+
+length_scalar_index_rejects_vector_index_fn <- function(x, i) {
+  declare(type(x = double(NA)), type(i = integer()))
+  length(x[i])
+}
+
+expect_error(tccq_compile(length_scalar_index_rejects_vector_index_fn)(as.double(1:5), 2:3), "runtime length")
+expect_error(
+  tccq_compile(length_scalar_index_rejects_vector_index_fn, backend = tccq_backend_shlib())(as.double(1:5), 2:3),
+  "runtime length"
+)
+
 length_nested_slice_fn <- function(x) {
   declare(type(x = double(NA)))
   length(x[2:5][2:3])
@@ -339,6 +361,21 @@ length_scalar_formal_value_rejects_vector_fn <- function(x) {
 expect_error(tccq_compile(length_scalar_formal_value_rejects_vector_fn)(c(10, 20)), "runtime length")
 expect_error(
   tccq_compile(length_scalar_formal_value_rejects_vector_fn, backend = tccq_backend_shlib())(c(10, 20)),
+  "runtime length"
+)
+
+length_vector_bind_scalar_operand_rejects_vector_fn <- function(x, s) {
+  declare(type(x = double(NA)), type(s = double()))
+  y <- x + s
+  y
+}
+
+expect_error(
+  tccq_compile(length_vector_bind_scalar_operand_rejects_vector_fn)(as.double(1:3), c(10, 20)),
+  "runtime length"
+)
+expect_error(
+  tccq_compile(length_vector_bind_scalar_operand_rejects_vector_fn, backend = tccq_backend_shlib())(as.double(1:3), c(10, 20)),
   "runtime length"
 )
 

@@ -51,8 +51,8 @@ tccq_storage_write_barrier_plan <- function(ir, bindings) {
   }
 
   local_names <- names(bindings)
-  current_owned <- setNames(lapply(bindings, function(x) identical(x$kind, "owned")), local_names)
-  current_generation <- setNames(as.list(rep(0L, length(local_names))), local_names)
+  current_owned <- stats::setNames(lapply(bindings, function(x) identical(x$kind, "owned")), local_names)
+  current_generation <- stats::setNames(as.list(rep(0L, length(local_names))), local_names)
   borrowed_generation <- list()
   out <- list()
 

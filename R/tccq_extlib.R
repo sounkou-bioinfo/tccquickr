@@ -36,8 +36,8 @@ tccq_merge_contexts <- function(x = list(), y = list()) {
     include_paths = tccq_unique(c(x$include_paths %||% character(), y$include_paths %||% character())),
     library_paths = tccq_unique(c(x$library_paths %||% character(), y$library_paths %||% character())),
     options = tccq_unique(c(x$options %||% character(), y$options %||% character())),
-    external_symbols = modifyList(x$external_symbols %||% list(), y$external_symbols %||% list()),
-    external_effects = modifyList(x$external_effects %||% list(), y$external_effects %||% list())
+    external_symbols = utils::modifyList(x$external_symbols %||% list(), y$external_symbols %||% list()),
+    external_effects = utils::modifyList(x$external_effects %||% list(), y$external_effects %||% list())
   )
 }
 
@@ -71,8 +71,8 @@ tccq_context_from_extlibs <- function(extlibs = list()) {
     include_paths <- c(include_paths, lib$include_paths)
     library_paths <- c(library_paths, lib$library_paths)
     options <- c(options, lib$options %||% character())
-    symbols <- modifyList(symbols, lib$symbols)
-    effects <- modifyList(effects, lib$effects %||% list())
+    symbols <- utils::modifyList(symbols, lib$symbols)
+    effects <- utils::modifyList(effects, lib$effects %||% list())
   }
 
   list(
