@@ -9,10 +9,29 @@ fallback_scalar_ir <- tccq_compile(fallback_scalar_fn, mode = "ir", fallback = "
 expect_equal(fallback_scalar_ir$ir$result$tag, "boundary_call")
 expect_identical(fallback_scalar_ir$ir$result$api, "r_eval")
 expect_identical(fallback_scalar_ir$ir$result$type$mode, "double")
+expect_identical(fallback_scalar_ir$storage_plan$boundary_args[["1"]][[1]]$strategy, "pass_formal_scalar")
 
 expect_identical(fallback_scalar_ir$boundary_context$headers, character())
 expect_identical(fallback_scalar_ir$boundary_context$libraries, character())
 expect_identical(tccq_compile(fallback_scalar_fn, fallback = "auto")(42), 42)
+expect_identical(
+  tccq_compile(fallback_scalar_fn, fallback = "auto", backend = tccq_backend_shlib())(42),
+  42
+)
+
+fallback_scalar_local_fn <- function(x) {
+  declare(type(x = double()))
+  y <- x + 1
+  floor(y)
+}
+
+fallback_scalar_local_ir <- tccq_compile(fallback_scalar_local_fn, mode = "ir", fallback = "auto")
+expect_identical(fallback_scalar_local_ir$storage_plan$boundary_args[["1"]][[1]]$strategy, "box_scalar")
+expect_identical(tccq_compile(fallback_scalar_local_fn, fallback = "auto")(41), 42)
+expect_identical(
+  tccq_compile(fallback_scalar_local_fn, fallback = "auto", backend = tccq_backend_shlib())(41),
+  42
+)
 
 fallback_vector_fn <- function(x) {
   declare(type(x = double(NA)))
@@ -25,6 +44,16 @@ expect_identical(fallback_vector_ir$ir$result$type$rank, 1L)
 expect_equal(tccq_compile(fallback_vector_fn, fallback = "auto")(c(1, 2, 3)), c(1, 2, 3))
 
 assign("tccq_test_id_vec", function(z) z, envir = .GlobalEnv)
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+assign(
+  "tccq_test_capture_vec",
+  function(z) {
+    assign("tccq_test_leaked_vec", z, envir = .GlobalEnv)
+    z
+  },
+  envir = .GlobalEnv
+)
+assign("tccq_test_id_scalar", function(z) z, envir = .GlobalEnv)
 
 boundary_alias_arg_plan_fn <- function(x) {
   declare(type(x = double(NA)))
@@ -125,6 +154,108 @@ expect_identical(boundary_owned_arg_plan$strategy, "pass_local")
 expect_identical(boundary_owned_arg_plan$sexp, "y")
 expect_equal(tccq_compile(boundary_owned_arg_plan_fn, fallback = "auto")(as.double(1:3)), as.double(2:4))
 
+boundary_owned_escape_write_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  s <- length(tccq_test_capture_vec(y))
+  y[1] <- 99
+  y
+}
+
+boundary_owned_escape_write_ir <- tccq_compile(boundary_owned_escape_write_fn, mode = "ir", fallback = "auto")
+boundary_owned_escape_write_barriers <- Filter(
+  function(x) identical(x$target, "y"),
+  boundary_owned_escape_write_ir$storage_plan$write_barriers
+)
+expect_true(any(vapply(boundary_owned_escape_write_barriers, function(x) isTRUE(x$copy_target), logical(1))))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(tccq_compile(boundary_owned_escape_write_fn, fallback = "auto")(as.double(1:3)), c(99, 3, 4))
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), as.double(2:4))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(
+  tccq_compile(boundary_owned_escape_write_fn, fallback = "auto", backend = tccq_backend_shlib())(as.double(1:3)),
+  c(99, 3, 4)
+)
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), as.double(2:4))
+
+boundary_owned_escape_two_writes_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  s <- length(tccq_test_capture_vec(y))
+  y[1] <- 99
+  y[2] <- 88
+  y
+}
+
+boundary_owned_escape_two_writes_ir <- tccq_compile(boundary_owned_escape_two_writes_fn, mode = "ir", fallback = "auto")
+boundary_owned_escape_two_write_barriers <- Filter(
+  function(x) identical(x$target, "y"),
+  boundary_owned_escape_two_writes_ir$storage_plan$write_barriers
+)
+expect_identical(
+  sum(vapply(boundary_owned_escape_two_write_barriers, function(x) isTRUE(x$copy_target), logical(1))),
+  1L
+)
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(tccq_compile(boundary_owned_escape_two_writes_fn, fallback = "auto")(as.double(1:3)), c(99, 88, 4))
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), as.double(2:4))
+
+boundary_escape_cow_distinct_generation_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  a <- y
+  s <- length(tccq_test_capture_vec(y))
+  y[1] <- 99
+  b <- a
+  y[2] <- 88
+  b
+}
+
+boundary_escape_cow_distinct_generation_ir <- tccq_compile(
+  boundary_escape_cow_distinct_generation_fn,
+  mode = "ir",
+  fallback = "auto"
+)
+boundary_escape_cow_distinct_generation_barriers <- Filter(
+  function(x) identical(x$target, "y"),
+  boundary_escape_cow_distinct_generation_ir$storage_plan$write_barriers
+)
+expect_identical(
+  sum(vapply(boundary_escape_cow_distinct_generation_barriers, function(x) isTRUE(x$copy_target), logical(1))),
+  1L
+)
+expect_false(any(vapply(
+  boundary_escape_cow_distinct_generation_barriers,
+  function(x) "b" %in% (x$materialize_views %||% character()),
+  logical(1)
+)))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(
+  tccq_compile(boundary_escape_cow_distinct_generation_fn, fallback = "auto")(as.double(1:3)),
+  as.double(2:4)
+)
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), as.double(2:4))
+
+boundary_scalar_arg_no_escape_write_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  s <- tccq_test_id_scalar(length(y))
+  y[1] <- 99
+  y
+}
+
+boundary_scalar_arg_no_escape_write_ir <- tccq_compile(
+  boundary_scalar_arg_no_escape_write_fn,
+  mode = "ir",
+  fallback = "auto"
+)
+boundary_scalar_arg_no_escape_write_barriers <- Filter(
+  function(x) identical(x$target, "y"),
+  boundary_scalar_arg_no_escape_write_ir$storage_plan$write_barriers
+)
+expect_false(any(vapply(boundary_scalar_arg_no_escape_write_barriers, function(x) isTRUE(x$copy_target), logical(1))))
+expect_equal(tccq_compile(boundary_scalar_arg_no_escape_write_fn, fallback = "auto")(as.double(1:3)), c(99, 3, 4))
+
 boundary_view_arg_plan_fn <- function(x) {
   declare(type(x = double(NA)))
   y <- x[2:4]
@@ -139,6 +270,57 @@ expect_equal(
   tccq_compile(boundary_view_arg_plan_fn, fallback = "auto", backend = tccq_backend_shlib())(as.double(1:5)),
   as.double(2:4)
 )
+
+boundary_view_escape_write_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  v <- y[1:2]
+  s <- length(tccq_test_capture_vec(v))
+  v[1] <- 99
+  v
+}
+
+boundary_view_escape_write_ir <- tccq_compile(boundary_view_escape_write_fn, mode = "ir", fallback = "auto")
+boundary_view_escape_write_barriers <- Filter(
+  function(x) identical(x$target, "v"),
+  boundary_view_escape_write_ir$storage_plan$write_barriers
+)
+expect_true(any(vapply(boundary_view_escape_write_barriers, function(x) isTRUE(x$copy_target), logical(1))))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(tccq_compile(boundary_view_escape_write_fn, fallback = "auto")(as.double(1:3)), c(99, 3))
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), c(2, 3))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(
+  tccq_compile(boundary_view_escape_write_fn, fallback = "auto", backend = tccq_backend_shlib())(as.double(1:3)),
+  c(99, 3)
+)
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), c(2, 3))
+
+boundary_materialized_view_no_source_escape_write_fn <- function(x) {
+  declare(type(x = double(NA)))
+  y <- x + 1
+  v <- y[1:2]
+  s <- length(tccq_test_capture_vec(v))
+  y[1] <- 99
+  y
+}
+
+boundary_materialized_view_no_source_escape_write_ir <- tccq_compile(
+  boundary_materialized_view_no_source_escape_write_fn,
+  mode = "ir",
+  fallback = "auto"
+)
+boundary_materialized_view_no_source_escape_write_barriers <- Filter(
+  function(x) identical(x$target, "y"),
+  boundary_materialized_view_no_source_escape_write_ir$storage_plan$write_barriers
+)
+expect_false(any(vapply(boundary_materialized_view_no_source_escape_write_barriers, function(x) isTRUE(x$copy_target), logical(1))))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(
+  tccq_compile(boundary_materialized_view_no_source_escape_write_fn, fallback = "auto")(as.double(1:3)),
+  c(99, 3, 4)
+)
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), c(2, 3))
 
 boundary_mutated_alias_arg_plan_fn <- function(x) {
   declare(type(x = double(NA)))

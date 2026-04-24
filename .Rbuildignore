@@ -6,3 +6,5 @@
 ^tccquickr\.Rcheck$
 ^AGENTS\.md$
 ^docs$
+^\.claude$
+^claude_.*_review\.md$

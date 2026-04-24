@@ -693,7 +693,7 @@ tccq_c_module_data_vars <- function(module) {
 
   barrier_vars <- unlist(lapply(
     module$storage_plan$write_barriers %||% list(),
-    function(x) x$materialize_views %||% character()
+    function(x) c(x$materialize_views %||% character(), if (isTRUE(x$copy_target)) x$target else character())
   ), use.names = FALSE)
 
   data <- tccq_unique(c(
@@ -880,6 +880,27 @@ tccq_c_emit_boundary_call <- function(node, sym, module, expect_sexp = TRUE, pre
   )
 }
 
+tccq_c_emit_copy_local <- function(name, sym, module, prefix = NULL) {
+  s <- sym[[name]]
+  if (is.null(s) || !identical(s$kind, "local") || s$type$rank != 1L) {
+    tccq_abort("copy_local requires a local vector: ", name)
+  }
+
+  id <- tccq_c_ident(prefix %||% name)
+  ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
+  c(
+    "{",
+    paste0("  SEXP copy_", id, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(s$type$mode), ", ", s$len, "));"),
+    "  ++tccq_nprotect;",
+    paste0("  ", ctype, " *tmp_", id, " = ", tccq_c_rw_accessor(s$type$mode), "(copy_", id, ");"),
+    paste0("  for (R_xlen_t i = 0; i < ", s$len, "; ++i) tmp_", id, "[i] = ", s$ptr, "[i];"),
+    paste0("  ", s$sexp, " = copy_", id, ";"),
+    paste0("  ", s$ptr, " = tmp_", id, ";"),
+    paste0("  ", tccq_c_owned_flag(s), " = 1;"),
+    "}"
+  )
+}
+
 tccq_c_emit_materialize_local <- function(name, sym, module) {
   s <- sym[[name]]
   if (is.null(s) || !identical(s$kind, "local") || s$type$rank != 1L) {
@@ -981,6 +1002,9 @@ tccq_c_result_reuse_plan <- function(module) {
 }
 
 tccq_c_emit_reuse_result_buffer <- function(expr, sym, module, reuse) {
+  # The allocation plan only selects pointwise, non-boundary expressions here.
+  # That invariant keeps the writeback loop allocation-free while it borrows the
+  # reused buffer's protected SEXP/data pointer.
   s <- sym[[reuse$name]]
   if (is.null(s) || !identical(s$kind, "local") || s$type$rank != 1L) {
     tccq_abort("invalid result reuse local: ", reuse$name %||% "<NULL>")
@@ -1271,6 +1295,8 @@ tccq_c_bind_reuse_plan <- function(module, name) {
 }
 
 tccq_c_emit_reuse_bind_buffer <- function(stmt, sym, module, reuse) {
+  # Bind reuse is also restricted to pointwise, non-boundary expressions so this
+  # loop does not allocate while writing through the source local's buffer.
   s <- sym[[stmt$name]]
   source <- sym[[reuse$source]]
   if (is.null(s) || !identical(s$kind, "local") || s$type$rank != 1L) {
@@ -1290,6 +1316,7 @@ tccq_c_emit_reuse_bind_buffer <- function(stmt, sym, module, reuse) {
     "}",
     paste0("SEXP ", s$sexp, " = ", source$sexp, ";"),
     paste0(ctype, " *", s$ptr, " = ", source$ptr, ";"),
+    "/* Reused bind target intentionally aliases the source owned buffer. */",
     paste0("int ", tccq_c_owned_flag(s), " = 1;"),
     paste0("for (R_xlen_t i = 0; i < ", s$len, "; ++i) {"),
     paste0("  ", s$ptr, "[i] = (", ctype, ")(", elem, ");"),
@@ -1470,12 +1497,26 @@ tccq_c_emit_materialize_before_write <- function(module, sym, stmt_index) {
   }
 
   barrier <- module$storage_plan$write_barriers[[as.character(stmt_index)]] %||% NULL
-  views <- barrier$materialize_views %||% character()
-  if (!length(views)) {
+  if (is.null(barrier)) {
     return(character())
   }
 
-  unlist(lapply(views, tccq_c_emit_materialize_local, sym = sym, module = module), use.names = FALSE)
+  views <- barrier$materialize_views %||% character()
+  lines <- unlist(lapply(views, tccq_c_emit_materialize_local, sym = sym, module = module), use.names = FALSE)
+
+  if (isTRUE(barrier$copy_target)) {
+    lines <- c(
+      lines,
+      tccq_c_emit_copy_local(
+        barrier$target,
+        sym,
+        module,
+        prefix = paste0(barrier$target, "_escape_", stmt_index)
+      )
+    )
+  }
+
+  lines
 }
 
 tccq_c_emit_stmt_store_index <- function(stmt, sym, module, stmt_index = NULL) {

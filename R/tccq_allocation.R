@@ -5,7 +5,8 @@
 # expression is strictly pointwise over that same local.  This deliberately
 # excludes indexed reads, slices, reducers, and boundary calls; those can observe
 # non-current elements or cross semantic barriers, so they need a fresh result
-# until the middle-end has a richer dependence model.
+# until the middle-end has a richer dependence model.  Scalar operands are safe:
+# they have already been copied into C locals and cannot alias vector storage.
 tccq_allocation_expr_pointwise_over <- function(expr, name) {
   if (!is.list(expr) || is.null(expr$tag)) {
     return(TRUE)
@@ -108,86 +109,73 @@ tccq_allocation_has_live_dependent <- function(bindings, target, live_names) {
   FALSE
 }
 
-tccq_allocation_escape_closure <- function(bindings, names) {
-  out <- character()
-  for (name in names) {
-    cur <- name
-    seen <- character()
-    repeat {
-      if (cur %in% seen) {
-        break
-      }
-      seen <- c(seen, cur)
-      out <- c(out, cur)
-      binding <- bindings[[cur]] %||% NULL
-      source <- binding$source %||% NA_character_
-      if (is.na(source) || is.null(source) || !source %in% names(bindings)) {
-        break
-      }
-      cur <- source
-    }
-  }
-  tccq_unique(out)
-}
-
-tccq_allocation_expr_escape_vars <- function(expr, bindings) {
-  if (!is.list(expr) || is.null(expr$tag)) {
-    return(character())
-  }
-
-  if (identical(expr$tag, "boundary_call")) {
-    return(tccq_allocation_escape_closure(bindings, tccq_ir_vector_vars(expr)))
-  }
-
-  vals <- list()
-  for (nm in names(expr)) {
-    if (nm %in% c("tag", "type", "effect", "barrier", "normalized_access", "shape_domain")) {
+tccq_allocation_has_live_current_dependent <- function(bindings, target, live_names, generation) {
+  target_generation <- generation[[target]] %||% NA_integer_
+  for (name in live_names) {
+    if (!tccq_allocation_binding_depends_on(bindings, name, target)) {
       next
     }
-    val <- expr[[nm]]
-    if (is.list(val) && !is.null(val$tag)) {
-      vals[[length(vals) + 1L]] <- tccq_allocation_expr_escape_vars(val, bindings)
-    } else if (is.list(val)) {
-      vals[[length(vals) + 1L]] <- unlist(
-        lapply(val, tccq_allocation_expr_escape_vars, bindings = bindings),
-        use.names = FALSE
-      )
+    if (identical(generation[[name]] %||% NA_integer_, target_generation)) {
+      return(TRUE)
     }
   }
-  tccq_unique(unlist(vals, use.names = FALSE))
+  FALSE
 }
 
-tccq_allocation_stmt_escape_vars <- function(stmt, bindings) {
+tccq_allocation_state_before <- function(module, stmt_index) {
+  if (stmt_index <= 1L) {
+    return(list(owned = list(), generation = list()))
+  }
+  module$storage_plan$state_after[[stmt_index - 1L]] %||% list(owned = list(), generation = list())
+}
+
+tccq_allocation_final_state <- function(module) {
+  module$storage_plan$final_state %||% list(owned = list(), generation = list())
+}
+
+tccq_allocation_expr_escape_vars <- function(expr, bindings, boundary_args = NULL) {
+  tccq_storage_expr_boundary_escape_vars(expr, bindings, boundary_args = boundary_args)
+}
+
+tccq_allocation_stmt_escape_vars <- function(stmt, bindings, boundary_args = NULL) {
   if (!is.list(stmt) || is.null(stmt$tag)) {
     return(character())
   }
 
   switch(
     stmt$tag,
-    bind = tccq_allocation_expr_escape_vars(stmt$value, bindings),
+    bind = tccq_allocation_expr_escape_vars(stmt$value, bindings, boundary_args = boundary_args),
     store_index = tccq_unique(c(
-      tccq_allocation_expr_escape_vars(stmt$index, bindings),
-      tccq_allocation_expr_escape_vars(stmt$value, bindings)
+      tccq_allocation_expr_escape_vars(stmt$index, bindings, boundary_args = boundary_args),
+      tccq_allocation_expr_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
     )),
     store_range = tccq_unique(c(
-      tccq_allocation_expr_escape_vars(stmt$start, bindings),
-      tccq_allocation_expr_escape_vars(stmt$stop, bindings),
-      tccq_allocation_expr_escape_vars(stmt$value, bindings)
+      tccq_allocation_expr_escape_vars(stmt$start, bindings, boundary_args = boundary_args),
+      tccq_allocation_expr_escape_vars(stmt$stop, bindings, boundary_args = boundary_args),
+      tccq_allocation_expr_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
     )),
     character()
   )
 }
 
-tccq_allocation_program_escape_vars <- function(ir, bindings) {
+tccq_allocation_program_escape_vars <- function(ir, bindings, boundary_args = NULL, write_barriers = NULL) {
   if (is.null(ir) || !identical(ir$tag, "program")) {
     return(character())
   }
 
   escaped <- character()
-  for (stmt in ir$stmts %||% list()) {
-    escaped <- tccq_unique(c(escaped, tccq_allocation_stmt_escape_vars(stmt, bindings)))
+  for (i in seq_along(ir$stmts %||% list())) {
+    stmt <- ir$stmts[[i]]
+    escaped <- tccq_unique(c(
+      escaped,
+      tccq_allocation_stmt_escape_vars(stmt, bindings, boundary_args = boundary_args)
+    ))
+    barrier <- write_barriers[[as.character(i)]] %||% NULL
+    if (isTRUE(barrier$copy_target)) {
+      escaped <- setdiff(escaped, barrier$target)
+    }
   }
-  tccq_unique(c(escaped, tccq_allocation_expr_escape_vars(ir$result, bindings)))
+  tccq_unique(c(escaped, tccq_allocation_expr_escape_vars(ir$result, bindings, boundary_args = boundary_args)))
 }
 
 tccq_allocation_bind_reuse_plan <- function(module) {
@@ -197,6 +185,7 @@ tccq_allocation_bind_reuse_plan <- function(module) {
   }
 
   bindings <- module$storage_plan$bindings %||% list()
+  boundary_args <- module$storage_plan$boundary_args %||% list()
   uses_after <- tccq_allocation_uses_after(ir)
   escaped_before <- character()
   out <- list()
@@ -210,16 +199,17 @@ tccq_allocation_bind_reuse_plan <- function(module) {
       if (!is.null(target_binding) && identical(target_binding$kind, "owned") && length(vector_vars) == 1L) {
         source_name <- vector_vars[[1L]]
         source_binding <- bindings[[source_name]] %||% NULL
+        source_state <- tccq_allocation_state_before(module, i)
+        source_owned <- isTRUE(source_state$owned[[source_name]])
         live_after <- uses_after[[i]] %||% character()
 
         if (!identical(source_name, stmt$name) &&
-            !is.null(source_binding) && identical(source_binding$kind, "owned") &&
+            !is.null(source_binding) && source_owned &&
             identical(source_binding$type$mode, stmt$type$mode) && source_binding$type$rank == 1L &&
             tccq_allocation_expr_pointwise_over(stmt$value, source_name) &&
             !source_name %in% live_after &&
             !source_name %in% escaped_before &&
-            !tccq_allocation_has_live_dependent(bindings, source_name, live_after) &&
-            !tccq_allocation_has_live_dependent(bindings, source_name, escaped_before)) {
+            !tccq_allocation_has_live_current_dependent(bindings, source_name, live_after, source_state$generation)) {
           out[[stmt$name]] <- list(
             strategy = "reuse_owned_local_bind",
             name = stmt$name,
@@ -234,8 +224,12 @@ tccq_allocation_bind_reuse_plan <- function(module) {
 
     escaped_before <- tccq_unique(c(
       escaped_before,
-      tccq_allocation_stmt_escape_vars(stmt, bindings)
+      tccq_allocation_stmt_escape_vars(stmt, bindings, boundary_args = boundary_args)
     ))
+    barrier <- module$storage_plan$write_barriers[[as.character(i)]] %||% NULL
+    if (isTRUE(barrier$copy_target)) {
+      escaped_before <- setdiff(escaped_before, barrier$target)
+    }
   }
 
   out
@@ -258,7 +252,8 @@ tccq_allocation_result_reuse_plan <- function(module) {
   name <- vector_vars[[1L]]
   bindings <- module$storage_plan$bindings %||% list()
   binding <- bindings[[name]] %||% NULL
-  if (is.null(binding) || !identical(binding$kind, "owned")) {
+  final_state <- tccq_allocation_final_state(module)
+  if (is.null(binding) || !isTRUE(final_state$owned[[name]])) {
     return(NULL)
   }
   if (!identical(binding$type$mode, expr$type$mode) || binding$type$rank != 1L) {
@@ -268,8 +263,13 @@ tccq_allocation_result_reuse_plan <- function(module) {
     return(NULL)
   }
 
-  escaped <- tccq_allocation_program_escape_vars(module$ir, bindings)
-  if (name %in% escaped || tccq_allocation_has_live_dependent(bindings, name, escaped)) {
+  escaped <- tccq_allocation_program_escape_vars(
+    module$ir,
+    bindings,
+    boundary_args = module$storage_plan$boundary_args %||% list(),
+    write_barriers = module$storage_plan$write_barriers %||% list()
+  )
+  if (name %in% escaped) {
     return(NULL)
   }
 

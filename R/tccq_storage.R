@@ -30,7 +30,113 @@ tccq_storage_stmt_read_vars <- function(stmt) {
   )
 }
 
-tccq_storage_write_barrier_plan <- function(ir, bindings) {
+tccq_storage_escape_closure <- function(bindings, names) {
+  out <- character()
+  for (name in names) {
+    cur <- name
+    seen <- character()
+    repeat {
+      if (cur %in% seen) {
+        break
+      }
+      seen <- c(seen, cur)
+      out <- c(out, cur)
+      binding <- bindings[[cur]] %||% NULL
+      source <- binding$source %||% NA_character_
+      if (is.na(source) || is.null(source) || !source %in% names(bindings)) {
+        break
+      }
+      cur <- source
+    }
+  }
+  tccq_unique(out)
+}
+
+tccq_storage_boundary_arg_escape_vars <- function(arg, plan, bindings) {
+  if (!is.list(arg) || is.null(arg$tag) || is.null(arg$type) || arg$type$rank == 0L) {
+    return(character())
+  }
+
+  strategy <- plan$strategy %||% NULL
+  if (identical(arg$tag, "var")) {
+    if (identical(strategy, "pass_local")) {
+      return(arg$name)
+    }
+    if (identical(strategy, "materialize_local")) {
+      # The local's materialized SEXP crosses the boundary, but its borrowed
+      # source/base does not.  Later writes to the local need copy-on-write;
+      # later writes to the source do not.
+      return(arg$name)
+    }
+    if (strategy %in% c("pass_formal", "pass_source", "pass_formal_scalar", "box_scalar")) {
+      return(character())
+    }
+  }
+
+  # Vector expression boundary arguments are not normally emitted today.  If one
+  # reaches planning, be conservative and treat referenced locals as escaped.
+  tccq_storage_escape_closure(bindings, tccq_ir_vector_vars(arg))
+}
+
+tccq_storage_expr_boundary_escape_vars <- function(expr, bindings, boundary_args = NULL) {
+  if (!is.list(expr) || is.null(expr$tag)) {
+    return(character())
+  }
+
+  if (identical(expr$tag, "boundary_call")) {
+    boundary_id <- expr$boundary_id %||% NULL
+    plans <- if (!is.null(boundary_id)) boundary_args[[as.character(boundary_id)]] %||% list() else list()
+    args <- expr$args %||% list()
+    return(tccq_unique(unlist(Map(
+      function(arg, i) tccq_storage_boundary_arg_escape_vars(arg, plans[[i]] %||% NULL, bindings),
+      args,
+      seq_along(args)
+    ), use.names = FALSE)))
+  }
+
+  vals <- list()
+  for (nm in names(expr)) {
+    if (nm %in% c(
+      "tag", "type", "effect", "barrier", "metadata", "boundary_id",
+      "normalized_access", "shape_domain"
+    )) {
+      next
+    }
+    val <- expr[[nm]]
+    if (is.list(val) && !is.null(val$tag)) {
+      vals[[length(vals) + 1L]] <- tccq_storage_expr_boundary_escape_vars(val, bindings, boundary_args = boundary_args)
+    } else if (is.list(val)) {
+      vals[[length(vals) + 1L]] <- unlist(
+        lapply(val, tccq_storage_expr_boundary_escape_vars, bindings = bindings, boundary_args = boundary_args),
+        use.names = FALSE
+      )
+    }
+  }
+  tccq_unique(unlist(vals, use.names = FALSE))
+}
+
+tccq_storage_stmt_boundary_escape_vars <- function(stmt, bindings, boundary_args = NULL) {
+  if (!is.list(stmt) || is.null(stmt$tag)) {
+    return(character())
+  }
+
+  switch(
+    stmt$tag,
+    bind = tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args),
+    store_index = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$index, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
+    )),
+    store_range = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$start, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$stop, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
+    )),
+    character()
+  )
+}
+
+tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) {
   if (is.null(ir) || !identical(ir$tag, "program") || !length(ir$stmts)) {
     return(list())
   }
@@ -54,7 +160,23 @@ tccq_storage_write_barrier_plan <- function(ir, bindings) {
   current_owned <- stats::setNames(lapply(bindings, function(x) identical(x$kind, "owned")), local_names)
   current_generation <- stats::setNames(as.list(rep(0L, length(local_names))), local_names)
   borrowed_generation <- list()
+  escaped <- character()
+  boundary_escapes <- list()
+  state_after <- vector("list", length(stmts))
+  generation_counter <- 0L
   out <- list()
+
+  fresh_generation <- function() {
+    generation_counter <<- generation_counter + 1L
+    generation_counter
+  }
+
+  snapshot_state <- function() {
+    list(
+      owned = as.list(current_owned),
+      generation = as.list(current_generation)
+    )
+  }
 
   source_generation <- function(source) {
     if (is.null(source) || is.na(source) || !source %in% names(current_generation)) {
@@ -105,23 +227,32 @@ tccq_storage_write_barrier_plan <- function(ir, bindings) {
       if (!is.null(binding)) {
         if (identical(binding$kind, "owned")) {
           current_owned[[stmt$name]] <- TRUE
-          current_generation[[stmt$name]] <- 0L
+          current_generation[[stmt$name]] <- fresh_generation()
         } else if (binding$kind %in% c("alias", "view")) {
           current_owned[[stmt$name]] <- FALSE
           current_generation[[stmt$name]] <- source_generation(bind_generation_source(stmt, binding))
           borrowed_generation[[stmt$name]] <- current_generation[[stmt$name]]
         }
       }
+      stmt_escapes <- tccq_storage_stmt_boundary_escape_vars(stmt, bindings, boundary_args = boundary_args)
+      if (length(stmt_escapes)) {
+        escaped <- tccq_unique(c(escaped, stmt_escapes))
+        boundary_escapes[[as.character(i)]] <- stmt_escapes
+      }
+      state_after[[i]] <- snapshot_state()
       next
     }
 
     if (!stmt$tag %in% c("store_index", "store_range")) {
+      state_after[[i]] <- snapshot_state()
       next
     }
 
     target <- stmt$name
     target_owned <- isTRUE(current_owned[[target]])
     target_generation <- current_generation[[target]] %||% 0L
+    stmt_escapes <- tccq_storage_stmt_boundary_escape_vars(stmt, bindings, boundary_args = boundary_args)
+    escaped_for_write <- tccq_unique(c(escaped, stmt_escapes))
     needed_reads <- tccq_unique(c(tccq_storage_stmt_read_vars(stmt), reads_after[[i]]))
     materialize <- character()
 
@@ -139,28 +270,46 @@ tccq_storage_write_barrier_plan <- function(ir, bindings) {
       }
     }
 
+    copy_target <- target %in% escaped_for_write
+
     materialize <- tccq_unique(materialize)
     out[[as.character(i)]] <- list(
       stmt_index = i,
       target = target,
       target_owned_before_write = target_owned,
       target_generation = target_generation,
-      materialize_views = materialize
+      materialize_views = materialize,
+      copy_target = isTRUE(copy_target),
+      escaped_before_write = escaped_for_write
     )
 
     for (borrowed_name in materialize) {
       current_owned[[borrowed_name]] <- TRUE
-      current_generation[[borrowed_name]] <- (current_generation[[borrowed_name]] %||% 0L) + 1L
+      current_generation[[borrowed_name]] <- fresh_generation()
       borrowed_generation[[borrowed_name]] <- NULL
     }
 
-    if (!isTRUE(target_owned)) {
+    if (isTRUE(copy_target) || !isTRUE(target_owned)) {
       current_owned[[target]] <- TRUE
-      current_generation[[target]] <- target_generation + 1L
+      current_generation[[target]] <- fresh_generation()
       borrowed_generation[[target]] <- NULL
     }
+
+    if (length(stmt_escapes)) {
+      escaped <- tccq_unique(c(escaped, stmt_escapes))
+      boundary_escapes[[as.character(i)]] <- stmt_escapes
+    }
+    if (isTRUE(copy_target)) {
+      # The write starts from a fresh copy, so subsequent writes/reuse of this
+      # local's current buffer are not constrained by an older boundary escape.
+      escaped <- setdiff(escaped, target)
+    }
+    state_after[[i]] <- snapshot_state()
   }
 
+  attr(out, "boundary_escapes") <- boundary_escapes
+  attr(out, "state_after") <- state_after
+  attr(out, "final_state") <- snapshot_state()
   out
 }
 
@@ -393,8 +542,8 @@ tccq_storage_plan <- function(module) {
   }
 
   aliases <- bindings[vapply(bindings, function(x) x$kind %in% c("alias", "view"), logical(1))]
-  write_barriers <- tccq_storage_write_barrier_plan(ir, bindings)
   boundary_args <- tccq_storage_boundary_arg_plans(module, bindings)
+  write_barriers <- tccq_storage_write_barrier_plan(ir, bindings, boundary_args = boundary_args)
   result <- tccq_storage_result_plan(module, bindings)
 
   list(
@@ -406,6 +555,9 @@ tccq_storage_plan <- function(module) {
     result = result,
     views = names(Filter(function(x) identical(x$kind, "view"), bindings)),
     write_barriers = write_barriers,
+    boundary_escapes = attr(write_barriers, "boundary_escapes") %||% list(),
+    state_after = attr(write_barriers, "state_after") %||% list(),
+    final_state = attr(write_barriers, "final_state") %||% list(),
     boundary_args = boundary_args
   )
 }
