@@ -20,6 +20,20 @@ for_loop_fill_fn <- function(n) {
 
 expect_equal(tccq_compile(for_loop_fill_fn)(5L), 1:5)
 
+loop_body_alloc_stress_fn <- function(n) {
+  declare(type(n = integer()))
+  x <- integer(n)
+  for (i in 1L:n) {
+    tmp <- integer(1L)
+    x[i] <- i
+  }
+  x
+}
+
+loop_body_alloc_stress <- tccq_compile(loop_body_alloc_stress_fn)
+loop_body_alloc_stress_result <- loop_body_alloc_stress(60000L)
+expect_equal(loop_body_alloc_stress_result[c(1L, 60000L)], c(1L, 60000L))
+
 descending_seq_loop_fn <- function(n) {
   declare(type(n = integer()))
   x <- integer(n)

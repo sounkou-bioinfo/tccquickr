@@ -1636,19 +1636,74 @@ tccq_c_emit_stmt <- function(stmt, sym, module, stmt_index = NULL) {
   )
 }
 
+tccq_c_stmt_key <- function(parent_key, child_index) {
+  if (is.null(parent_key)) NULL else paste0(parent_key, ".", child_index)
+}
+
+tccq_c_loop_bind_names <- function(stmts) {
+  out <- character()
+  for (stmt in stmts %||% list()) {
+    if (identical(stmt$tag, "bind")) {
+      out <- c(out, stmt$name)
+    } else if (identical(stmt$tag, "for_loop")) {
+      out <- c(out, stmt$var, tccq_c_loop_bind_names(stmt$body %||% list()))
+    }
+  }
+  tccq_unique(out)
+}
+
+tccq_c_loop_body_has_persistent_protect <- function(stmt, module, stmt_index = NULL, loop_locals = NULL) {
+  body <- stmt$body %||% list()
+  loop_locals <- loop_locals %||% tccq_unique(c(stmt$var, tccq_c_loop_bind_names(body)))
+
+  for (j in seq_along(body)) {
+    body_stmt <- body[[j]]
+    nested_index <- tccq_c_stmt_key(stmt_index, j)
+
+    if (identical(body_stmt$tag, "for_loop")) {
+      if (tccq_c_loop_body_has_persistent_protect(body_stmt, module, nested_index, loop_locals = loop_locals)) {
+        return(TRUE)
+      }
+      next
+    }
+
+    if (!body_stmt$tag %in% c("store_index", "store_range", "store_index2", "store_access")) {
+      next
+    }
+
+    target <- body_stmt$name
+    if (target %in% loop_locals) {
+      next
+    }
+
+    barrier <- module$storage_plan$write_barriers[[as.character(nested_index)]] %||% NULL
+    if (!identical(tccq_c_storage_kind(module, target), "owned") ||
+        isTRUE(barrier$copy_target) ||
+        length(barrier$materialize_views %||% character())) {
+      return(TRUE)
+    }
+  }
+
+  FALSE
+}
+
 tccq_c_emit_stmt_for_loop <- function(stmt, sym, module, stmt_index = NULL) {
   s <- sym[[stmt$var]]
   if (is.null(s)) {
     tccq_abort("unknown for-loop variable: ", stmt$var)
   }
   id <- tccq_c_ident(stmt$var)
+  saved_nprotect <- paste0("tccq_loop_saved_nprotect_", id)
+  # Only frame iteration-local allocations when no body store can create a
+  # carried SEXP for a local that remains live after this iteration.
+  frame_iteration_protects <- !tccq_c_loop_body_has_persistent_protect(stmt, module, stmt_index = stmt_index)
   start <- tccq_c_emit_expr(stmt$start, sym, idx = NULL)
   stop <- tccq_c_emit_expr(stmt$stop, sym, idx = NULL)
   start_missing <- tccq_c_emit_missing_check(start, stmt$start$type)
   stop_missing <- tccq_c_emit_missing_check(stop, stmt$stop$type)
   body <- unlist(Map(
     function(body_stmt, body_index) {
-      nested_index <- if (is.null(stmt_index)) NULL else paste0(stmt_index, ".", body_index)
+      nested_index <- tccq_c_stmt_key(stmt_index, body_index)
       tccq_c_emit_stmt(body_stmt, sym = sym, module = module, stmt_index = nested_index)
     },
     stmt$body %||% list(),
@@ -1664,7 +1719,14 @@ tccq_c_emit_stmt_for_loop <- function(stmt, sym, module, stmt_index = NULL) {
     paste0("  R_xlen_t ", s$val, " = start_", id, ";"),
     paste0("  for (;;) {"),
     paste0("    if ((by_", id, " > 0 && ", s$val, " > stop_", id, ") || (by_", id, " < 0 && ", s$val, " < stop_", id, ")) break;"),
+    if (isTRUE(frame_iteration_protects)) paste0("    int ", saved_nprotect, " = tccq_nprotect;") else character(),
     tccq_indent(body, 4L),
+    if (isTRUE(frame_iteration_protects)) c(
+      paste0("    if (tccq_nprotect > ", saved_nprotect, ") {"),
+      paste0("      UNPROTECT(tccq_nprotect - ", saved_nprotect, ");"),
+      paste0("      tccq_nprotect = ", saved_nprotect, ";"),
+      "    }"
+    ) else character(),
     paste0("    if (", s$val, " == stop_", id, ") break;"),
     paste0("    ", s$val, " += by_", id, ";"),
     "  }",
