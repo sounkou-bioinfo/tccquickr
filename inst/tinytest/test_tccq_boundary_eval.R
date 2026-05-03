@@ -216,6 +216,34 @@ expect_equal(
 )
 expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), c(99, 3, 4))
 
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+boundary_loop_escape_write_stress <- tccq_compile(boundary_loop_escape_write_fn, fallback = "auto")
+boundary_loop_escape_write_stress_result <- boundary_loop_escape_write_stress(as.double(seq_len(5000L)), 5000L)
+expect_equal(boundary_loop_escape_write_stress_result[c(1L, 5000L)], c(99, 99))
+
+nested_loop_alias_mutation_boundary_fn <- function(x, n, m) {
+  declare(type(x = double(NA)), type(n = integer()), type(m = integer()))
+  out <- double(n)
+  for (i in 1L:n) {
+    y <- x
+    for (j in 1L:m) {
+      y[j] <- 0
+    }
+    s <- length(tccq_test_capture_vec(y))
+    out[i] <- y[m + 1L]
+  }
+  out
+}
+
+nested_loop_alias_mutation_boundary <- tccq_compile(
+  nested_loop_alias_mutation_boundary_fn,
+  fallback = "auto"
+)
+expect_equal(
+  nested_loop_alias_mutation_boundary(as.double(1:5), 2000L, 3L)[c(1L, 2000L)],
+  c(4, 4)
+)
+
 boundary_owned_escape_two_writes_fn <- function(x) {
   declare(type(x = double(NA)))
   y <- x + 1

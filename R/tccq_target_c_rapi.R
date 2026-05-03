@@ -962,6 +962,33 @@ tccq_c_owned_flag <- function(sym_entry) {
   paste0("own_", tccq_c_ident(sym_entry$name))
 }
 
+tccq_c_protect_index <- function(sym_entry) {
+  paste0("pi_", tccq_c_ident(sym_entry$name))
+}
+
+# Rank > 0 locals get stable slots so copy/materialize can REPROTECT
+# loop-carried storage without growing the per-iteration protection depth.
+tccq_c_emit_local_protect_slot <- function(sym_entry) {
+  c(
+    paste0("PROTECT_INDEX ", tccq_c_protect_index(sym_entry), ";")
+  )
+}
+
+tccq_c_emit_protect_local_current <- function(sym_entry) {
+  c(
+    paste0("PROTECT_WITH_INDEX(", sym_entry$sexp, ", &", tccq_c_protect_index(sym_entry), ");"),
+    "++tccq_nprotect;"
+  )
+}
+
+tccq_c_emit_reprotect_local_alloc <- function(sym_entry, alloc_expr, indent = "") {
+  paste0(
+    indent,
+    "REPROTECT(", sym_entry$sexp, " = ", alloc_expr, ", ",
+    tccq_c_protect_index(sym_entry), ");"
+  )
+}
+
 tccq_c_scalar_sexp_alloc <- function(mode, sexp_name, expr) {
   switch(
     mode,
@@ -1113,11 +1140,15 @@ tccq_c_emit_copy_local <- function(name, sym, module, prefix = NULL) {
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   c(
     "{",
-    paste0("  SEXP copy_", id, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(s$type$mode), ", ", s$len, "));"),
-    "  ++tccq_nprotect;",
-    if (s$type$rank == 2L) tccq_indent(tccq_c_emit_matrix_dim_attrib(paste0("copy_", id), s$nrow, s$ncol, paste0("copy_", id)), 2L) else character(),
+    paste0("  SEXP copy_", id, ";"),
+    paste0(
+      "  REPROTECT(copy_", id, " = Rf_allocVector(",
+      tccq_sexptype_for_mode(s$type$mode), ", ", s$len, "), ",
+      tccq_c_protect_index(s), ");"
+    ),
     paste0("  ", ctype, " *tmp_", id, " = ", tccq_c_rw_accessor(s$type$mode), "(copy_", id, ");"),
     paste0("  for (R_xlen_t i = 0; i < ", s$len, "; ++i) tmp_", id, "[i] = ", s$ptr, "[i];"),
+    if (s$type$rank == 2L) tccq_indent(tccq_c_emit_matrix_dim_attrib(paste0("copy_", id), s$nrow, s$ncol, paste0("copy_", id)), 2L) else character(),
     paste0("  ", s$sexp, " = copy_", id, ";"),
     paste0("  ", s$ptr, " = tmp_", id, ";"),
     paste0("  ", tccq_c_owned_flag(s), " = 1;"),
@@ -1135,8 +1166,11 @@ tccq_c_emit_materialize_local <- function(name, sym, module) {
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   c(
     paste0("if (!", own_flag, ") {"),
-    paste0("  ", s$sexp, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(s$type$mode), ", ", s$len, "));"),
-    "  ++tccq_nprotect;",
+    tccq_c_emit_reprotect_local_alloc(
+      s,
+      paste0("Rf_allocVector(", tccq_sexptype_for_mode(s$type$mode), ", ", s$len, ")"),
+      indent = "  "
+    ),
     if (s$type$rank == 2L) tccq_indent(tccq_c_emit_matrix_dim_attrib(s$sexp, s$nrow, s$ncol, tccq_c_ident(name)), 2L) else character(),
     paste0("  ", ctype, " *tmp_", tccq_c_ident(name), " = ", tccq_c_rw_accessor(s$type$mode), "(", s$sexp, ");"),
     paste0("  for (R_xlen_t i = 0; i < ", s$len, "; ++i) tmp_", tccq_c_ident(name), "[i] = ", s$ptr, "[i];"),
@@ -1558,7 +1592,9 @@ tccq_c_emit_matrix_dim_attrib <- function(sexp, nr, nc, prefix) {
     "++tccq_nprotect;",
     paste0("INTEGER(dim_", prefix, ")[0] = (int)", nr, ";"),
     paste0("INTEGER(dim_", prefix, ")[1] = (int)", nc, ";"),
-    paste0("Rf_setAttrib(", sexp, ", R_DimSymbol, dim_", prefix, ");")
+    paste0("Rf_setAttrib(", sexp, ", R_DimSymbol, dim_", prefix, ");"),
+    "UNPROTECT(1);",
+    "--tccq_nprotect;"
   )
 }
 
@@ -1581,8 +1617,9 @@ tccq_c_emit_matrix_fill_bind <- function(stmt, sym, module) {
     "  Rf_error(\"matrix dimensions exceed R length limits\");",
     "}",
     paste0("R_xlen_t ", s$len, " = ", s$nrow, " * ", s$ncol, ";"),
-    paste0("SEXP ", s$sexp, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(mode), ", ", s$len, "));"),
-    "++tccq_nprotect;",
+    tccq_c_emit_local_protect_slot(s),
+    paste0("SEXP ", s$sexp, " = Rf_allocVector(", tccq_sexptype_for_mode(mode), ", ", s$len, ");"),
+    tccq_c_emit_protect_local_current(s),
     tccq_c_emit_matrix_dim_attrib(s$sexp, s$nrow, s$ncol, prefix),
     paste0(ctype, " *", s$ptr, " = ", tccq_c_rw_accessor(mode), "(", s$sexp, ");"),
     paste0("int ", tccq_c_owned_flag(s), " = 1;"),
@@ -1613,7 +1650,9 @@ tccq_c_emit_reuse_bind_buffer <- function(stmt, sym, module, reuse) {
     paste0("if (", s$len, " != ", source$len, ") {"),
     "  Rf_error(\"reused local length mismatch\");",
     "}",
+    tccq_c_emit_local_protect_slot(s),
     paste0("SEXP ", s$sexp, " = ", source$sexp, ";"),
+    tccq_c_emit_protect_local_current(s),
     paste0(ctype, " *", s$ptr, " = ", source$ptr, ";"),
     "/* Reused bind target intentionally aliases the source owned buffer. */",
     paste0("int ", tccq_c_owned_flag(s), " = 1;"),
@@ -1640,53 +1679,6 @@ tccq_c_stmt_key <- function(parent_key, child_index) {
   if (is.null(parent_key)) NULL else paste0(parent_key, ".", child_index)
 }
 
-tccq_c_loop_bind_names <- function(stmts) {
-  out <- character()
-  for (stmt in stmts %||% list()) {
-    if (identical(stmt$tag, "bind")) {
-      out <- c(out, stmt$name)
-    } else if (identical(stmt$tag, "for_loop")) {
-      out <- c(out, stmt$var, tccq_c_loop_bind_names(stmt$body %||% list()))
-    }
-  }
-  tccq_unique(out)
-}
-
-tccq_c_loop_body_has_persistent_protect <- function(stmt, module, stmt_index = NULL, loop_locals = NULL) {
-  body <- stmt$body %||% list()
-  loop_locals <- loop_locals %||% tccq_unique(c(stmt$var, tccq_c_loop_bind_names(body)))
-
-  for (j in seq_along(body)) {
-    body_stmt <- body[[j]]
-    nested_index <- tccq_c_stmt_key(stmt_index, j)
-
-    if (identical(body_stmt$tag, "for_loop")) {
-      if (tccq_c_loop_body_has_persistent_protect(body_stmt, module, nested_index, loop_locals = loop_locals)) {
-        return(TRUE)
-      }
-      next
-    }
-
-    if (!body_stmt$tag %in% c("store_index", "store_range", "store_index2", "store_access")) {
-      next
-    }
-
-    target <- body_stmt$name
-    if (target %in% loop_locals) {
-      next
-    }
-
-    barrier <- module$storage_plan$write_barriers[[as.character(nested_index)]] %||% NULL
-    if (!identical(tccq_c_storage_kind(module, target), "owned") ||
-        isTRUE(barrier$copy_target) ||
-        length(barrier$materialize_views %||% character())) {
-      return(TRUE)
-    }
-  }
-
-  FALSE
-}
-
 tccq_c_emit_stmt_for_loop <- function(stmt, sym, module, stmt_index = NULL) {
   s <- sym[[stmt$var]]
   if (is.null(s)) {
@@ -1694,9 +1686,8 @@ tccq_c_emit_stmt_for_loop <- function(stmt, sym, module, stmt_index = NULL) {
   }
   id <- tccq_c_ident(stmt$var)
   saved_nprotect <- paste0("tccq_loop_saved_nprotect_", id)
-  # Only frame iteration-local allocations when no body store can create a
-  # carried SEXP for a local that remains live after this iteration.
-  frame_iteration_protects <- !tccq_c_loop_body_has_persistent_protect(stmt, module, stmt_index = stmt_index)
+  # Local arrays that must survive across iterations are carried in stable
+  # PROTECT_INDEX slots. The loop frame releases only iteration temporaries.
   start <- tccq_c_emit_expr(stmt$start, sym, idx = NULL)
   stop <- tccq_c_emit_expr(stmt$stop, sym, idx = NULL)
   start_missing <- tccq_c_emit_missing_check(start, stmt$start$type)
@@ -1719,14 +1710,12 @@ tccq_c_emit_stmt_for_loop <- function(stmt, sym, module, stmt_index = NULL) {
     paste0("  R_xlen_t ", s$val, " = start_", id, ";"),
     paste0("  for (;;) {"),
     paste0("    if ((by_", id, " > 0 && ", s$val, " > stop_", id, ") || (by_", id, " < 0 && ", s$val, " < stop_", id, ")) break;"),
-    if (isTRUE(frame_iteration_protects)) paste0("    int ", saved_nprotect, " = tccq_nprotect;") else character(),
+    paste0("    int ", saved_nprotect, " = tccq_nprotect;"),
     tccq_indent(body, 4L),
-    if (isTRUE(frame_iteration_protects)) c(
-      paste0("    if (tccq_nprotect > ", saved_nprotect, ") {"),
-      paste0("      UNPROTECT(tccq_nprotect - ", saved_nprotect, ");"),
-      paste0("      tccq_nprotect = ", saved_nprotect, ";"),
-      "    }"
-    ) else character(),
+    paste0("    if (tccq_nprotect > ", saved_nprotect, ") {"),
+    paste0("      UNPROTECT(tccq_nprotect - ", saved_nprotect, ");"),
+    paste0("      tccq_nprotect = ", saved_nprotect, ";"),
+    "    }",
     paste0("    if (", s$val, " == stop_", id, ") break;"),
     paste0("    ", s$val, " += by_", id, ";"),
     "  }",
@@ -1999,7 +1988,9 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
         paste0("R_xlen_t ", s$len, " = ", base$len, ";"),
         paste0("R_xlen_t ", s$nrow, " = ", base$nrow, ";"),
         paste0("R_xlen_t ", s$ncol, " = ", base$ncol, ";"),
+        tccq_c_emit_local_protect_slot(s),
         paste0("SEXP ", s$sexp, " = R_NilValue;"),
+        tccq_c_emit_protect_local_current(s),
         paste0(ctype, " *", s$ptr, " = ", ptr_init, ";"),
         paste0("int ", own_flag, " = 0;")
       ))
@@ -2008,8 +1999,9 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
       elem <- tccq_c_emit_expr(stmt$value, sym, idx = "i")
       return(c(
         tccq_c_emit_matrix_length_setup(stmt$value, sym, s$len, s$nrow, s$ncol),
-        paste0("SEXP ", s$sexp, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(type$mode), ", ", s$len, "));"),
-        "++tccq_nprotect;",
+        tccq_c_emit_local_protect_slot(s),
+        paste0("SEXP ", s$sexp, " = Rf_allocVector(", tccq_sexptype_for_mode(type$mode), ", ", s$len, ");"),
+        tccq_c_emit_protect_local_current(s),
         tccq_c_emit_matrix_dim_attrib(s$sexp, s$nrow, s$ncol, tccq_c_ident(stmt$name)),
         paste0(ctype, " *", s$ptr, " = ", tccq_c_rw_accessor(type$mode), "(", s$sexp, ");"),
         paste0("int ", own_flag, " = 1;"),
@@ -2039,7 +2031,9 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
     }
     return(c(
       paste0("R_xlen_t ", s$len, " = ", base$len, ";"),
+      tccq_c_emit_local_protect_slot(s),
       paste0("SEXP ", s$sexp, " = R_NilValue;"),
+      tccq_c_emit_protect_local_current(s),
       paste0(ctype, " *", s$ptr, " = ", ptr_init, ";"),
       paste0("int ", own_flag, " = 0;")
     ))
@@ -2054,8 +2048,9 @@ tccq_c_emit_stmt_bind <- function(stmt, sym, module) {
 
   c(
     len_lines,
-    paste0("SEXP ", s$sexp, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(type$mode), ", ", s$len, "));"),
-    "++tccq_nprotect;",
+    tccq_c_emit_local_protect_slot(s),
+    paste0("SEXP ", s$sexp, " = Rf_allocVector(", tccq_sexptype_for_mode(type$mode), ", ", s$len, ");"),
+    tccq_c_emit_protect_local_current(s),
     paste0(ctype, " *", s$ptr, " = ", tccq_c_rw_accessor(type$mode), "(", s$sexp, ");"),
     paste0("int ", own_flag, " = 1;"),
     paste0("for (R_xlen_t i = 0; i < ", s$len, "; ++i) {"),
@@ -2527,7 +2522,9 @@ tccq_c_emit_bind_slice_range <- function(stmt, sym, module) {
     return(c(
       setup,
       paste0("R_xlen_t ", s$len, " = n_", s$len, ";"),
+      tccq_c_emit_local_protect_slot(s),
       paste0("SEXP ", s$sexp, " = R_NilValue;"),
+      tccq_c_emit_protect_local_current(s),
       paste0(ctype, " *", s$ptr, " = ", ptr_init, ";"),
       paste0("int ", own_flag, " = 0;")
     ))
@@ -2537,8 +2534,9 @@ tccq_c_emit_bind_slice_range <- function(stmt, sym, module) {
   c(
     setup,
     paste0("R_xlen_t ", s$len, " = n_", s$len, ";"),
-    paste0("SEXP ", s$sexp, " = PROTECT(Rf_allocVector(", tccq_sexptype_for_mode(mode), ", ", s$len, "));"),
-    "++tccq_nprotect;",
+    tccq_c_emit_local_protect_slot(s),
+    paste0("SEXP ", s$sexp, " = Rf_allocVector(", tccq_sexptype_for_mode(mode), ", ", s$len, ");"),
+    tccq_c_emit_protect_local_current(s),
     paste0(ctype, " *", s$ptr, " = ", tccq_c_rw_accessor(mode), "(", s$sexp, ");"),
     paste0("int ", own_flag, " = 1;"),
     paste0("for (R_xlen_t i = 0; i < ", s$len, "; ++i) {"),
