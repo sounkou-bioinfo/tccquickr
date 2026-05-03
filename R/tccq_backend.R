@@ -12,6 +12,22 @@ tccq_backend <- function(name, compile, capabilities = list()) {
   )
 }
 
+tccq_backend_compile <- function(backend, module, target, ctx = list(), source = NULL, spec = NULL) {
+  compile <- backend$compile
+  fmls <- names(formals(compile))
+  has_dots <- "..." %in% fmls
+  args <- list(module = module, target = target, ctx = ctx)
+
+  if (isTRUE(has_dots) || "source" %in% fmls) {
+    args$source <- source
+  }
+  if (isTRUE(has_dots) || "spec" %in% fmls) {
+    args$spec <- spec
+  }
+
+  do.call(compile, args)
+}
+
 #' `tccq` backend factories
 #'
 #' Backend objects control how emitted C is handled by [tccq_compile()].
@@ -42,8 +58,8 @@ tccq_backend_source <- function() {
   tccq_backend(
     name = "source",
     capabilities = list(c = TRUE, compile = FALSE, r_api = TRUE, emits_source = TRUE),
-    compile = function(module, target, ctx = list()) {
-      src <- target$emit(module, ctx)
+    compile = function(module, target, ctx = list(), source = NULL, spec = NULL) {
+      src <- source %||% target$emit(module, ctx)
       list(
         backend = "source",
         source = src,
@@ -73,11 +89,11 @@ tccq_backend_tinycc <- function() {
       options = TRUE,
       boundary_apis = "r_eval"
     ),
-    compile = function(module, target, ctx = list()) {
+    compile = function(module, target, ctx = list(), source = NULL, spec = NULL) {
       tccq_require_namespace("Rtinycc")
 
-      src <- target$emit(module, ctx)
-      spec <- target$entry_spec(module, ctx)
+      src <- source %||% target$emit(module, ctx)
+      spec <- spec %||% target$entry_spec(module, ctx)
 
       ffi <- Rtinycc::tcc_ffi()
       ffi <- Rtinycc::tcc_source(ffi, src)
@@ -151,14 +167,14 @@ tccq_backend_shlib <- function() {
       options = TRUE,
       boundary_apis = "r_eval"
     ),
-    compile = function(module, target, ctx = list()) {
-      tccq_backend_compile_shlib(module, target, ctx)
+    compile = function(module, target, ctx = list(), source = NULL, spec = NULL) {
+      tccq_backend_compile_shlib(module, target, ctx, source = source, spec = spec)
     }
   )
 }
 
-tccq_backend_compile_shlib <- function(module, target, ctx = list()) {
-  src <- target$emit(module, ctx)
+tccq_backend_compile_shlib <- function(module, target, ctx = list(), source = NULL, spec = NULL) {
+  src <- source %||% target$emit(module, ctx)
   src <- tccq_shlib_source_with_headers(src, ctx$headers %||% character())
 
   build_dir <- tccq_shlib_build_dir(module)

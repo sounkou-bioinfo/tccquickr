@@ -143,6 +143,32 @@ length_negative_long_fn <- function(x) {
 expect_equal(tccq_compile(length_negative_long_fn)(x_long), 1 - 3e9)
 expect_equal(tccq_compile(length_negative_long_fn, backend = tccq_backend_shlib())(x_long), 1 - 3e9)
 
+length_plus_integer_na_fn <- function(x, y) {
+  declare(type(x = double(NA)), type(y = integer()))
+  length(x) + y
+}
+
+length_minus_integer_na_fn <- function(x, y) {
+  declare(type(x = double(NA)), type(y = integer()))
+  length(x) - y
+}
+
+length_plus_logical_na_fn <- function(x, y) {
+  declare(type(x = double(NA)), type(y = logical()))
+  length(x) + y
+}
+
+expect_equal(tccq_compile(length_plus_integer_na_fn)(as.double(1:5), NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_plus_integer_na_fn, backend = tccq_backend_shlib())(as.double(1:5), NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_plus_integer_na_fn)(x_long, NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_plus_integer_na_fn, backend = tccq_backend_shlib())(x_long, NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_minus_integer_na_fn)(as.double(1:5), NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_minus_integer_na_fn, backend = tccq_backend_shlib())(as.double(1:5), NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_minus_integer_na_fn)(x_long, NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_minus_integer_na_fn, backend = tccq_backend_shlib())(x_long, NA_integer_), NA_real_)
+expect_equal(tccq_compile(length_plus_logical_na_fn)(as.double(1:5), NA), NA_real_)
+expect_equal(tccq_compile(length_plus_logical_na_fn, backend = tccq_backend_shlib())(x_long, NA), NA_real_)
+
 length_vector_arith_fn <- function(x, y) {
   declare(type(x = double(NA), y = integer(NA)))
   length(x) + y
@@ -161,6 +187,21 @@ length_division_fn <- function(x) {
 
 expect_equal(tccq_compile(length_division_fn)(as.double(1:5)), 2.5)
 expect_equal(tccq_compile(length_division_fn, backend = tccq_backend_shlib())(as.double(1:5)), 2.5)
+
+length_long_floor_division_fn <- function(x) {
+  declare(type(x = double(NA)))
+  length(x) %/% 2L
+}
+
+length_long_floor_division_zero_fn <- function(x) {
+  declare(type(x = double(NA)))
+  length(x) %/% 0L
+}
+
+expect_equal(tccq_compile(length_long_floor_division_fn)(x_long), 3e9 %/% 2L)
+expect_equal(tccq_compile(length_long_floor_division_fn, backend = tccq_backend_shlib())(x_long), 3e9 %/% 2L)
+expect_equal(tccq_compile(length_long_floor_division_zero_fn)(x_long), Inf)
+expect_equal(tccq_compile(length_long_floor_division_zero_fn, backend = tccq_backend_shlib())(x_long), Inf)
 
 length_vector_division_fn <- function(x, y) {
   declare(type(x = double(NA)), type(y = integer(NA)))

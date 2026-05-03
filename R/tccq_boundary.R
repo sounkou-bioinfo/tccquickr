@@ -108,6 +108,27 @@ tccq_boundary_context <- function(node) {
   )
 }
 
+tccq_boundary_diagnostics <- function(node) {
+  boundaries <- tccq_boundary_nodes(node)
+  if (!length(boundaries)) {
+    return(list())
+  }
+
+  lapply(boundaries, function(x) {
+    call_expr <- x$metadata$call_expr %||% NULL
+    list(
+      boundary_id = x$boundary_id %||% NA_integer_,
+      api = x$api,
+      name = x$name,
+      effect = x$effect %||% "pure",
+      result_ownership = x$result_ownership %||% NA_character_,
+      result_type = if (!is.null(x$type)) tccq_type_to_string(x$type) else NA_character_,
+      arg_count = length(x$args %||% list()),
+      original_call = if (!is.null(call_expr)) paste(deparse(call_expr, nlines = 1L), collapse = " ") else NA_character_
+    )
+  })
+}
+
 tccq_boundary_supported <- function(node, target = NULL, backend = NULL, fallback = c("auto", "hard")) {
   fallback <- match.arg(fallback)
   if (!tccq_is_boundary_node(node)) {

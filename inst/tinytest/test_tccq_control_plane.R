@@ -49,6 +49,23 @@ expect_equal(source_result$backend, "source")
 expect_true(is.character(source_result$source))
 expect_true(nzchar(source_result$source))
 
+base_target <- tccquickr:::tccq_target_c_rapi()
+emit_count <- 0L
+counting_target <- structure(
+  list(
+    name = "counting_c_rapi",
+    capabilities = base_target$capabilities,
+    entry_spec = base_target$entry_spec,
+    emit = function(module, ctx = list()) {
+      emit_count <<- emit_count + 1L
+      base_target$emit(module, ctx)
+    }
+  ),
+  class = "tccq_target"
+)
+tccq_compile(simple_sum_fn, backend = source_backend, target = counting_target)
+expect_identical(emit_count, 1L)
+
 expect_error(
   tccquickr:::tccq_module_validate(
     tccquickr:::tccq_module(
@@ -90,10 +107,7 @@ matrix_decl_fn <- function(x) {
   declare(type(x = double(NA, NA)))
   x
 }
-expect_error(
-  tccq_compile(matrix_decl_fn, mode = "code"),
-  pattern = "supports scalar/vector only"
-)
+expect_equal(tccq_compile(matrix_decl_fn)(matrix(as.double(1:4), 2L, 2L)), matrix(as.double(1:4), 2L, 2L))
 
 header_only_extlib <- tccquickr:::tccq_external_library(
   name = "demo_header",

@@ -63,7 +63,7 @@ install.packages(
 
 ### Implemented today
 
-- declared scalar and vector inputs
+- declared scalar, vector, and matrix inputs
 - `double`, `integer`, and `logical` typing
 - scalar and elementwise arithmetic
 - comparison and logical vector expressions
@@ -76,6 +76,9 @@ install.packages(
 - contiguous slices `x[lo:hi]`
 - local indexed writes `y[i] <- v` and local range writes
   `y[lo:hi] <- v`
+- scalar matrix reads `x[i, j]`
+- scalar, row, column, rectangle, and full-matrix local writes
+- scalar `matrix(data, nrow, ncol)` construction
 - fold-style reducers `sum`, `prod`, `min`, `max`, `mean`, `any`, and
   `all`
 - limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
@@ -141,6 +144,7 @@ tccq_c_block(sum_src)
 #include <Rinternals.h>
 #include <Rmath.h>
 #include <math.h>
+#include <limits.h>
 
 #ifndef REAL_RO
 #define REAL_RO(x) REAL(x)
@@ -170,6 +174,39 @@ static TCCQ_UNUSED int tccq_lgl_not(int x) {
   return x == NA_LOGICAL ? NA_LOGICAL : (!x);
 }
 
+static TCCQ_UNUSED int tccq_int_idiv(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER || b == 0) return NA_INTEGER;
+  int q = a / b;
+  int r = a % b;
+  if (r != 0 && ((a < 0) != (b < 0))) --q;
+  return q;
+}
+
+static TCCQ_UNUSED int tccq_int_checked(long long x) {
+  if (x > INT_MAX || x <= INT_MIN) return NA_INTEGER;
+  return (int)x;
+}
+
+static TCCQ_UNUSED int tccq_int_add(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a + (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_sub(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a - (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_mul(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a * (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_neg(int a) {
+  if (a == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked(-((long long)a));
+}
+
 static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
   if (a == 0 || b == 0) return 0;
   if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
@@ -187,12 +224,14 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
     Rf_error("argument %s has wrong R type", "x");
   }
   R_xlen_t n_x = XLENGTH(arg_x);
-  const double *p_x = REAL_RO(arg_x);
+  const double *tccq_arg_ptr_cache_x = NULL;
+  #define p_x (tccq_arg_ptr_cache_x == NULL ? (tccq_arg_ptr_cache_x = REAL_RO(arg_x)) : tccq_arg_ptr_cache_x)
   if (TYPEOF(arg_y) != REALSXP) {
     Rf_error("argument %s has wrong R type", "y");
   }
   R_xlen_t n_y = XLENGTH(arg_y);
-  const double *p_y = REAL_RO(arg_y);
+  const double *tccq_arg_ptr_cache_y = NULL;
+  #define p_y (tccq_arg_ptr_cache_y == NULL ? (tccq_arg_ptr_cache_y = REAL_RO(arg_y)) : tccq_arg_ptr_cache_y)
   int tccq_nprotect = 0;
   R_xlen_t n_out = n_y;
   if (n_x != n_out) {
@@ -200,7 +239,7 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   }
   double acc = 0.0;
   for (R_xlen_t i = 0; i < n_out; ++i) {
-    double v = (double)(((((sin((double)(p_x[i]))) + (p_y[i]))) * (p_y[i])));
+    double v = (double)(((double)(((double)(sin((double)(p_x[i]))) + (double)(p_y[i]))) * (double)(p_y[i])));
     if (R_IsNA(v)) { acc = NA_REAL; break; }
     if (R_IsNaN(v)) { acc = R_NaN; break; }
     acc += v;
@@ -270,6 +309,7 @@ tccq_c_block(vec_src)
 #include <Rinternals.h>
 #include <Rmath.h>
 #include <math.h>
+#include <limits.h>
 
 #ifndef REAL_RO
 #define REAL_RO(x) REAL(x)
@@ -299,6 +339,39 @@ static TCCQ_UNUSED int tccq_lgl_not(int x) {
   return x == NA_LOGICAL ? NA_LOGICAL : (!x);
 }
 
+static TCCQ_UNUSED int tccq_int_idiv(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER || b == 0) return NA_INTEGER;
+  int q = a / b;
+  int r = a % b;
+  if (r != 0 && ((a < 0) != (b < 0))) --q;
+  return q;
+}
+
+static TCCQ_UNUSED int tccq_int_checked(long long x) {
+  if (x > INT_MAX || x <= INT_MIN) return NA_INTEGER;
+  return (int)x;
+}
+
+static TCCQ_UNUSED int tccq_int_add(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a + (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_sub(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a - (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_mul(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a * (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_neg(int a) {
+  if (a == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked(-((long long)a));
+}
+
 static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
   if (a == 0 || b == 0) return 0;
   if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
@@ -316,12 +389,14 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
     Rf_error("argument %s has wrong R type", "x");
   }
   R_xlen_t n_x = XLENGTH(arg_x);
-  const double *p_x = REAL_RO(arg_x);
+  const double *tccq_arg_ptr_cache_x = NULL;
+  #define p_x (tccq_arg_ptr_cache_x == NULL ? (tccq_arg_ptr_cache_x = REAL_RO(arg_x)) : tccq_arg_ptr_cache_x)
   if (TYPEOF(arg_y) != REALSXP) {
     Rf_error("argument %s has wrong R type", "y");
   }
   R_xlen_t n_y = XLENGTH(arg_y);
-  const double *p_y = REAL_RO(arg_y);
+  const double *tccq_arg_ptr_cache_y = NULL;
+  #define p_y (tccq_arg_ptr_cache_y == NULL ? (tccq_arg_ptr_cache_y = REAL_RO(arg_y)) : tccq_arg_ptr_cache_y)
   int tccq_nprotect = 0;
   R_xlen_t n_out = n_x;
   if (n_y != n_out) {
@@ -331,7 +406,7 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_y) {
   ++tccq_nprotect;
   double *p_out = REAL(out);
   for (R_xlen_t i = 0; i < n_out; ++i) {
-    p_out[i] = (double)(((sin((double)(p_x[i]))) + (((p_y[i]) * (p_y[i])))));
+    p_out[i] = (double)(((double)(sin((double)(p_x[i]))) + (double)(((double)(p_y[i]) * (double)(p_y[i])))));
   }
   UNPROTECT(tccq_nprotect);
   return out;
@@ -423,6 +498,7 @@ tccq_c_block(assign_src)
 #include <Rinternals.h>
 #include <Rmath.h>
 #include <math.h>
+#include <limits.h>
 
 #ifndef REAL_RO
 #define REAL_RO(x) REAL(x)
@@ -452,6 +528,39 @@ static TCCQ_UNUSED int tccq_lgl_not(int x) {
   return x == NA_LOGICAL ? NA_LOGICAL : (!x);
 }
 
+static TCCQ_UNUSED int tccq_int_idiv(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER || b == 0) return NA_INTEGER;
+  int q = a / b;
+  int r = a % b;
+  if (r != 0 && ((a < 0) != (b < 0))) --q;
+  return q;
+}
+
+static TCCQ_UNUSED int tccq_int_checked(long long x) {
+  if (x > INT_MAX || x <= INT_MIN) return NA_INTEGER;
+  return (int)x;
+}
+
+static TCCQ_UNUSED int tccq_int_add(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a + (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_sub(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a - (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_mul(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a * (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_neg(int a) {
+  if (a == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked(-((long long)a));
+}
+
 static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
   if (a == 0 || b == 0) return 0;
   if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
@@ -469,19 +578,28 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
     Rf_error("argument %s has wrong R type", "x");
   }
   R_xlen_t n_x = XLENGTH(arg_x);
-  const double *p_x = REAL_RO(arg_x);
+  const double *tccq_arg_ptr_cache_x = NULL;
+  #define p_x (tccq_arg_ptr_cache_x == NULL ? (tccq_arg_ptr_cache_x = REAL_RO(arg_x)) : tccq_arg_ptr_cache_x)
   if (TYPEOF(arg_i) != INTSXP) {
     Rf_error("argument %s has wrong R type", "i");
   }
-  if (XLENGTH(arg_i) < 1) {
+  R_xlen_t n_i = XLENGTH(arg_i);
+  if (n_i < 1) {
     Rf_error("scalar argument %s is empty", "i");
+  }
+  if (n_i != 1) {
+    Rf_error("scalar value %s has runtime length %lld; vector-valued scalar use is not supported", "i", (long long)n_i);
   }
   int v_i = INTEGER_RO(arg_i)[0];
   if (TYPEOF(arg_v) != REALSXP) {
     Rf_error("argument %s has wrong R type", "v");
   }
-  if (XLENGTH(arg_v) < 1) {
+  R_xlen_t n_v = XLENGTH(arg_v);
+  if (n_v < 1) {
     Rf_error("scalar argument %s is empty", "v");
+  }
+  if (n_v != 1) {
+    Rf_error("scalar value %s has runtime length %lld; vector-valued scalar use is not supported", "v", (long long)n_v);
   }
   double v_v = REAL_RO(arg_v)[0];
   int tccq_nprotect = 0;
@@ -497,8 +615,17 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
     p_y = tmp_y;
     own_y = 1;
   }
-  R_xlen_t j_y = tccq_checked_index1((R_xlen_t)(v_i), n_y, "y");
-  p_y[j_y] = (double)(v_v);
+  R_xlen_t lo_y_2_d1 = 0;
+  R_xlen_t n_y_2_d1 = 0;
+  if (!(((int)(v_i) == NA_INTEGER))) {
+    R_xlen_t raw_y_2_d1 = (R_xlen_t)(v_i);
+    lo_y_2_d1 = tccq_checked_index1(raw_y_2_d1, n_y, "y");
+    n_y_2_d1 = 1;
+  }
+  double rhs_y_2 = (double)(v_v);
+  for (R_xlen_t i = 0; i < n_y_2_d1; ++i) {
+    p_y[lo_y_2_d1 + i] = rhs_y_2;
+  }
   if (!own_y) {
     loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
     ++tccq_nprotect;
@@ -552,6 +679,7 @@ tccq_c_block(slice_sum_src)
 #include <Rinternals.h>
 #include <Rmath.h>
 #include <math.h>
+#include <limits.h>
 
 #ifndef REAL_RO
 #define REAL_RO(x) REAL(x)
@@ -581,6 +709,39 @@ static TCCQ_UNUSED int tccq_lgl_not(int x) {
   return x == NA_LOGICAL ? NA_LOGICAL : (!x);
 }
 
+static TCCQ_UNUSED int tccq_int_idiv(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER || b == 0) return NA_INTEGER;
+  int q = a / b;
+  int r = a % b;
+  if (r != 0 && ((a < 0) != (b < 0))) --q;
+  return q;
+}
+
+static TCCQ_UNUSED int tccq_int_checked(long long x) {
+  if (x > INT_MAX || x <= INT_MIN) return NA_INTEGER;
+  return (int)x;
+}
+
+static TCCQ_UNUSED int tccq_int_add(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a + (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_sub(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a - (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_mul(int a, int b) {
+  if (a == NA_INTEGER || b == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked((long long)a * (long long)b);
+}
+
+static TCCQ_UNUSED int tccq_int_neg(int a) {
+  if (a == NA_INTEGER) return NA_INTEGER;
+  return tccq_int_checked(-((long long)a));
+}
+
 static TCCQ_UNUSED int tccq_lgl_and(int a, int b) {
   if (a == 0 || b == 0) return 0;
   if (a == NA_LOGICAL || b == NA_LOGICAL) return NA_LOGICAL;
@@ -598,29 +759,41 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
     Rf_error("argument %s has wrong R type", "x");
   }
   R_xlen_t n_x = XLENGTH(arg_x);
-  const double *p_x = REAL_RO(arg_x);
+  const double *tccq_arg_ptr_cache_x = NULL;
+  #define p_x (tccq_arg_ptr_cache_x == NULL ? (tccq_arg_ptr_cache_x = REAL_RO(arg_x)) : tccq_arg_ptr_cache_x)
   if (TYPEOF(arg_lo) != INTSXP) {
     Rf_error("argument %s has wrong R type", "lo");
   }
-  if (XLENGTH(arg_lo) < 1) {
+  R_xlen_t n_lo = XLENGTH(arg_lo);
+  if (n_lo < 1) {
     Rf_error("scalar argument %s is empty", "lo");
+  }
+  if (n_lo != 1) {
+    Rf_error("scalar value %s has runtime length %lld; vector-valued scalar use is not supported", "lo", (long long)n_lo);
   }
   int v_lo = INTEGER_RO(arg_lo)[0];
   if (TYPEOF(arg_hi) != INTSXP) {
     Rf_error("argument %s has wrong R type", "hi");
   }
-  if (XLENGTH(arg_hi) < 1) {
+  R_xlen_t n_hi = XLENGTH(arg_hi);
+  if (n_hi < 1) {
     Rf_error("scalar argument %s is empty", "hi");
+  }
+  if (n_hi != 1) {
+    Rf_error("scalar value %s has runtime length %lld; vector-valued scalar use is not supported", "hi", (long long)n_hi);
   }
   int v_hi = INTEGER_RO(arg_hi)[0];
   int tccq_nprotect = 0;
   R_xlen_t off_n_y = 0;
   R_xlen_t n_n_y = n_x;
-  R_xlen_t rel_lo_n_y_1 = tccq_checked_index1((R_xlen_t)(v_lo), n_n_y, "x");
-  R_xlen_t rel_hi_n_y_1 = tccq_checked_index1((R_xlen_t)(v_hi), n_n_y, "x");
-  if (rel_hi_n_y_1 < rel_lo_n_y_1) { Rf_error("decreasing slices are not supported"); }
-  off_n_y = off_n_y + rel_lo_n_y_1;
-  n_n_y = rel_hi_n_y_1 - rel_lo_n_y_1 + 1;
+  int missing_n_y = 0;
+  if (!missing_n_y) {
+    R_xlen_t rel_lo_n_y_1 = tccq_checked_index1((R_xlen_t)(v_lo), n_n_y, "x");
+    R_xlen_t rel_hi_n_y_1 = tccq_checked_index1((R_xlen_t)(v_hi), n_n_y, "x");
+    if (rel_hi_n_y_1 < rel_lo_n_y_1) { Rf_error("decreasing slices are not supported"); }
+    off_n_y = off_n_y + rel_lo_n_y_1;
+    n_n_y = rel_hi_n_y_1 - rel_lo_n_y_1 + 1;
+  }
   R_xlen_t n_y = n_n_y;
   SEXP loc_y = R_NilValue;
   double *p_y = (double *) (p_x + off_n_y);
@@ -695,8 +868,9 @@ semantics.
 ### Unsupported calls and explicit boundaries
 
 Unsupported calls are not supposed to disappear silently into
-target-specific special cases. With `fallback = "auto"`, they lower to
-explicit boundary nodes.
+target-specific special cases. The default `fallback = "hard"` rejects
+unsupported calls. With explicit `fallback = "auto"`, they lower to
+inspectable boundary nodes.
 
 ``` r
 fallback_kernel <- function(x) {
@@ -709,13 +883,15 @@ fallback_ir$ir$result$tag
 #> [1] "boundary_call"
 fallback_ir$ir$result$api
 #> [1] "r_eval"
+fallback_ir$boundary_diagnostics[[1]]$original_call
+#> [1] "floor(x)"
 ```
 
-In `fallback = "hard"` mode, the same unsupported call is rejected.
+In default hard-fallback mode, the same unsupported call is rejected.
 
 ``` r
 tryCatch(
-  tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
+  tccq_compile(fallback_kernel, mode = "ir"),
   error = function(e) e$message
 )
 #> [1] "unsupported call in tccq: floor. Add a lowerer case or route it through an explicit boundary node."
@@ -734,7 +910,7 @@ tryCatch(
   tccq_compile(direct_formal_mutation, mode = "code"),
   error = function(e) e$message
 )
-#> [1] "indexed assignment currently requires a local vector binding. Write y <- x; y[i] <- value; y instead of mutating formal 'x' directly."
+#> [1] "indexed assignment currently requires a local vector binding. Write y <- x; y[...] <- value; y instead of mutating formal 'x' directly."
 ```
 
 ## Architecture

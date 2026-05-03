@@ -77,7 +77,7 @@ tccq_pass_effects <- function() {
         if (identical(eff, "pure")) {
           return(invisible(NULL))
         }
-        if (identical(eff, "write") && n$tag %in% c("program", "kernel_program", "store_index", "store_range")) {
+        if (identical(eff, "write") && n$tag %in% c("program", "kernel_program", "store_index", "store_range", "store_index2", "store_access", "for_loop")) {
           return(invisible(NULL))
         }
         if (eff %in% c("boundary", "r_eval")) {
@@ -183,7 +183,13 @@ tccq_pass_boundary_collect <- function() {
     run = function(module, facts) {
       ir <- tccq_boundary_annotate_ids(module$ir)
       kernel <- tccq_boundary_annotate_ids(module$kernel)
-      tccq_module_with(module, ir = ir, kernel = kernel, boundary_context = tccq_boundary_context(kernel))
+      tccq_module_with(
+        module,
+        ir = ir,
+        kernel = kernel,
+        boundary_context = tccq_boundary_context(kernel),
+        boundary_diagnostics = tccq_boundary_diagnostics(kernel)
+      )
     }
   )
 }
@@ -231,13 +237,80 @@ tccq_pass_allocation_plan <- function() {
   )
 }
 
+tccq_protect_boundary_arg_count <- function(plan) {
+  strategy <- plan$strategy %||% NULL
+  if (strategy %in% c("box_scalar", "materialize_local", "unsupported_vector_expr")) {
+    return(1L)
+  }
+  0L
+}
+
+tccq_protect_plan <- function(module) {
+  storage <- module$storage_plan %||% list()
+  alloc <- module$alloc_plan %||% list()
+  result <- storage$result %||% list(strategy = "unknown")
+  result_allocates <- result$strategy %in% c(
+    "box_scalar",
+    "fresh_vector",
+    "materialize_view",
+    "copy_on_return"
+  )
+
+  reused_bindings <- names(alloc$reuse$bindings %||% list())
+  local_allocations <- names(Filter(function(x) {
+    !identical(x$kind, "alias") &&
+      !(x$name %in% reused_bindings) &&
+      !is.null(x$type) &&
+      x$type$rank > 0L
+  }, storage$bindings %||% list()))
+
+  boundary_arg_counts <- lapply(storage$boundary_args %||% list(), function(plans) {
+    sum(vapply(plans, tccq_protect_boundary_arg_count, integer(1)))
+  })
+  boundary_call_count <- length(boundary_arg_counts)
+  boundary_protect_count <- sum(unlist(boundary_arg_counts, use.names = FALSE)) + 2L * boundary_call_count
+
+  write_barriers <- storage$write_barriers %||% list()
+  write_barrier_protect_count <- sum(vapply(write_barriers, function(x) {
+    length(x$materialize_views %||% character()) + as.integer(isTRUE(x$copy_target))
+  }, integer(1)))
+
+  protected_result_count <- as.integer(isTRUE(result_allocates))
+  protected_local_count <- length(local_allocations)
+  max_live_upper_bound <- protected_result_count +
+    protected_local_count +
+    boundary_protect_count +
+    write_barrier_protect_count
+
+  list(
+    strategy = "dynamic_counter",
+    max_live_upper_bound = max_live_upper_bound,
+    result = list(
+      strategy = result$strategy %||% "unknown",
+      protects = protected_result_count
+    ),
+    locals = list(
+      names = local_allocations,
+      protects = protected_local_count
+    ),
+    boundaries = list(
+      count = boundary_call_count,
+      arg_protects = boundary_arg_counts,
+      protects = boundary_protect_count
+    ),
+    write_barriers = list(
+      protects = write_barrier_protect_count
+    )
+  )
+}
+
 tccq_pass_protect_plan <- function() {
   tccq_pass(
     name = "protect_plan",
     requires = "alloc_plan",
     provides = "protect_plan",
     run = function(module, facts) {
-      tccq_module_with(module, protect_plan = list(n_protect = 1L))
+      tccq_module_with(module, protect_plan = tccq_protect_plan(module))
     }
   )
 }

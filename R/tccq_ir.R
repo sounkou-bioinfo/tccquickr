@@ -74,11 +74,82 @@ tccq_ir_bind <- function(name, value) {
   )
 }
 
-tccq_ir_store_index <- function(name, index, value, target_type) {
+tccq_ir_store_index <- function(name, index, value, target_type, access = NULL) {
   tccq_node(
     "store_index",
     name = as.character(name),
     index = index,
+    value = value,
+    access = access,
+    target_type = target_type,
+    type = target_type,
+    effect = "write"
+  )
+}
+
+tccq_ir_store_range <- function(name, start, stop, value, target_type, access = NULL) {
+  tccq_node(
+    "store_range",
+    name = as.character(name),
+    start = start,
+    stop = stop,
+    value = value,
+    access = access,
+    target_type = target_type,
+    type = target_type,
+    effect = "write"
+  )
+}
+
+tccq_ir_store_subscript_index <- function(index) {
+  list(kind = "index", index = index)
+}
+
+tccq_ir_store_subscript_range <- function(start, stop) {
+  list(kind = "range", start = start, stop = stop)
+}
+
+tccq_ir_store_subscript_all <- function() {
+  list(kind = "all")
+}
+
+tccq_ir_subscript_index <- function(index) {
+  list(kind = "index", index = index)
+}
+
+tccq_ir_subscript_range <- function(start, stop) {
+  list(kind = "range", start = start, stop = stop)
+}
+
+tccq_ir_subscript_all <- function() {
+  list(kind = "all")
+}
+
+tccq_ir_store_access <- function(name, subscripts, value, target_type, access = NULL) {
+  if (!length(subscripts) && is.null(access)) {
+    tccq_abort("assignment target requires at least one subscript")
+  }
+  tccq_node(
+    "store_access",
+    name = as.character(name),
+    subscripts = subscripts,
+    value = value,
+    access = access,
+    target_type = target_type,
+    type = target_type,
+    effect = "write"
+  )
+}
+
+tccq_ir_store_index2 <- function(name, row, col, value, target_type) {
+  if (row$type$rank != 0L || col$type$rank != 0L) {
+    tccq_abort("matrix row/column indices must be scalar")
+  }
+  tccq_node(
+    "store_index2",
+    name = as.character(name),
+    row = row,
+    col = col,
     value = value,
     target_type = target_type,
     type = target_type,
@@ -86,16 +157,16 @@ tccq_ir_store_index <- function(name, index, value, target_type) {
   )
 }
 
-tccq_ir_store_range <- function(name, start, stop, value, target_type) {
+tccq_ir_for_loop <- function(var, start, stop, body) {
   tccq_node(
-    "store_range",
-    name = as.character(name),
+    "for_loop",
+    var = as.character(var),
     start = start,
     stop = stop,
-    value = value,
-    target_type = target_type,
-    type = target_type,
-    effect = "write"
+    body = body,
+    type = tccq_type_scalar("xlen"),
+    effect = "write",
+    barrier = TRUE
   )
 }
 
@@ -105,11 +176,14 @@ tccq_ir_index <- function(x, index) {
   if (x$type$rank != 1L) {
     tccq_abort("x[i] currently requires a vector input")
   }
+  if (!index$type$rank %in% c(0L, 1L)) {
+    tccq_abort("x[i] currently supports scalar or vector integer/logical subscripts only")
+  }
   tccq_node(
     "index",
     x = x,
     index = index,
-    type = tccq_type_scalar(x$type$mode),
+    type = if (index$type$rank == 0L) tccq_type_scalar(x$type$mode) else tccq_type_vector(x$type$mode),
     effect = "pure"
   )
 }
@@ -119,6 +193,89 @@ tccq_ir_slice_range <- function(x, start, stop) {
     tccq_abort("x[lo:hi] currently requires a vector input")
   }
   tccq_ir_view1(x, start, stop, type = tccq_type_vector(x$type$mode, length = NA_integer_))
+}
+
+tccq_ir_index2 <- function(x, row, col) {
+  if (x$type$rank != 2L) {
+    tccq_abort("x[i, j] currently requires a matrix input")
+  }
+  if (row$type$rank != 0L || col$type$rank != 0L) {
+    tccq_abort("matrix row/column indices must be scalar")
+  }
+  tccq_node(
+    "index2",
+    x = x,
+    row = row,
+    col = col,
+    type = tccq_type_scalar(x$type$mode),
+    effect = "pure"
+  )
+}
+
+tccq_ir_matrix_view <- function(x, subscripts) {
+  if (x$type$rank != 2L) {
+    tccq_abort("matrix view currently requires a rank-2 input")
+  }
+  if (length(subscripts) != 2L) {
+    tccq_abort("matrix view requires exactly two subscripts")
+  }
+  kinds <- vapply(subscripts, `[[`, character(1), "kind")
+  index_ranks <- vapply(subscripts, function(sub) {
+    if (identical(sub$kind, "index")) sub$index$type$rank else 0L
+  }, integer(1))
+
+  if (identical(kinds, c("all", "index")) && identical(index_ranks[[2L]], 0L)) {
+    out_type <- tccq_type_vector(x$type$mode)
+  } else if (identical(kinds, c("index", "all")) && identical(index_ranks[[1L]], 0L)) {
+    out_type <- tccq_type_vector(x$type$mode)
+  } else {
+    tccq_abort("matrix extraction currently supports scalar x[i, j], x[, j], or x[i, ]")
+  }
+
+  tccq_node(
+    "matrix_view",
+    x = x,
+    subscripts = subscripts,
+    type = out_type,
+    effect = "pure"
+  )
+}
+
+tccq_ir_matrix_fill <- function(value, nrow, ncol) {
+  if (value$type$rank != 0L || nrow$type$rank != 0L || ncol$type$rank != 0L) {
+    tccq_abort("matrix() currently requires scalar data, nrow, and ncol")
+  }
+  if (identical(value$type$mode, "xlen")) {
+    tccq_abort("matrix() data currently cannot be a length()/xlen scalar; coerce it to integer or double first")
+  }
+  tccq_node(
+    "matrix_fill",
+    value = value,
+    nrow = nrow,
+    ncol = ncol,
+    type = tccq_type_matrix(value$type$mode, nrow = NA_integer_, ncol = NA_integer_),
+    effect = "pure"
+  )
+}
+
+tccq_ir_vector_fill <- function(value, length) {
+  if (value$type$rank != 0L || length$type$rank != 0L) {
+    tccq_abort("vector fill currently requires scalar data and length")
+  }
+  if (identical(value$type$mode, "xlen")) {
+    tccq_abort("vector fill data currently cannot be a length()/xlen scalar; coerce it to integer or double first")
+  }
+  tccq_node(
+    "vector_fill",
+    value = value,
+    length = length,
+    type = tccq_type_vector(value$type$mode),
+    effect = "pure"
+  )
+}
+
+tccq_ir_arg_reduce <- function(op, x, type = tccq_type_scalar("integer")) {
+  tccq_node("arg_reduce", op = op, x = x, type = type)
 }
 
 # Program kernel wrapper ------------------------------------------------------
@@ -144,6 +301,8 @@ tccq_ir_program_locals <- function(node) {
   tccq_ir_walk(node, function(n) {
     if (identical(n$tag, "bind")) {
       locals[[n$name]] <<- n$type
+    } else if (identical(n$tag, "for_loop")) {
+      locals[[n$var]] <<- n$type
     }
   })
   locals
@@ -152,7 +311,7 @@ tccq_ir_program_locals <- function(node) {
 tccq_ir_program_mutated_names <- function(node) {
   names <- character()
   tccq_ir_walk(node, function(n) {
-    if (n$tag %in% c("store_index", "store_range")) {
+    if (n$tag %in% c("store_index", "store_range", "store_index2", "store_access")) {
       names <<- c(names, n$name)
     }
   })

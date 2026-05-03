@@ -13,9 +13,9 @@
 #'
 #' @param fn R function with a leading declare(type(...)) annotation.
 #' @param mode One of "compile", "code", or "ir".
-#' @param fallback One of "auto" or "hard". In "auto" mode unsupported
-#'   calls may lower to explicit `r_eval` boundary nodes. In "hard" mode they
-#'   are rejected.
+#' @param fallback One of "hard" or "auto". In "hard" mode unsupported calls
+#'   are rejected. In "auto" mode unsupported calls may lower to explicit
+#'   `r_eval` boundary nodes.
 #' @param backend Backend object. Use `tccq_backend_source()`,
 #'   `tccq_backend_tinycc()`, or `tccq_backend_shlib()`. Defaults to TinyCC via
 #'   `Rtinycc`.
@@ -27,7 +27,7 @@
 tccq_compile <- function(
   fn,
   mode = c("compile", "code", "ir"),
-  fallback = c("auto", "hard"),
+  fallback = c("hard", "auto"),
   backend = tccq_backend_tinycc(),
   target = tccq_target_c_rapi(),
   extlibs = list(),
@@ -57,11 +57,16 @@ tccq_compile <- function(
     return(src)
   }
 
+  spec <- target$entry_spec(module, ctx)
+
   if (isTRUE(debug)) {
     message("tccq generated C source:\n", src)
   }
 
-  result <- backend$compile(module, target, ctx)
+  result <- tccq_backend_compile(backend, module, target, ctx, source = src, spec = spec)
+  boundaries <- module$boundary_diagnostics %||% list()
+  result$boundaries <- boundaries
+  result$diagnostics <- utils::modifyList(result$diagnostics %||% list(), list(boundaries = boundaries))
   callable <- result$callable
 
   if (is.null(callable)) {

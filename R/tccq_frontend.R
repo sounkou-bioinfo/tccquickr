@@ -76,12 +76,21 @@ tccq_parse_declare_call <- function(expr) {
   out <- list()
 
   for (arg in args) {
-    if (tccq_is_call_to(arg, "type")) {
-      out <- utils::modifyList(out, tccq_parse_type_decl(arg))
+    decls <- if (tccq_is_call_to(arg, "{")) {
+      as.list(arg[-1L])
     } else {
-      tccq_abort(
-        "tccq currently supports declare(type(x = double(NA), ...)) only"
-      )
+      list(arg)
+    }
+    decls <- decls[!vapply(decls, is.null, logical(1))]
+
+    for (decl in decls) {
+      if (tccq_is_call_to(decl, "type")) {
+        out <- utils::modifyList(out, tccq_parse_type_decl(decl))
+      } else {
+        tccq_abort(
+          "tccq currently supports declare(type(x = double(NA), ...)) or declare({ type(...) }) only"
+        )
+      }
     }
   }
 

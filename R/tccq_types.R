@@ -75,15 +75,18 @@ tccq_type_result_mode_arith <- function(a, b, op = NULL) {
     return("double")
   }
   if (a$mode == "xlen" || b$mode == "xlen") {
-    if (identical(op, "*") || a$rank > 0L || b$rank > 0L) {
+    if (identical(op, "%/%") || identical(op, "*") || identical(op, "+") || identical(op, "-") || a$rank > 0L || b$rank > 0L) {
       return("double")
     }
     return("xlen")
   }
+  if (identical(op, "%/%")) {
+    return("integer")
+  }
   if (a$mode == "integer" || b$mode == "integer") {
     return("integer")
   }
-  "logical"
+  "integer"
 }
 
 tccq_type_result_mode_compare <- function(a, b, op = NULL) {
@@ -148,13 +151,13 @@ tccq_c_const_literal <- function(value, mode) {
   switch(
     mode,
     double = {
-      if (is.nan(value)) "R_NaN" else if (is.infinite(value)) {
+      if (is.nan(value)) "R_NaN" else if (is.na(value)) "NA_REAL" else if (is.infinite(value)) {
         if (value > 0) "R_PosInf" else "R_NegInf"
       } else {
         sprintf("%.17g", as.double(value))
       }
     },
-    integer = paste0(as.integer(value)),
+    integer = if (is.na(value)) "NA_INTEGER" else paste0(as.integer(value)),
     logical = {
       ival <- suppressWarnings(as.integer(value))
       if (length(ival) != 1L || is.na(ival)) {

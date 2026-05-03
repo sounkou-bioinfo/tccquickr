@@ -79,7 +79,7 @@ install.packages(
 
 ### Implemented today
 
-- declared scalar and vector inputs
+- declared scalar, vector, and matrix inputs
 - `double`, `integer`, and `logical` typing
 - scalar and elementwise arithmetic
 - comparison and logical vector expressions
@@ -90,6 +90,9 @@ install.packages(
 - scalar indexed reads `x[i]`
 - contiguous slices `x[lo:hi]`
 - local indexed writes `y[i] <- v` and local range writes `y[lo:hi] <- v`
+- scalar matrix reads `x[i, j]`
+- scalar, row, column, rectangle, and full-matrix local writes
+- scalar `matrix(data, nrow, ncol)` construction
 - fold-style reducers `sum`, `prod`, `min`, `max`, `mean`, `any`, and `all`
 - limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
 - explicit boundary nodes in `fallback = "auto"`
@@ -338,7 +341,8 @@ This is still intentionally narrower than full base-R `Reduce()` semantics.
 ### Unsupported calls and explicit boundaries
 
 Unsupported calls are not supposed to disappear silently into target-specific
-special cases. With `fallback = "auto"`, they lower to explicit boundary nodes.
+special cases. The default `fallback = "hard"` rejects unsupported calls. With
+explicit `fallback = "auto"`, they lower to inspectable boundary nodes.
 
 ```{r}
 fallback_kernel <- function(x) {
@@ -349,13 +353,14 @@ fallback_kernel <- function(x) {
 fallback_ir <- tccq_compile(fallback_kernel, mode = "ir", fallback = "auto")
 fallback_ir$ir$result$tag
 fallback_ir$ir$result$api
+fallback_ir$boundary_diagnostics[[1]]$original_call
 ```
 
-In `fallback = "hard"` mode, the same unsupported call is rejected.
+In default hard-fallback mode, the same unsupported call is rejected.
 
 ```{r}
 tryCatch(
-  tccq_compile(fallback_kernel, mode = "ir", fallback = "hard"),
+  tccq_compile(fallback_kernel, mode = "ir"),
   error = function(e) e$message
 )
 ```

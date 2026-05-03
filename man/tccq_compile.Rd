@@ -2,12 +2,12 @@
 % Please edit documentation in R/tccq_compile.R
 \name{tccq_compile}
 \alias{tccq_compile}
-\title{Fresh experimental R-to-C compiler scaffold}
+\title{Experimental tccq R-to-C compiler entry point}
 \usage{
 tccq_compile(
   fn,
   mode = c("compile", "code", "ir"),
-  fallback = c("auto", "hard"),
+  fallback = c("hard", "auto"),
   backend = tccq_backend_tinycc(),
   target = tccq_target_c_rapi(),
   extlibs = list(),
@@ -19,9 +19,9 @@ tccq_compile(
 
 \item{mode}{One of "compile", "code", or "ir".}
 
-\item{fallback}{One of "auto" or "hard". In "auto" mode unsupported
-calls may lower to explicit \code{r_eval} boundary nodes. In "hard" mode they
-are rejected.}
+\item{fallback}{One of "hard" or "auto". In "hard" mode unsupported calls
+are rejected. In "auto" mode unsupported calls may lower to explicit
+\code{r_eval} boundary nodes.}
 
 \item{backend}{Backend object. Use \code{tccq_backend_source()},
 \code{tccq_backend_tinycc()}, or \code{tccq_backend_shlib()}. Defaults to TinyCC via

@@ -24,8 +24,11 @@ tccq_storage_stmt_read_vars <- function(stmt) {
   switch(
     stmt$tag,
     bind = tccq_ir_vars(stmt$value),
-    store_index = tccq_unique(c(tccq_ir_vars(stmt$index), tccq_ir_vars(stmt$value))),
-    store_range = tccq_unique(c(tccq_ir_vars(stmt$start), tccq_ir_vars(stmt$stop), tccq_ir_vars(stmt$value))),
+    store_index = tccq_unique(c(tccq_ir_vars(stmt$access), tccq_ir_vars(stmt$index), tccq_ir_vars(stmt$value))),
+    store_range = tccq_unique(c(tccq_ir_vars(stmt$access), tccq_ir_vars(stmt$start), tccq_ir_vars(stmt$stop), tccq_ir_vars(stmt$value))),
+    store_index2 = tccq_unique(c(tccq_ir_vars(stmt$row), tccq_ir_vars(stmt$col), tccq_ir_vars(stmt$value))),
+    store_access = tccq_unique(c(tccq_ir_vars(stmt$access), tccq_ir_vars(stmt$subscripts), tccq_ir_vars(stmt$value))),
+    for_loop = tccq_unique(c(tccq_ir_vars(stmt$start), tccq_ir_vars(stmt$stop), unlist(lapply(stmt$body %||% list(), tccq_storage_stmt_read_vars), use.names = FALSE))),
     character()
   )
 }
@@ -124,13 +127,30 @@ tccq_storage_stmt_boundary_escape_vars <- function(stmt, bindings, boundary_args
     stmt$tag,
     bind = tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args),
     store_index = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$access, bindings, boundary_args = boundary_args),
       tccq_storage_expr_boundary_escape_vars(stmt$index, bindings, boundary_args = boundary_args),
       tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
     )),
     store_range = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$access, bindings, boundary_args = boundary_args),
       tccq_storage_expr_boundary_escape_vars(stmt$start, bindings, boundary_args = boundary_args),
       tccq_storage_expr_boundary_escape_vars(stmt$stop, bindings, boundary_args = boundary_args),
       tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
+    )),
+    store_index2 = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$row, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$col, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
+    )),
+    store_access = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$access, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$subscripts, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$value, bindings, boundary_args = boundary_args)
+    )),
+    for_loop = tccq_unique(c(
+      tccq_storage_expr_boundary_escape_vars(stmt$start, bindings, boundary_args = boundary_args),
+      tccq_storage_expr_boundary_escape_vars(stmt$stop, bindings, boundary_args = boundary_args),
+      unlist(lapply(stmt$body %||% list(), tccq_storage_stmt_boundary_escape_vars, bindings = bindings, boundary_args = boundary_args), use.names = FALSE)
     )),
     character()
   )
@@ -243,7 +263,7 @@ tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) 
       next
     }
 
-    if (!stmt$tag %in% c("store_index", "store_range")) {
+    if (!stmt$tag %in% c("store_index", "store_range", "store_index2", "store_access")) {
       state_after[[i]] <- snapshot_state()
       next
     }

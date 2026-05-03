@@ -223,6 +223,26 @@ tccq_shape_analyze_module <- function(module) {
     if (identical(expr$tag, "index")) {
       expr$x <- annotate_expr(expr$x)
       expr$index <- annotate_expr(expr$index)
+      if (expr$type$rank > 0L) {
+        expr$shape_domain <- tccq_ir_shape_domain(expr$index) %||% new_opaque_domain(reason = "gather-index")
+      }
+      return(expr)
+    }
+
+    if (identical(expr$tag, "matrix_view")) {
+      expr$x <- annotate_expr(expr$x)
+      expr$subscripts <- lapply(expr$subscripts %||% list(), function(sub) {
+        if (identical(sub$kind, "index")) {
+          sub$index <- annotate_expr(sub$index)
+        } else if (identical(sub$kind, "range")) {
+          sub$start <- annotate_expr(sub$start)
+          sub$stop <- annotate_expr(sub$stop)
+        }
+        sub
+      })
+      if (expr$type$rank > 0L) {
+        expr$shape_domain <- new_opaque_domain(reason = "matrix-view")
+      }
       return(expr)
     }
 
@@ -258,8 +278,22 @@ tccq_shape_analyze_module <- function(module) {
       return(expr)
     }
 
+    if (identical(expr$tag, "arg_reduce")) {
+      expr$x <- annotate_expr(expr$x)
+      return(expr)
+    }
+
     if (identical(expr$tag, "len")) {
       expr$x <- annotate_expr(expr$x)
+      return(expr)
+    }
+
+    if (identical(expr$tag, "vector_fill")) {
+      expr$value <- annotate_expr(expr$value)
+      expr$length <- annotate_expr(expr$length)
+      if (expr$type$rank > 0L) {
+        expr$shape_domain <- new_opaque_domain(reason = "vector-fill")
+      }
       return(expr)
     }
 
@@ -312,15 +346,49 @@ tccq_shape_analyze_module <- function(module) {
     }
 
     if (identical(stmt$tag, "store_index")) {
-      stmt$index <- annotate_expr(stmt$index)
+      if (!is.null(stmt$access)) stmt$access <- annotate_expr(stmt$access)
+      if (!is.null(stmt$index)) stmt$index <- annotate_expr(stmt$index)
       stmt$value <- annotate_expr(stmt$value)
       return(stmt)
     }
 
     if (identical(stmt$tag, "store_range")) {
+      if (!is.null(stmt$access)) stmt$access <- annotate_expr(stmt$access)
+      if (!is.null(stmt$start)) stmt$start <- annotate_expr(stmt$start)
+      if (!is.null(stmt$stop)) stmt$stop <- annotate_expr(stmt$stop)
+      stmt$value <- annotate_expr(stmt$value)
+      return(stmt)
+    }
+
+    if (identical(stmt$tag, "store_index2")) {
+      stmt$row <- annotate_expr(stmt$row)
+      stmt$col <- annotate_expr(stmt$col)
+      stmt$value <- annotate_expr(stmt$value)
+      return(stmt)
+    }
+
+    if (identical(stmt$tag, "store_access")) {
+      if (!is.null(stmt$access)) stmt$access <- annotate_expr(stmt$access)
+      stmt$subscripts <- lapply(stmt$subscripts %||% list(), function(sub) {
+        if (identical(sub$kind, "index")) {
+          sub$index <- annotate_expr(sub$index)
+        } else if (identical(sub$kind, "range")) {
+          sub$start <- annotate_expr(sub$start)
+          sub$stop <- annotate_expr(sub$stop)
+        }
+        sub
+      })
+      stmt$value <- annotate_expr(stmt$value)
+      return(stmt)
+    }
+
+    if (identical(stmt$tag, "for_loop")) {
       stmt$start <- annotate_expr(stmt$start)
       stmt$stop <- annotate_expr(stmt$stop)
-      stmt$value <- annotate_expr(stmt$value)
+      saved_env <- env
+      env[[stmt$var]] <<- NULL
+      stmt$body <- lapply(stmt$body %||% list(), annotate_stmt)
+      env <<- saved_env
       return(stmt)
     }
 

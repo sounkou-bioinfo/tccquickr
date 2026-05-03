@@ -35,13 +35,15 @@ expect_equal(mod_bind$kernel$result_kernel$tag, "fold")
 
 mod_store <- tccq_compile(binding_then_store_fn, mode = "ir")
 expect_equal(mod_store$ir$tag, "program")
-expect_equal(vapply(mod_store$ir$stmts, `[[`, character(1), "tag"), c("bind", "store_index"))
+expect_equal(vapply(mod_store$ir$stmts, `[[`, character(1), "tag"), c("bind", "store_access"))
+expect_equal(mod_store$ir$stmts[[2L]]$subscripts[[1L]]$kind, "index")
 expect_equal(mod_store$ir$stmts[[2L]]$effect, "write")
 expect_equal(mod_store$kernel$tag, "kernel_program")
 expect_equal(mod_store$kernel$result_kernel$tag, "fold")
 
 mod_range <- tccq_compile(range_store_fn, mode = "ir")
-expect_equal(vapply(mod_range$ir$stmts, `[[`, character(1), "tag"), c("bind", "store_range"))
+expect_equal(vapply(mod_range$ir$stmts, `[[`, character(1), "tag"), c("bind", "store_access"))
+expect_equal(mod_range$ir$stmts[[2L]]$subscripts[[1L]]$kind, "range")
 expect_equal(mod_range$kernel$tag, "kernel_program")
 expect_equal(mod_range$kernel$result_kernel$tag, "materialize")
 
