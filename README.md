@@ -69,18 +69,24 @@ install.packages(
 - comparison and logical vector expressions
 - unary math calls such as `sin()`, `cos()`, `exp()`, `log()`, and
   `sqrt()`
+- simple `for` loops over integer sequence ranges
 - explicit kernel IR nodes such as `producer`, `materialize`, `fold`,
   and `scalar_kernel`
 - statement/program IR for local bindings and writes
 - scalar indexed reads `x[i]`
+- vector gather reads `x[idx]`
 - contiguous slices `x[lo:hi]`
 - local indexed writes `y[i] <- v` and local range writes
   `y[lo:hi] <- v`
 - scalar matrix reads `x[i, j]`
+- matrix row and column extraction `x[i, ]` and `x[, j]`
 - scalar, row, column, rectangle, and full-matrix local writes
+- scalar vector fills such as `integer(n)`, `double(n)`, and
+  `logical(n)`
 - scalar `matrix(data, nrow, ncol)` construction
 - fold-style reducers `sum`, `prod`, `min`, `max`, `mean`, `any`, and
   `all`
+- arg reducers such as `which.max()`
 - limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
 - explicit boundary nodes in `fallback = "auto"`
 - source-only, TinyCC, and shared-library (`R CMD SHLIB`) backends
@@ -94,7 +100,8 @@ install.packages(
 - axis-wise reductions such as `rowSums()` / `colSums()`
 - broader `apply`-family lowering
 - richer reuse/allocation planning before C emission
-- broader indexing forms such as gather/scatter/filter
+- remaining broader indexing forms such as scatter/filter, vectorized
+  matrix gather, and general matrix extraction
 - larger harvested validation corpora from real array-oriented R code
 
 ## Quick tour
@@ -423,6 +430,163 @@ unname(compiled_vec_kernel(x, y)[1:4])
 #> [1] 0.09070257 0.49394330 1.19022755 2.15940797
 ```
 
+### Example 3: a Viterbi-style dynamic program
+
+This example follows the shape of the classic `quickr` Viterbi example,
+but it keeps the explicit declared-subset contract in `tccquickr`. The
+important compiler features here are general, not example-specific:
+braced declarations, matrix row/column views, matrix writes, local
+vector fills, nested `for` loops, `max()`, and `which.max()`.
+
+``` r
+viterbi_r <- function(
+  observations,
+  states,
+  initial_probs,
+  transition_probs,
+  emission_probs
+) {
+  num_states <- length(states)
+  num_steps <- length(observations)
+
+  trellis <- matrix(0, nrow = length(states), ncol = length(observations))
+  backpointer <- matrix(0L, nrow = length(states), ncol = length(observations))
+
+  trellis[, 1] <- initial_probs * emission_probs[, observations[1]]
+
+  for (step in 2:num_steps) {
+    for (current_state in 1:num_states) {
+      probabilities <- trellis[, step - 1] * transition_probs[, current_state]
+      trellis[current_state, step] <- max(probabilities) *
+        emission_probs[current_state, observations[step]]
+      backpointer[current_state, step] <- which.max(probabilities)
+    }
+  }
+
+  path <- integer(length(observations))
+  path[num_steps] <- which.max(trellis[, num_steps])
+  for (step in seq((num_steps - 1), 1)) {
+    path[step] <- backpointer[path[step + 1], step + 1]
+  }
+
+  states[path]
+}
+
+viterbi_tccq <- function(
+  observations,
+  states,
+  initial_probs,
+  transition_probs,
+  emission_probs
+) {
+  declare({
+    type(observations = integer(num_steps))
+    type(states = integer(num_states))
+    type(initial_probs = double(num_states))
+    type(transition_probs = double(num_states, num_states))
+    type(emission_probs = double(num_states, num_obs))
+  })
+
+  num_states <- length(states)
+  num_steps <- length(observations)
+
+  trellis <- matrix(0, nrow = length(states), ncol = length(observations))
+  backpointer <- matrix(0L, nrow = length(states), ncol = length(observations))
+
+  trellis[, 1] <- initial_probs * emission_probs[, observations[1]]
+
+  for (step in 2:num_steps) {
+    for (current_state in 1:num_states) {
+      probabilities <- trellis[, step - 1] * transition_probs[, current_state]
+      trellis[current_state, step] <- max(probabilities) *
+        emission_probs[current_state, observations[step]]
+      backpointer[current_state, step] <- which.max(probabilities)
+    }
+  }
+
+  path <- integer(length(observations))
+  path[num_steps] <- which.max(trellis[, num_steps])
+  for (step in seq((num_steps - 1), 1)) {
+    path[step] <- backpointer[path[step + 1], step + 1]
+  }
+
+  states[path]
+}
+```
+
+Compile once, then call the compiled closure like a normal R function.
+
+``` r
+set.seed(42)
+num_steps <- 50L
+num_states <- 6L
+num_obs <- 20L
+
+observations <- sample.int(num_obs, num_steps, replace = TRUE)
+states <- seq_len(num_states)
+initial_probs <- runif(num_states)
+initial_probs <- initial_probs / sum(initial_probs)
+transition_probs <- matrix(runif(num_states * num_states), nrow = num_states)
+transition_probs <- transition_probs / rowSums(transition_probs)
+emission_probs <- matrix(runif(num_states * num_obs), nrow = num_states)
+emission_probs <- emission_probs / rowSums(emission_probs)
+
+compiled_viterbi <- tccq_compile(viterbi_tccq)
+identical(
+  compiled_viterbi(
+    observations, states, initial_probs, transition_probs, emission_probs
+  ),
+  viterbi_r(
+    observations, states, initial_probs, transition_probs, emission_probs
+  )
+)
+#> [1] TRUE
+```
+
+### Viterbi runtime benchmark
+
+This benchmark intentionally excludes compilation time. It compares
+direct R evaluation with repeated calls to the already compiled
+`tccquickr` closure. It uses batched `system.time()` so the README
+benchmark has no optional runtime dependency.
+
+``` r
+readme_bench <- function(expr, batches = 30L, batch_size = 100L) {
+  expr <- substitute(expr)
+  env <- parent.frame()
+  timings <- vapply(seq_len(batches), function(batch) {
+    unname(system.time({
+      for (i in seq_len(batch_size)) {
+        eval(expr, env)
+      }
+    })[["elapsed"]]) / batch_size
+  }, numeric(1))
+  median(timings)
+}
+
+viterbi_elapsed <- c(
+  R = readme_bench(
+    viterbi_r(
+      observations, states, initial_probs, transition_probs, emission_probs
+    )
+  ),
+  tccquickr = readme_bench(
+    compiled_viterbi(
+      observations, states, initial_probs, transition_probs, emission_probs
+    )
+  )
+)
+
+data.frame(
+  expression = names(viterbi_elapsed),
+  median_us = round(viterbi_elapsed * 1e6, 1),
+  itr_sec = round(1 / viterbi_elapsed)
+)
+#>           expression median_us itr_sec
+#> R                  R       270    3704
+#> tccquickr  tccquickr        40   25000
+```
+
 ## Backend selection
 
 `tccq_compile()` can target different C backends explicitly.
@@ -624,7 +788,7 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
   }
   double rhs_y_2 = (double)(v_v);
   for (R_xlen_t i = 0; i < n_y_2_d1; ++i) {
-    p_y[lo_y_2_d1 + i] = rhs_y_2;
+    p_y[lo_y_2_d1 + i] = (double)(rhs_y_2);
   }
   if (!own_y) {
     loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
