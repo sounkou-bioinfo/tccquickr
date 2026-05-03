@@ -439,40 +439,7 @@ braced declarations, matrix row/column views, matrix writes, local
 vector fills, nested `for` loops, `max()`, and `which.max()`.
 
 ``` r
-viterbi_r <- function(
-  observations,
-  states,
-  initial_probs,
-  transition_probs,
-  emission_probs
-) {
-  num_states <- length(states)
-  num_steps <- length(observations)
-
-  trellis <- matrix(0, nrow = length(states), ncol = length(observations))
-  backpointer <- matrix(0L, nrow = length(states), ncol = length(observations))
-
-  trellis[, 1] <- initial_probs * emission_probs[, observations[1]]
-
-  for (step in 2:num_steps) {
-    for (current_state in 1:num_states) {
-      probabilities <- trellis[, step - 1] * transition_probs[, current_state]
-      trellis[current_state, step] <- max(probabilities) *
-        emission_probs[current_state, observations[step]]
-      backpointer[current_state, step] <- which.max(probabilities)
-    }
-  }
-
-  path <- integer(length(observations))
-  path[num_steps] <- which.max(trellis[, num_steps])
-  for (step in seq((num_steps - 1), 1)) {
-    path[step] <- backpointer[path[step + 1], step + 1]
-  }
-
-  states[path]
-}
-
-viterbi_tccq <- function(
+viterbi <- function(
   observations,
   states,
   initial_probs,
@@ -531,12 +498,12 @@ transition_probs <- transition_probs / rowSums(transition_probs)
 emission_probs <- matrix(runif(num_states * num_obs), nrow = num_states)
 emission_probs <- emission_probs / rowSums(emission_probs)
 
-compiled_viterbi <- tccq_compile(viterbi_tccq)
+compiled_viterbi <- tccq_compile(viterbi)
 identical(
   compiled_viterbi(
     observations, states, initial_probs, transition_probs, emission_probs
   ),
-  viterbi_r(
+  viterbi(
     observations, states, initial_probs, transition_probs, emission_probs
   )
 )
@@ -551,7 +518,7 @@ direct R evaluation with repeated calls to the already compiled
 
 ``` r
 viterbi_bench <- bench::mark(
-  R = viterbi_r(
+  R = viterbi(
     observations, states, initial_probs, transition_probs, emission_probs
   ),
   tccquickr = compiled_viterbi(
@@ -568,8 +535,8 @@ data.frame(
   mem_alloc = as.character(viterbi_bench$mem_alloc)
 )
 #>   expression median_us itr_sec mem_alloc
-#> 1          R     282.6    3462    4.09KB
-#> 2  tccquickr      41.8   23115    4.09KB
+#> 1          R     275.4    3572    4.09KB
+#> 2  tccquickr      39.7   24372    4.09KB
 ```
 
 ## Backend selection
@@ -764,16 +731,16 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
     p_y = tmp_y;
     own_y = 1;
   }
-  R_xlen_t lo_y_2_d1 = 0;
-  R_xlen_t n_y_2_d1 = 0;
+  R_xlen_t lo_y__2_d1 = 0;
+  R_xlen_t n_y__2_d1 = 0;
   if (!(((int)(v_i) == NA_INTEGER))) {
-    R_xlen_t raw_y_2_d1 = (R_xlen_t)(v_i);
-    lo_y_2_d1 = tccq_checked_index1(raw_y_2_d1, n_y, "y");
-    n_y_2_d1 = 1;
+    R_xlen_t raw_y__2_d1 = (R_xlen_t)(v_i);
+    lo_y__2_d1 = tccq_checked_index1(raw_y__2_d1, n_y, "y");
+    n_y__2_d1 = 1;
   }
-  double rhs_y_2 = (double)(v_v);
-  for (R_xlen_t i = 0; i < n_y_2_d1; ++i) {
-    p_y[lo_y_2_d1 + i] = (double)(rhs_y_2);
+  double rhs_y__2 = (double)(v_v);
+  for (R_xlen_t i = 0; i < n_y__2_d1; ++i) {
+    p_y[lo_y__2_d1 + i] = (double)(rhs_y__2);
   }
   if (!own_y) {
     loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));

@@ -207,40 +207,7 @@ matrix row/column views, matrix writes, local vector fills, nested `for` loops,
 `max()`, and `which.max()`.
 
 ```{r}
-viterbi_r <- function(
-  observations,
-  states,
-  initial_probs,
-  transition_probs,
-  emission_probs
-) {
-  num_states <- length(states)
-  num_steps <- length(observations)
-
-  trellis <- matrix(0, nrow = length(states), ncol = length(observations))
-  backpointer <- matrix(0L, nrow = length(states), ncol = length(observations))
-
-  trellis[, 1] <- initial_probs * emission_probs[, observations[1]]
-
-  for (step in 2:num_steps) {
-    for (current_state in 1:num_states) {
-      probabilities <- trellis[, step - 1] * transition_probs[, current_state]
-      trellis[current_state, step] <- max(probabilities) *
-        emission_probs[current_state, observations[step]]
-      backpointer[current_state, step] <- which.max(probabilities)
-    }
-  }
-
-  path <- integer(length(observations))
-  path[num_steps] <- which.max(trellis[, num_steps])
-  for (step in seq((num_steps - 1), 1)) {
-    path[step] <- backpointer[path[step + 1], step + 1]
-  }
-
-  states[path]
-}
-
-viterbi_tccq <- function(
+viterbi <- function(
   observations,
   states,
   initial_probs,
@@ -299,12 +266,12 @@ transition_probs <- transition_probs / rowSums(transition_probs)
 emission_probs <- matrix(runif(num_states * num_obs), nrow = num_states)
 emission_probs <- emission_probs / rowSums(emission_probs)
 
-compiled_viterbi <- tccq_compile(viterbi_tccq)
+compiled_viterbi <- tccq_compile(viterbi)
 identical(
   compiled_viterbi(
     observations, states, initial_probs, transition_probs, emission_probs
   ),
-  viterbi_r(
+  viterbi(
     observations, states, initial_probs, transition_probs, emission_probs
   )
 )
@@ -317,7 +284,7 @@ evaluation with repeated calls to the already compiled `tccquickr` closure.
 
 ```{r}
 viterbi_bench <- bench::mark(
-  R = viterbi_r(
+  R = viterbi(
     observations, states, initial_probs, transition_probs, emission_probs
   ),
   tccquickr = compiled_viterbi(
