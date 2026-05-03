@@ -547,44 +547,29 @@ identical(
 
 This benchmark intentionally excludes compilation time. It compares
 direct R evaluation with repeated calls to the already compiled
-`tccquickr` closure. It uses batched `system.time()` so the README
-benchmark has no optional runtime dependency.
+`tccquickr` closure.
 
 ``` r
-readme_bench <- function(expr, batches = 30L, batch_size = 100L) {
-  expr <- substitute(expr)
-  env <- parent.frame()
-  timings <- vapply(seq_len(batches), function(batch) {
-    unname(system.time({
-      for (i in seq_len(batch_size)) {
-        eval(expr, env)
-      }
-    })[["elapsed"]]) / batch_size
-  }, numeric(1))
-  median(timings)
-}
-
-viterbi_elapsed <- c(
-  R = readme_bench(
-    viterbi_r(
-      observations, states, initial_probs, transition_probs, emission_probs
-    )
+viterbi_bench <- bench::mark(
+  R = viterbi_r(
+    observations, states, initial_probs, transition_probs, emission_probs
   ),
-  tccquickr = readme_bench(
-    compiled_viterbi(
-      observations, states, initial_probs, transition_probs, emission_probs
-    )
-  )
+  tccquickr = compiled_viterbi(
+    observations, states, initial_probs, transition_probs, emission_probs
+  ),
+  iterations = 100,
+  check = FALSE
 )
 
 data.frame(
-  expression = names(viterbi_elapsed),
-  median_us = round(viterbi_elapsed * 1e6, 1),
-  itr_sec = round(1 / viterbi_elapsed)
+  expression = as.character(viterbi_bench$expression),
+  median_us = round(as.numeric(viterbi_bench$median) * 1e6, 1),
+  itr_sec = round(viterbi_bench[["itr/sec"]]),
+  mem_alloc = as.character(viterbi_bench$mem_alloc)
 )
-#>           expression median_us itr_sec
-#> R                  R       270    3704
-#> tccquickr  tccquickr        40   25000
+#>   expression median_us itr_sec mem_alloc
+#> 1          R     282.6    3462    4.09KB
+#> 2  tccquickr      41.8   23115    4.09KB
 ```
 
 ## Backend selection
