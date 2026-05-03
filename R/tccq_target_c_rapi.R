@@ -1631,12 +1631,12 @@ tccq_c_emit_stmt <- function(stmt, sym, module, stmt_index = NULL) {
     store_range = tccq_c_emit_stmt_store_range(stmt, sym, module, stmt_index = stmt_index),
     store_index2 = tccq_c_emit_stmt_store_index2(stmt, sym, module, stmt_index = stmt_index),
     store_access = tccq_c_emit_stmt_store_access(stmt, sym, module, stmt_index = stmt_index),
-    for_loop = tccq_c_emit_stmt_for_loop(stmt, sym, module),
+    for_loop = tccq_c_emit_stmt_for_loop(stmt, sym, module, stmt_index = stmt_index),
     tccq_abort("unsupported statement tag: ", stmt$tag)
   )
 }
 
-tccq_c_emit_stmt_for_loop <- function(stmt, sym, module) {
+tccq_c_emit_stmt_for_loop <- function(stmt, sym, module, stmt_index = NULL) {
   s <- sym[[stmt$var]]
   if (is.null(s)) {
     tccq_abort("unknown for-loop variable: ", stmt$var)
@@ -1646,7 +1646,14 @@ tccq_c_emit_stmt_for_loop <- function(stmt, sym, module) {
   stop <- tccq_c_emit_expr(stmt$stop, sym, idx = NULL)
   start_missing <- tccq_c_emit_missing_check(start, stmt$start$type)
   stop_missing <- tccq_c_emit_missing_check(stop, stmt$stop$type)
-  body <- unlist(lapply(stmt$body %||% list(), tccq_c_emit_stmt, sym = sym, module = module, stmt_index = NULL), use.names = FALSE)
+  body <- unlist(Map(
+    function(body_stmt, body_index) {
+      nested_index <- if (is.null(stmt_index)) NULL else paste0(stmt_index, ".", body_index)
+      tccq_c_emit_stmt(body_stmt, sym = sym, module = module, stmt_index = nested_index)
+    },
+    stmt$body %||% list(),
+    seq_along(stmt$body %||% list())
+  ), use.names = FALSE)
   c(
     "{",
     paste0("  R_xlen_t ", s$len, " = 1;"),
@@ -2015,12 +2022,16 @@ tccq_c_emit_materialize_before_write <- function(module, sym, stmt_index) {
         barrier$target,
         sym,
         module,
-        prefix = paste0(barrier$target, "_escape_", stmt_index)
+        prefix = paste0(barrier$target, "_escape_", tccq_c_ident(stmt_index))
       )
     )
   }
 
   lines
+}
+
+tccq_c_stmt_index_suffix <- function(stmt_index) {
+  if (is.null(stmt_index)) "" else paste0("_", tccq_c_ident(stmt_index))
 }
 
 tccq_c_emit_store_subscript_setup <- function(sub, sym, dim_expr, prefix, label) {
@@ -2087,7 +2098,7 @@ tccq_c_emit_stmt_store_access <- function(stmt, sym, module, stmt_index = NULL) 
 
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   id <- tccq_c_ident(stmt$name)
-  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
+  tmp_id <- paste0(id, tccq_c_stmt_index_suffix(stmt_index))
   rhs_scalar <- identical(as.integer(stmt$value$type$rank), 0L)
   rhs_value <- if (rhs_scalar) tccq_c_emit_expr(stmt$value, sym, idx = NULL) else NULL
   rhs_setup <- if (rhs_scalar) character() else tccq_c_emit_common_length_named(stmt$value, sym, paste0("n_rhs_", tmp_id), module = module)
@@ -2180,7 +2191,7 @@ tccq_c_emit_stmt_store_index2 <- function(stmt, sym, module, stmt_index = NULL) 
   value <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   id <- tccq_c_ident(stmt$name)
-  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
+  tmp_id <- paste0(id, tccq_c_stmt_index_suffix(stmt_index))
 
   c(
     tccq_c_emit_materialize_before_write(module, sym, stmt_index),
@@ -2202,7 +2213,7 @@ tccq_c_emit_stmt_store_access_index <- function(stmt, sym, module, stmt_index = 
 
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   id <- tccq_c_ident(stmt$name)
-  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
+  tmp_id <- paste0(id, tccq_c_stmt_index_suffix(stmt_index))
   prefix <- paste0("store_", tmp_id)
   value <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
 
@@ -2228,7 +2239,7 @@ tccq_c_emit_stmt_store_access_range <- function(stmt, sym, module, stmt_index = 
 
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   id <- tccq_c_ident(stmt$name)
-  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
+  tmp_id <- paste0(id, tccq_c_stmt_index_suffix(stmt_index))
   prefix <- paste0("store_", tmp_id)
   rhs_value <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
 
@@ -2260,7 +2271,7 @@ tccq_c_emit_stmt_store_index <- function(stmt, sym, module, stmt_index = NULL) {
   value <- tccq_c_emit_expr(stmt$value, sym, idx = NULL)
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)
   id <- tccq_c_ident(stmt$name)
-  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
+  tmp_id <- paste0(id, tccq_c_stmt_index_suffix(stmt_index))
 
   c(
     tccq_c_emit_materialize_before_write(module, sym, stmt_index),
@@ -2287,7 +2298,7 @@ tccq_c_emit_stmt_store_range <- function(stmt, sym, module, stmt_index = NULL) {
   }
 
   id <- tccq_c_ident(stmt$name)
-  tmp_id <- paste0(id, if (!is.null(stmt_index)) paste0("_", stmt_index) else "")
+  tmp_id <- paste0(id, tccq_c_stmt_index_suffix(stmt_index))
   start <- tccq_c_emit_expr(stmt$start, sym, idx = NULL)
   stop <- tccq_c_emit_expr(stmt$stop, sym, idx = NULL)
   ctype <- tccq_c_scalar_type_for_mode(s$type$mode)

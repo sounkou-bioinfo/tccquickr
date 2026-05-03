@@ -205,6 +205,18 @@ tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) 
     current_generation[[source]] %||% 0L
   }
 
+  set_current_owned <- function(name, value) {
+    current_owned[[name]] <<- value
+  }
+
+  set_current_generation <- function(name, value) {
+    current_generation[[name]] <<- value
+  }
+
+  set_borrowed_generation <- function(name, value) {
+    borrowed_generation[[name]] <<- value
+  }
+
   depends_on <- function(name, target) {
     seen <- character()
     cur <- name
@@ -239,41 +251,69 @@ tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) 
     binding$source %||% NULL
   }
 
-  for (i in seq_along(stmts)) {
-    stmt <- stmts[[i]]
+  process_stmt <- function(stmt, key, reads_after_stmt, forced_escaped = character()) {
+    key_chr <- as.character(key)
 
     if (identical(stmt$tag, "bind")) {
       binding <- bindings[[stmt$name]] %||% NULL
       if (!is.null(binding)) {
         if (identical(binding$kind, "owned")) {
-          current_owned[[stmt$name]] <- TRUE
-          current_generation[[stmt$name]] <- fresh_generation()
+          set_current_owned(stmt$name, TRUE)
+          set_current_generation(stmt$name, fresh_generation())
         } else if (binding$kind %in% c("alias", "view")) {
-          current_owned[[stmt$name]] <- FALSE
-          current_generation[[stmt$name]] <- source_generation(bind_generation_source(stmt, binding))
-          borrowed_generation[[stmt$name]] <- current_generation[[stmt$name]]
+          set_current_owned(stmt$name, FALSE)
+          set_current_generation(stmt$name, source_generation(bind_generation_source(stmt, binding)))
+          set_borrowed_generation(stmt$name, current_generation[[stmt$name]])
         }
       }
       stmt_escapes <- tccq_storage_stmt_boundary_escape_vars(stmt, bindings, boundary_args = boundary_args)
       if (length(stmt_escapes)) {
-        escaped <- tccq_unique(c(escaped, stmt_escapes))
-        boundary_escapes[[as.character(i)]] <- stmt_escapes
+        escaped <<- tccq_unique(c(escaped, stmt_escapes))
+        boundary_escapes[[key_chr]] <<- stmt_escapes
       }
-      state_after[[i]] <- snapshot_state()
-      next
+      return(invisible(NULL))
+    }
+
+    if (identical(stmt$tag, "for_loop")) {
+      loop_escapes <- tccq_storage_stmt_boundary_escape_vars(stmt, bindings, boundary_args = boundary_args)
+      if (length(loop_escapes)) {
+        escaped <<- tccq_unique(c(escaped, loop_escapes))
+        boundary_escapes[[key_chr]] <<- loop_escapes
+      }
+
+      body <- stmt$body %||% list()
+      if (length(body)) {
+        body_reads <- tccq_unique(unlist(lapply(body, tccq_storage_stmt_read_vars), use.names = FALSE))
+        body_reads_after <- tccq_unique(c(reads_after_stmt, body_reads))
+        for (j in seq_along(body)) {
+          process_stmt(
+            body[[j]],
+            key = paste0(key_chr, ".", j),
+            reads_after_stmt = body_reads_after,
+            forced_escaped = loop_escapes
+          )
+        }
+      }
+
+      # The loop may execute zero, one, or many times. Preserve any escape that
+      # can occur in the body after planning nested barriers so later reuse is
+      # conservative rather than depending on a single simulated iteration.
+      if (length(loop_escapes)) {
+        escaped <<- tccq_unique(c(escaped, loop_escapes))
+      }
+      return(invisible(NULL))
     }
 
     if (!stmt$tag %in% c("store_index", "store_range", "store_index2", "store_access")) {
-      state_after[[i]] <- snapshot_state()
-      next
+      return(invisible(NULL))
     }
 
     target <- stmt$name
     target_owned <- isTRUE(current_owned[[target]])
     target_generation <- current_generation[[target]] %||% 0L
     stmt_escapes <- tccq_storage_stmt_boundary_escape_vars(stmt, bindings, boundary_args = boundary_args)
-    escaped_for_write <- tccq_unique(c(escaped, stmt_escapes))
-    needed_reads <- tccq_unique(c(tccq_storage_stmt_read_vars(stmt), reads_after[[i]]))
+    escaped_for_write <- tccq_unique(c(escaped, forced_escaped, stmt_escapes))
+    needed_reads <- tccq_unique(c(tccq_storage_stmt_read_vars(stmt), reads_after_stmt))
     materialize <- character()
 
     if (isTRUE(target_owned)) {
@@ -281,7 +321,8 @@ tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) 
         if (!borrowed_name %in% needed_reads) {
           next
         }
-        if (is.null(bind_index[[borrowed_name]]) || bind_index[[borrowed_name]] >= i) {
+        if (!grepl(".", key_chr, fixed = TRUE) &&
+            (is.null(bind_index[[borrowed_name]]) || bind_index[[borrowed_name]] >= as.integer(key_chr))) {
           next
         }
         if (depends_on(borrowed_name, target) && identical(borrowed_generation[[borrowed_name]], target_generation)) {
@@ -293,8 +334,8 @@ tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) 
     copy_target <- target %in% escaped_for_write
 
     materialize <- tccq_unique(materialize)
-    out[[as.character(i)]] <- list(
-      stmt_index = i,
+    out[[key_chr]] <<- list(
+      stmt_index = key,
       target = target,
       target_owned_before_write = target_owned,
       target_generation = target_generation,
@@ -304,26 +345,31 @@ tccq_storage_write_barrier_plan <- function(ir, bindings, boundary_args = NULL) 
     )
 
     for (borrowed_name in materialize) {
-      current_owned[[borrowed_name]] <- TRUE
-      current_generation[[borrowed_name]] <- fresh_generation()
-      borrowed_generation[[borrowed_name]] <- NULL
+      set_current_owned(borrowed_name, TRUE)
+      set_current_generation(borrowed_name, fresh_generation())
+      set_borrowed_generation(borrowed_name, NULL)
     }
 
     if (isTRUE(copy_target) || !isTRUE(target_owned)) {
-      current_owned[[target]] <- TRUE
-      current_generation[[target]] <- fresh_generation()
-      borrowed_generation[[target]] <- NULL
+      set_current_owned(target, TRUE)
+      set_current_generation(target, fresh_generation())
+      set_borrowed_generation(target, NULL)
     }
 
     if (length(stmt_escapes)) {
-      escaped <- tccq_unique(c(escaped, stmt_escapes))
-      boundary_escapes[[as.character(i)]] <- stmt_escapes
+      escaped <<- tccq_unique(c(escaped, stmt_escapes))
+      boundary_escapes[[key_chr]] <<- stmt_escapes
     }
     if (isTRUE(copy_target)) {
       # The write starts from a fresh copy, so subsequent writes/reuse of this
       # local's current buffer are not constrained by an older boundary escape.
-      escaped <- setdiff(escaped, target)
+      escaped <<- setdiff(escaped, target)
     }
+    invisible(NULL)
+  }
+
+  for (i in seq_along(stmts)) {
+    process_stmt(stmts[[i]], key = i, reads_after_stmt = reads_after[[i]])
     state_after[[i]] <- snapshot_state()
   }
 

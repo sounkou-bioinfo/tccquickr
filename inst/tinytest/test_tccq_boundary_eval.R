@@ -178,6 +178,44 @@ expect_equal(
 )
 expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), as.double(2:4))
 
+boundary_loop_escape_write_fn <- function(x, n) {
+  declare(type(x = double(NA)), type(n = integer()))
+  y <- x + 1
+  for (i in 1L:n) {
+    s <- length(tccq_test_capture_vec(y))
+    y[i] <- 99
+  }
+  y
+}
+
+boundary_loop_escape_write_ir <- tccq_compile(
+  boundary_loop_escape_write_fn,
+  mode = "ir",
+  fallback = "auto"
+)
+boundary_loop_escape_write_barriers <- Filter(
+  function(x) identical(x$target, "y"),
+  boundary_loop_escape_write_ir$storage_plan$write_barriers
+)
+expect_true("2.3" %in% names(boundary_loop_escape_write_ir$storage_plan$write_barriers))
+expect_true(any(vapply(boundary_loop_escape_write_barriers, function(x) isTRUE(x$copy_target), logical(1))))
+expect_identical(
+  boundary_loop_escape_write_ir$storage_plan$write_barriers[["2.3"]]$escaped_before_write,
+  "y"
+)
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(
+  tccq_compile(boundary_loop_escape_write_fn, fallback = "auto")(as.double(1:3), 2L),
+  c(99, 99, 4)
+)
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), c(99, 3, 4))
+assign("tccq_test_leaked_vec", NULL, envir = .GlobalEnv)
+expect_equal(
+  tccq_compile(boundary_loop_escape_write_fn, fallback = "auto", backend = tccq_backend_shlib())(as.double(1:3), 2L),
+  c(99, 99, 4)
+)
+expect_equal(get("tccq_test_leaked_vec", envir = .GlobalEnv), c(99, 3, 4))
+
 boundary_owned_escape_two_writes_fn <- function(x) {
   declare(type(x = double(NA)))
   y <- x + 1
