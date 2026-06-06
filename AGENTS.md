@@ -1,5 +1,13 @@
 # Repo Scope And Rules
 
+## Prologue
+
+Always ask yourself before landing a change what other changes would have made that change easier to land and other changes to land long term. 
+Sometimes as needed, you can call into the user or a PI/GPT/reviewer fellow for ideas and task to accomplish and ask them this question with current state of the project, avenues you see. Having several perspectives and long term maintenability is important ! Ambiguities should be avoided. Code sprawl and bloat too. Allignmment among actors is a must.
+
+write C as a BSD kernel programmer rather than a Java programmer that failed upwards
+write R as a r-lib programmer rather than a Python programmer that failed upwards
+
 ## Scope
 
 `tccquickr` is the experimental compiler and transformation package built on

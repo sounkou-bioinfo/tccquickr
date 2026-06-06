@@ -4,6 +4,7 @@
 .DS_Store
 README.html
 docs/*
+!docs/compiler-reference-lessons.md
 !docs/fresh-compiler-redesign.md
 !docs/sac2c-study-notes.md
 tccquickr*tar.gz

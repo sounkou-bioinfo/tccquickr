@@ -116,8 +116,31 @@ Planned direction:
 
 - keep the main target in C
 - add more C compilation/loading backends before adding new target languages
+- add runtime specialization caching (`tccq_jit()`) as the first optimization
+  frontier above the typed IR, plus a TinyCC-object optimizer that applies only
+  copy-and-patch-style hole patching to emitted TinyCC objects (not R-bytecode)
+  guided by `../docs/tinycc-simd-stencils-design.md`
 - extend beyond the current TinyCC and `R CMD SHLIB` paths only when the extra
   deployment mode is genuinely useful
+
+## Required core concepts
+
+Optimization work depends on three first-class concepts in IR and codegen:
+
+- **Boundary API region**: every explicit unsupported / dynamic R call is represented
+  as a `boundary_call` node (currently backed by `r_eval`) so the side effects and
+  potential R interactions are explicit in middle-end planning.
+- **API wrapper region**: generated entry/exit code and boundary-call plumbing uses
+  R API calls (`TYPEOF`, `XLENGTH`, `Rf_lang*`, `Rf_eval`, `PROTECT`, etc.) and is
+  intentionally kept separate from the kernel body.
+- **Pure-C kernel region**: all non-boundary computation is emitted as explicit
+  loops and scalar/array arithmetic with no R C API calls. Only this region is the
+  candidate for later optimizations (copy-and-patch stencils, object-level
+  transforms, and backend-native vectorization).
+
+This model is not optional: if optimization sees an R C API call in the middle of a
+kernel region, that boundary must be represented explicitly in the IR and separated
+by plan decisions in codegen.
 
 ## Current semantic model
 
@@ -183,9 +206,13 @@ The reuse and with-loop machinery in `sac2c` is not something to copy
 literally, but it is a strong reminder that high-value optimization decisions
 belong in compiler analysis, not in backend folklore.
 
-See also `docs/sac2c-study-notes.md` for a focused internal reread of the most
-relevant SaC papers, with-loop/reuse implementation details, and the macro-
-heavy runtime architecture that we do not want to replicate directly.
+See also:
+
+- `docs/sac2c-study-notes.md` for a focused internal reread of the most
+  relevant SaC papers, with-loop/reuse implementation details, and the macro-
+  heavy runtime architecture that we do not want to replicate directly.
+- `../docs/tinycc-simd-stencils-design.md` for a practical plan to combine
+  TinyCC in-memory relocation with native SIMD/object-stencil workflows.
 
 ## Current limits
 
@@ -219,6 +246,8 @@ Implemented now:
 - [x] limited `Reduce(FUN, x)` lowering for recognized reducer operators
 - [x] cross-backend generated validation against direct R evaluation
 - [x] explicit view/index normalization before C emission
+- [x] explicit IR-to-codegen boundary split between R C-API wrapper paths and
+  pure-C kernel regions
 - [x] first shape/domain facts for zip/fusion/storage reasoning
 
 Still open:

@@ -8,3 +8,6 @@
 ^docs$
 ^\.claude$
 ^claude_.*_review\.md$
+^claude_review_data_.*\.md$
+^000[0-9]+-.*\.patch$
+^todo\.md$

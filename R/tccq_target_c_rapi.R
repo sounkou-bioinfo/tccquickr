@@ -1,5 +1,10 @@
 # tccq_target_c_rapi.R - C + R C API target for tccq
 # SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Codegen convention: keep explicit API boundary regions (argument setup,
+# PROTECT/UNPROTECT, boundary-call plumbing) separate from pure-C kernel
+# regions. Only kernel regions without R C API calls are intended for
+# copy-and-patch / backend-native optimization.
 
 tccq_target_c_rapi <- function() {
   structure(
@@ -186,15 +191,48 @@ tccq_c_emit_scalar_value_length_check <- function(s, value_vars, label) {
   )
 }
 
+tccq_c_emit_specialization_check <- function(s, spec, c_type) {
+  if (is.null(spec)) {
+    return(character())
+  }
+
+  checks <- character()
+
+  if (!is.null(spec$len)) {
+    checks <- c(
+      checks,
+      paste0("if (", s$len, " != (", as.character(as.integer(spec$len)), "LL)) {"),
+      "  Rf_error(\"argument specialization mismatch\");",
+      "}"
+    )
+  }
+
+  if (!is.null(spec$nrow) && !is.null(spec$ncol)) {
+    checks <- c(
+      checks,
+      paste0("if (", s$nrow, " != (", as.character(as.integer(spec$nrow)), "LL)) {"),
+      "  Rf_error(\"argument specialization mismatch\");",
+      "}",
+      paste0("if (", s$ncol, " != (", as.character(as.integer(spec$ncol)), "LL)) {"),
+      "  Rf_error(\"argument specialization mismatch\");",
+      "}"
+    )
+  }
+
+  checks
+}
+
 tccq_c_emit_argument_setup <- function(module, sym) {
   lines <- character()
   scalar_value_vars <- tccq_c_module_scalar_value_vars(module)
+  specialization <- module$specialization %||% list()
 
   for (nm in module$formal_names) {
     s <- sym[[nm]]
     type <- s$type
     sexptype <- tccq_sexptype_for_mode(type$mode)
     cname <- tccq_c_string(nm)
+    spec <- specialization[[nm]] %||% NULL
 
     lines <- c(
       lines,
@@ -210,6 +248,7 @@ tccq_c_emit_argument_setup <- function(module, sym) {
         paste0("if (", s$len, " < 1) {"),
         paste0("  Rf_error(\"scalar argument %s is empty\", ", cname, ");"),
         "}",
+        tccq_c_emit_specialization_check(s, spec, "R_xlen_t"),
         tccq_c_emit_scalar_value_length_check(s, scalar_value_vars, nm),
         paste0(
           tccq_c_scalar_type_for_mode(type$mode), " ", s$val,
@@ -221,6 +260,7 @@ tccq_c_emit_argument_setup <- function(module, sym) {
       lines <- c(
         lines,
         paste0("R_xlen_t ", s$len, " = XLENGTH(", s$arg, ");"),
+        tccq_c_emit_specialization_check(s, spec, "R_xlen_t"),
         paste0("const ", tccq_c_scalar_type_for_mode(type$mode), " *", cache, " = NULL;"),
         paste0(
           "#define ", s$ptr, " (", cache, " == NULL ? (", cache, " = ",
@@ -239,6 +279,7 @@ tccq_c_emit_argument_setup <- function(module, sym) {
         paste0("R_xlen_t ", s$nrow, " = (R_xlen_t)INTEGER(", dim_name, ")[0];"),
         paste0("R_xlen_t ", s$ncol, " = (R_xlen_t)INTEGER(", dim_name, ")[1];"),
         paste0("R_xlen_t ", s$len, " = XLENGTH(", s$arg, ");"),
+        tccq_c_emit_specialization_check(s, spec, "R_xlen_t"),
         paste0("if (", s$nrow, " < 0 || ", s$ncol, " < 0 || ", s$len, " != ", s$nrow, " * ", s$ncol, ") {"),
         paste0("  Rf_error(\"matrix argument %s has inconsistent dimensions\", ", cname, ");"),
         "}",
@@ -249,6 +290,7 @@ tccq_c_emit_argument_setup <- function(module, sym) {
         )
       )
     } else {
+      tccq_c_emit_specialization_check(s, spec, "R_xlen_t")
       tccq_abort(
         "C target supports scalar/vector/matrix only in this milestone; argument ", nm,
         " has rank ", type$rank

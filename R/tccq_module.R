@@ -15,7 +15,8 @@ tccq_module <- function(
   fallback = "hard",
   boundary_context = NULL,
   storage_plan = NULL,
-  shape_facts = NULL
+  shape_facts = NULL,
+  specialization = NULL
 ) {
   structure(
     list(
@@ -32,7 +33,8 @@ tccq_module <- function(
       fallback = fallback,
       boundary_context = boundary_context,
       storage_plan = storage_plan,
-      shape_facts = shape_facts
+      shape_facts = shape_facts,
+      specialization = specialization
     ),
     class = "tccq_module"
   )
@@ -55,6 +57,15 @@ tccq_module_validate <- function(module) {
 
   if (!is.null(module$ir)) {
     tccq_ir_validate(module$ir)
+  }
+
+  if (!is.null(module$specialization)) {
+    if (!is.list(module$specialization)) {
+      tccq_abort("module specialization must be a list when present")
+    }
+    if (!all(names(module$specialization) %in% module$formal_names)) {
+      tccq_abort("module specialization must only describe known formals")
+    }
   }
 
   invisible(TRUE)

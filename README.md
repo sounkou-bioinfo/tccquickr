@@ -32,6 +32,8 @@ either:
 The public entry points are:
 
 - `tccq_compile()`
+- `tccq_jit()`
+- `tccq_analyze()`
 - `tccq_backend_source()`
 - `tccq_backend_tinycc()`
 - `tccq_backend_shlib()`
@@ -46,6 +48,25 @@ Responsibility is split deliberately:
 
 That means `tccquickr` is the transformation layer. TinyCC is one
 backend, not the whole design.
+
+## Optimization boundary model
+
+The compiler is optimized by design around a **three-way split**:
+
+- **Boundary nodes in IR:** unsupported or dynamic semantics are
+  explicit (`boundary_call`, currently `r_eval` only).
+- **C-API wrapper path:** argument checks, type checks, and
+  boundary-call plumbing are emitted as an API boundary layer.
+- **Pure-C kernel path:** everything else is emitted as plain C
+  math/loop code with no `Rf_*` calls in the hottest regions.
+
+Optimization work (including future copy-and-patch kernel work) targets
+the pure-C kernel paths by design; API boundary regions remain explicit
+safety and semantics barriers.
+
+For a fast reconnaissance pass before compilation, use `tccq_analyze()`
+to inspect AST structure and compiler-package observations (call
+patterns, compiler warnings, bytecode opcodes, and recommendations).
 
 ## Installation
 
@@ -535,8 +556,8 @@ data.frame(
   mem_alloc = as.character(viterbi_bench$mem_alloc)
 )
 #>   expression median_us itr_sec mem_alloc
-#> 1          R     275.4    3572    4.09KB
-#> 2  tccquickr      39.7   24372    4.09KB
+#> 1          R     258.3    3725    4.09KB
+#> 2  tccquickr      39.9   24707    4.09KB
 ```
 
 ## Backend selection
@@ -720,12 +741,14 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
   double v_v = REAL_RO(arg_v)[0];
   int tccq_nprotect = 0;
   R_xlen_t n_y = n_x;
+  PROTECT_INDEX pi_y;
   SEXP loc_y = R_NilValue;
+  PROTECT_WITH_INDEX(loc_y, &pi_y);
+  ++tccq_nprotect;
   double *p_y = (double *) p_x;
   int own_y = 0;
   if (!own_y) {
-    loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
-    ++tccq_nprotect;
+    REPROTECT(loc_y = Rf_allocVector(REALSXP, n_y), pi_y);
     double *tmp_y = REAL(loc_y);
     for (R_xlen_t i = 0; i < n_y; ++i) tmp_y[i] = p_y[i];
     p_y = tmp_y;
@@ -743,8 +766,7 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_i, SEXP arg_v) {
     p_y[lo_y__2_d1 + i] = (double)(rhs_y__2);
   }
   if (!own_y) {
-    loc_y = PROTECT(Rf_allocVector(REALSXP, n_y));
-    ++tccq_nprotect;
+    REPROTECT(loc_y = Rf_allocVector(REALSXP, n_y), pi_y);
     double *tmp_y = REAL(loc_y);
     for (R_xlen_t i = 0; i < n_y; ++i) tmp_y[i] = p_y[i];
     p_y = tmp_y;
@@ -911,7 +933,10 @@ SEXP tccq_entry(SEXP arg_x, SEXP arg_lo, SEXP arg_hi) {
     n_n_y = rel_hi_n_y_1 - rel_lo_n_y_1 + 1;
   }
   R_xlen_t n_y = n_n_y;
+  PROTECT_INDEX pi_y;
   SEXP loc_y = R_NilValue;
+  PROTECT_WITH_INDEX(loc_y, &pi_y);
+  ++tccq_nprotect;
   double *p_y = (double *) (p_x + off_n_y);
   int own_y = 0;
   R_xlen_t n_out = n_y;

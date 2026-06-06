@@ -36,7 +36,36 @@ tccq_compile <- function(
   mode <- match.arg(mode)
   fallback <- match.arg(fallback)
 
-  module <- tccq_frontend(fn)
+  module <- if (inherits(fn, "tccq_module")) {
+    fn
+  } else {
+    tccq_frontend(fn)
+  }
+
+  tccq_compile_module(
+    module = module,
+    mode = mode,
+    fallback = fallback,
+    backend = backend,
+    target = target,
+    extlibs = extlibs,
+    debug = debug
+  )
+}
+
+# Internal compile pipeline for already-parsed modules.
+tccq_compile_module <- function(
+  module,
+  mode = c("compile", "code", "ir"),
+  fallback = c("hard", "auto"),
+  backend = tccq_backend_tinycc(),
+  target = tccq_target_c_rapi(),
+  extlibs = list(),
+  debug = FALSE
+) {
+  mode <- match.arg(mode)
+  fallback <- match.arg(fallback)
+
   module <- tccq_module_with(module, fallback = fallback)
   module <- tccq_lower_module(module)
   module <- tccq_run_passes(module)
