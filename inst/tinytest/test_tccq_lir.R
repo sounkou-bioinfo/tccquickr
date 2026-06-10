@@ -1,5 +1,15 @@
 # test_tccq_lir.R - lowered IR constructors, validation, traversal
 
+# The LIR constructors/validator/walker are internal (not exported). Import them
+# into this test's scope so bare-name calls work under R CMD check, where only
+# exported functions are visible (pkgload::load_all would expose them anyway).
+local({
+  ns <- getNamespace("tccquickr")
+  for (nm in grep("^(tccq_lir|tccq_is_lir)", ls(ns, all.names = TRUE), value = TRUE)) {
+    assign(nm, get(nm, ns), envir = parent.env(environment()))
+  }
+})
+
 # A small but representative function:
 #   y <- alloc double[n]; for i in [0,n): y[i] = x[i] + 1.0; return y
 n <- tccq_lir_param("n", "xlen")

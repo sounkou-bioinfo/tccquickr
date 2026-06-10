@@ -1,0 +1,160 @@
+---
+title: "Getting started with tccquickr"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with tccquickr}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+library(tccquickr)
+```
+
+`tccquickr` compiles a small, **declared** subset of R to C. You annotate a
+function's argument types with `declare(type(...))`, and `tccq_compile()` returns
+a compiled closure you call like any R function. This vignette is a tour; for the
+exact accepted subset and the boundary/optimization model see
+`vignette("the-r-subset")`.
+
+## A reduction kernel
+
+A kernel that reduces a vector expression to one scalar:
+
+```{r}
+sum_kernel <- function(x, y) {
+  declare(type(x = double(NA), y = double(NA)))
+  sum((sin(x) + y) * y)
+}
+
+compiled_sum <- tccq_compile(sum_kernel)
+x <- as.double(seq(-2, 2, length.out = 10))
+y <- as.double(seq(1, 3, length.out = 10))
+compiled_sum(x, y)
+```
+
+You can stop before the backend and inspect the intermediate representation or
+the emitted C:
+
+```{r}
+tccq_compile(sum_kernel, mode = "ir")
+```
+
+```{r}
+cat(tccq_compile(sum_kernel, mode = "code"))
+```
+
+This path lowers to an explicit `fold` over a `producer` — the reduction and its
+element expression are represented in the IR, not discovered while printing C.
+
+## A vector-return kernel
+
+A kernel that produces a whole vector lowers to `materialize(producer)`:
+
+```{r}
+vec_kernel <- function(x, y) {
+  declare(type(x = double(NA), y = double(NA)))
+  sin(x) + y * y
+}
+
+compiled_vec <- tccq_compile(vec_kernel)
+unname(compiled_vec(x, y)[1:4])
+```
+
+## Choosing a backend
+
+`tccq_compile()` targets different C backends explicitly:
+
+```{r, eval = FALSE}
+tccq_compile(f, backend = tccq_backend_source())  # return emitted C, do not compile
+tccq_compile(f, backend = tccq_backend_tinycc())  # compile in memory via Rtinycc (default)
+tccq_compile(f, backend = tccq_backend_shlib())   # compile via R CMD SHLIB, load via .Call()
+```
+
+The shared-library route is in the same space as
+[`callme`](https://github.com/coolbutuseless/callme). Before compiling,
+`tccq_compile()` validates backend capabilities against the target, the compile
+context, and any explicit boundary APIs the module uses.
+
+## A larger example: Viterbi
+
+This follows the shape of the classic `quickr` Viterbi example while keeping the
+declared-subset contract. It exercises braced declarations, matrix row/column
+views, matrix writes, local vector fills, nested `for` loops, `max()`, and
+`which.max()`.
+
+```{r}
+viterbi <- function(observations, states, initial_probs,
+                    transition_probs, emission_probs) {
+  declare({
+    type(observations = integer(num_steps))
+    type(states = integer(num_states))
+    type(initial_probs = double(num_states))
+    type(transition_probs = double(num_states, num_states))
+    type(emission_probs = double(num_states, num_obs))
+  })
+
+  num_states <- length(states)
+  num_steps <- length(observations)
+
+  trellis <- matrix(0, nrow = length(states), ncol = length(observations))
+  backpointer <- matrix(0L, nrow = length(states), ncol = length(observations))
+
+  trellis[, 1] <- initial_probs * emission_probs[, observations[1]]
+
+  for (step in 2:num_steps) {
+    for (current_state in 1:num_states) {
+      probabilities <- trellis[, step - 1] * transition_probs[, current_state]
+      trellis[current_state, step] <- max(probabilities) *
+        emission_probs[current_state, observations[step]]
+      backpointer[current_state, step] <- which.max(probabilities)
+    }
+  }
+
+  path <- integer(length(observations))
+  path[num_steps] <- which.max(trellis[, num_steps])
+  for (step in seq((num_steps - 1), 1)) {
+    path[step] <- backpointer[path[step + 1], step + 1]
+  }
+
+  states[path]
+}
+```
+
+Compile once, then call the compiled closure like a normal R function and check
+it against the interpreter:
+
+```{r}
+set.seed(42)
+num_steps <- 50L; num_states <- 6L; num_obs <- 20L
+observations <- sample.int(num_obs, num_steps, replace = TRUE)
+states <- seq_len(num_states)
+initial_probs <- runif(num_states); initial_probs <- initial_probs / sum(initial_probs)
+transition_probs <- matrix(runif(num_states^2), nrow = num_states)
+transition_probs <- transition_probs / rowSums(transition_probs)
+emission_probs <- matrix(runif(num_states * num_obs), nrow = num_states)
+emission_probs <- emission_probs / rowSums(emission_probs)
+
+compiled_viterbi <- tccq_compile(viterbi)
+args <- list(observations, states, initial_probs, transition_probs, emission_probs)
+identical(do.call(compiled_viterbi, args), do.call(viterbi, args))
+```
+
+Excluding compile time, the compiled closure is markedly faster than the
+interpreter:
+
+```{r, eval = requireNamespace("bench", quietly = TRUE)}
+bench::mark(
+  R = do.call(viterbi, args),
+  tccquickr = do.call(compiled_viterbi, args),
+  iterations = 100, check = FALSE
+)[, c("expression", "median", "itr/sec", "mem_alloc")]
+```
+
+## Where to go next
+
+- `vignette("the-r-subset")` — the precise accepted subset, the boundary model,
+  and the optimization passes.
+- `tccq_compile(f, mode = "ir")` — inspect the typed IR for any kernel.
+- The architecture decisions live in `docs/decisions/` on GitHub.

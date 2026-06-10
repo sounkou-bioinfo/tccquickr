@@ -23,9 +23,12 @@ Imports:
 Suggests:
     bench,
     tinytest,
-    quickr
+    quickr,
+    knitr,
+    rmarkdown
 Remotes: sounkou-bioinfo/Rtinycc
 Encoding: UTF-8
+VignetteBuilder: knitr
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 URL: https://github.com/sounkou-bioinfo/tccquickr, https://sounkou-bioinfo.r-universe.dev/tccquickr, https://github.com/sounkou-bioinfo/Rtinycc
