@@ -3,9 +3,11 @@
 .RData
 .DS_Store
 README.html
-docs/*
-!docs/compiler-reference-lessons.md
-!docs/fresh-compiler-redesign.md
-!docs/sac2c-study-notes.md
+# docs: track .Rmd sources and the .md they generate; ignore rendered html/figures
+docs/**/*.html
+docs/**/*_files/
 tccquickr*tar.gz
 tccquickr.Rcheck/*
+
+# leanknit is its own repository (github.com/sounkou-bioinfo/leanknit)
+leanknit/

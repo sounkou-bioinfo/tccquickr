@@ -15,7 +15,6 @@
 #' @return A list of class `tccq_analysis` with fields:
 #'   - `formals`: formals metadata
 #'   - `ast`: AST observations (calls, symbols, assignments, loops)
-#'   - `compiler`: `compiler` package metadata when available
 #'   - `recommendations`: conservative suggestions for lowering success
 #'
 #' @export
@@ -36,14 +35,12 @@ tccq_analyze <- function(fn) {
   formals_info <- tccq_analyze_formals(fn)
   body_expr <- body(fn)
   ast <- tccq_analyze_ast(body_expr, formals_info$names)
-  compiler <- tccq_analyze_compiler(fn)
-  recommendations <- tccq_analyze_recommendations(formals_info, ast, compiler)
+  recommendations <- tccq_analyze_recommendations(formals_info, ast)
 
   structure(
     list(
       formals = formals_info,
       ast = ast,
-      compiler = compiler,
       recommendations = unique(recommendations)
     ),
     class = "tccq_analysis"
@@ -71,10 +68,6 @@ print.tccq_analysis <- function(x, ...) {
     if (length(x$ast$dynamic_calls)) {
       cat("  dynamic calls:", paste(x$ast$dynamic_calls, collapse = ", "), "\n")
     }
-  }
-
-  if (!is.null(x$compiler)) {
-    cat("  compiler available:", as.character(x$compiler$available), "\n")
   }
 
   if (length(x$recommendations)) {
@@ -245,110 +238,7 @@ tccq_analyze_ast <- function(expr, formal_names) {
 
 #' @keywords internal
 #' @noRd
-tccq_analyze_compiler <- function(fn) {
-  compiler_available <- requireNamespace("compiler", quietly = TRUE)
-  out <- list(
-    available = compiler_available,
-    jit_level = NA_integer_,
-    options = list(),
-    compile_output = NULL,
-    warnings = character(),
-    error = NULL,
-    disassembly = NULL,
-    disassembly_error = NULL,
-    opcodes = character()
-  )
-
-  if (!compiler_available) {
-    return(out)
-  }
-
-  out$options <- list(
-    optimize = compiler::getCompilerOption("optimize", options = NULL),
-    suppressAll = compiler::getCompilerOption("suppressAll", options = NULL),
-    suppressUndefined = compiler::getCompilerOption("suppressUndefined", options = NULL),
-    suppressNoSuperAssignVar = compiler::getCompilerOption("suppressNoSuperAssignVar", options = NULL)
-  )
-
-  out$jit_level <- tryCatch(
-    compiler::enableJIT(-1L),
-    error = function(e) {
-      out$error <<- conditionMessage(e)
-      NA_integer_
-    }
-  )
-
-  compiler_warnings <- character()
-  compiled <- tryCatch(
-    withCallingHandlers(
-      compiler::cmpfun(fn),
-      warning = function(w) {
-        compiler_warnings <<- c(compiler_warnings, conditionMessage(w))
-        invokeRestart("muffleWarning")
-      }
-    ),
-    error = function(e) {
-      out$error <<- conditionMessage(e)
-      NULL
-    }
-  )
-
-  if (!is.null(compiled)) {
-    out$compile_output <- list(
-      class = class(compiled),
-      warnings = length(compiler_warnings)
-    )
-
-    disasm <- tryCatch(
-      withCallingHandlers(
-        compiler::disassemble(compiled),
-        warning = function(w) {
-          compiler_warnings <<- c(compiler_warnings, conditionMessage(w))
-          invokeRestart("muffleWarning")
-        }
-      ),
-      error = function(e) {
-        out$disassembly_error <<- conditionMessage(e)
-        NULL
-      }
-    )
-
-    if (!is.null(disasm)) {
-      out$disassembly <- deparse(disasm)
-      out$opcodes <- tccq_extract_opcode_names(disasm)
-    }
-  }
-
-  out$warnings <- tccq_unique(compiler_warnings)
-  out
-}
-
-#' @keywords internal
-#' @noRd
-tccq_extract_opcode_names <- function(disasm) {
-  if (!is.list(disasm) || length(disasm) < 2L) {
-    return(character())
-  }
-
-  code <- disasm[[2L]]
-  if (!is.list(code) && !is.vector(code)) {
-    return(character())
-  }
-
-  opnames <- character()
-  for (x in code) {
-    if (is.character(x)) {
-      opnames <- c(opnames, x)
-    } else if (is.symbol(x)) {
-      opnames <- c(opnames, as.character(x))
-    }
-  }
-  tccq_unique(opnames)
-}
-
-#' @keywords internal
-#' @noRd
-tccq_analyze_recommendations <- function(formals_info, ast_info, compiler_info) {
+tccq_analyze_recommendations <- function(formals_info, ast_info) {
   out <- character()
 
   if (!ast_info$has_declare) {
@@ -374,17 +264,6 @@ tccq_analyze_recommendations <- function(formals_info, ast_info, compiler_info) 
       out,
       "superassignment detected; semantic safety and optimization boundaries become strict"
     )
-  }
-
-  if (!compiler_info$available) {
-    out <- c(
-      out,
-      "compiler package unavailable; only AST-level analysis is available"
-    )
-  }
-
-  if (compiler_info$available && is.null(compiler_info$error) && is.null(compiler_info$disassembly_error) && is.null(compiler_info$disassembly)) {
-    out <- c(out, "compiler package is available but no disassembly was captured")
   }
 
   unique(out)

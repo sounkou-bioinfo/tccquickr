@@ -41,4 +41,10 @@ test: install
 rdm:
 	R -e "rmarkdown::render('README.Rmd')"
 
-.PHONY: all rd build check install_deps install clean dev-install test1 test2 test rdm
+docs:
+	Rscript tools/render_docs.R
+
+proofs:
+	cd proofs && lake build
+
+.PHONY: all rd build check install_deps install clean dev-install test1 test2 test rdm docs proofs

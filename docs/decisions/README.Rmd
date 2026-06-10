@@ -1,0 +1,37 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Do not edit the .md. -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, results = "asis")
+```
+
+# Architecture Decision Records
+
+Short, dated, numbered records of the decisions that shape `tccquickr`.
+Each ADR states the decision, the reasoning, what it rules out, and the
+consequences. They supersede prose in `fresh-compiler-redesign.md` where the two
+disagree.
+
+Rules:
+
+- One decision per file. Number monotonically.
+- State the decision in the first paragraph. No suspense.
+- Record what the decision *rejects*, not only what it chooses.
+- When a decision is reversed, add a new ADR that supersedes it; do not edit
+  history in place.
+- ADRs are authored as `.Rmd` and generated to `.md` (`tools/render_docs.R`).
+
+## Index
+
+```{r}
+files <- sort(list.files(".", pattern = "^[0-9]{4}-.*\\.Rmd$"))
+for (f in files) {
+  lines <- readLines(f, warn = FALSE)
+  h1 <- lines[grepl("^# ", lines)][1]
+  title <- sub("^#\\s*", "", h1)
+  cat(sprintf("- [%s](%s)\n", title, sub("\\.Rmd$", ".md", f)))
+}
+```

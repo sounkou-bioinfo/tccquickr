@@ -13,12 +13,8 @@ expect_true("declare" %in% a$ast$call_names)
 expect_true("+" %in% a$ast$call_names)
 expect_true("x" %in% a$ast$symbols)
 expect_true("y" %in% a$ast$symbols)
-expect_true(a$compiler$available)
 expect_true(length(a$recommendations) >= 0L)
-
-if (isTRUE(a$compiler$available)) {
-  expect_true(length(a$compiler$opcodes) >= 1L)
-}
+expect_null(a$compiler)
 
 g <- function(x) {
   sum(x)

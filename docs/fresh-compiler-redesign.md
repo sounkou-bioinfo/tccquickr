@@ -1,14 +1,31 @@
+
+<!-- fresh-compiler-redesign.md is generated from fresh-compiler-redesign.Rmd. Do not edit the .md. -->
+
 # `tccquickr` compiler architecture note
 
-This document is no longer a "fresh reset" note. It describes the current
-`tccq_*` compiler direction.
+> **Superseded in part by `docs/decisions/`.** The numbered ADRs are the
+> authoritative record of direction; where this note and an ADR
+> disagree, the ADR wins. In particular: -
+> [0001](decisions/0001-project-identity.md): identity is an AOT
+> optimizing transpiler; TinyCC is the dev/relocation backend, not the
+> optimizer. - [0002](decisions/0002-lowered-ir-seam.md): a lowered IR
+> (LIR) is being inserted; the C target shrinks to a printer of it. -
+> [0003](decisions/0003-target-and-backend-roadmap.md): C is the only
+> target built now; Fortran/Rust/Mojo/CUDA/GL/Vulkan are LIR design
+> constraints. - [0004](decisions/0004-recon-and-jit-cleanup.md):
+> bytecode recon removed; `tccq_jit` guards shape today, real constant
+> specialization lands on LIR.
+
+This document is no longer a “fresh reset” note. It describes the
+current `tccq_*` compiler direction.
 
 ## Core design rule
 
-`tccquickr` has more semantic information while it is still reasoning about R
-code than after it has emitted C.
+`tccquickr` has more semantic information while it is still reasoning
+about R code than after it has emitted C.
 
-So the compiler should keep important meaning in the frontend and middle-end:
+So the compiler should keep important meaning in the frontend and
+middle-end:
 
 - typed values and ranks
 - local bindings versus mutation
@@ -18,13 +35,13 @@ So the compiler should keep important meaning in the frontend and middle-end:
 - materialization points
 - storage, allocation, and protection plans
 
-The C target should mostly consume those decisions. It should not be the place
-where the compiler first infers ownership, legality, or optimization strategy
-from ad hoc expression shapes.
+The C target should mostly consume those decisions. It should not be the
+place where the compiler first infers ownership, legality, or
+optimization strategy from ad hoc expression shapes.
 
-This is the most useful architectural lesson to borrow from SAC / `sac2c` for
-`tccquickr`: reason about the array program while it is still a compiler IR,
-then lower that understanding into C.
+This is the most useful architectural lesson to borrow from SAC /
+`sac2c` for `tccquickr`: reason about the array program while it is
+still a compiler IR, then lower that understanding into C.
 
 ## Current split
 
@@ -57,15 +74,15 @@ Responsibilities:
 
 Current default pass chain:
 
-1. `validate_ir`
-2. `effects`
-3. `index_normalize`
-4. `shape_domains`
-5. `kernelize`
-6. `fusion`
-7. `boundary_collect`
-8. `boundary_validate`
-9. `storage_plan`
+1.  `validate_ir`
+2.  `effects`
+3.  `index_normalize`
+4.  `shape_domains`
+5.  `kernelize`
+6.  `fusion`
+7.  `boundary_collect`
+8.  `boundary_validate`
+9.  `storage_plan`
 10. `allocation_plan`
 11. `protect_plan`
 
@@ -103,8 +120,9 @@ Current backends:
 
 - `tccq_backend_source()`
 - `tccq_backend_tinycc()`
-- `tccq_backend_shlib()` for shared-library compilation through `R CMD SHLIB`,
-  in the same general deployment space as [`callme`](https://github.com/coolbutuseless/callme)
+- `tccq_backend_shlib()` for shared-library compilation through
+  `R CMD SHLIB`, in the same general deployment space as
+  [`callme`](https://github.com/coolbutuseless/callme)
 
 The compile seam now also validates backend capabilities against:
 
@@ -115,32 +133,37 @@ The compile seam now also validates backend capabilities against:
 Planned direction:
 
 - keep the main target in C
-- add more C compilation/loading backends before adding new target languages
-- add runtime specialization caching (`tccq_jit()`) as the first optimization
-  frontier above the typed IR, plus a TinyCC-object optimizer that applies only
-  copy-and-patch-style hole patching to emitted TinyCC objects (not R-bytecode)
-  guided by `../docs/tinycc-simd-stencils-design.md`
-- extend beyond the current TinyCC and `R CMD SHLIB` paths only when the extra
-  deployment mode is genuinely useful
+- add more C compilation/loading backends before adding new target
+  languages
+- add runtime specialization caching (`tccq_jit()`) as the first
+  optimization frontier above the typed IR, plus a TinyCC-object
+  optimizer that applies only copy-and-patch-style hole patching to
+  emitted TinyCC objects (not R-bytecode) guided by
+  `../docs/tinycc-simd-stencils-design.md`
+- extend beyond the current TinyCC and `R CMD SHLIB` paths only when the
+  extra deployment mode is genuinely useful
 
 ## Required core concepts
 
-Optimization work depends on three first-class concepts in IR and codegen:
+Optimization work depends on three first-class concepts in IR and
+codegen:
 
-- **Boundary API region**: every explicit unsupported / dynamic R call is represented
-  as a `boundary_call` node (currently backed by `r_eval`) so the side effects and
-  potential R interactions are explicit in middle-end planning.
-- **API wrapper region**: generated entry/exit code and boundary-call plumbing uses
-  R API calls (`TYPEOF`, `XLENGTH`, `Rf_lang*`, `Rf_eval`, `PROTECT`, etc.) and is
-  intentionally kept separate from the kernel body.
-- **Pure-C kernel region**: all non-boundary computation is emitted as explicit
-  loops and scalar/array arithmetic with no R C API calls. Only this region is the
-  candidate for later optimizations (copy-and-patch stencils, object-level
-  transforms, and backend-native vectorization).
+- **Boundary API region**: every explicit unsupported / dynamic R call
+  is represented as a `boundary_call` node (currently backed by
+  `r_eval`) so the side effects and potential R interactions are
+  explicit in middle-end planning.
+- **API wrapper region**: generated entry/exit code and boundary-call
+  plumbing uses R API calls (`TYPEOF`, `XLENGTH`, `Rf_lang*`, `Rf_eval`,
+  `PROTECT`, etc.) and is intentionally kept separate from the kernel
+  body.
+- **Pure-C kernel region**: all non-boundary computation is emitted as
+  explicit loops and scalar/array arithmetic with no R C API calls. Only
+  this region is the candidate for later optimizations (copy-and-patch
+  stencils, object-level transforms, and backend-native vectorization).
 
-This model is not optional: if optimization sees an R C API call in the middle of a
-kernel region, that boundary must be represented explicitly in the IR and separated
-by plan decisions in codegen.
+This model is not optional: if optimization sees an R C API call in the
+middle of a kernel region, that boundary must be represented explicitly
+in the IR and separated by plan decisions in codegen.
 
 ## Current semantic model
 
@@ -162,15 +185,16 @@ The compiler currently distinguishes, conservatively, between:
 - alias locals such as `y <- x`
 - view locals such as `y <- x[lo:hi]`
 
-Writes, boundary crossing, and returns may force materialization. That decision
-belongs in compiler plans, not only in C emission branches.
+Writes, boundary crossing, and returns may force materialization. That
+decision belongs in compiler plans, not only in C emission branches.
 
 ### Boundaries
 
 Unsupported calls do not silently disappear into codegen.
 
 - `fallback = "hard"` rejects them
-- `fallback = "auto"` lowers them to explicit `boundary_call` / `r_eval` nodes
+- `fallback = "auto"` lowers them to explicit `boundary_call` / `r_eval`
+  nodes
 
 Boundary nodes are legality barriers and should remain explicit.
 
@@ -199,20 +223,22 @@ Most relevant ideas for this repo:
 - explicit array/kernel IR
 - legality-driven fusion
 - storage/materialization decisions represented before target emission
-- reuse opportunities based on shape/index semantics, not on string-level C
-  accidents
+- reuse opportunities based on shape/index semantics, not on
+  string-level C accidents
 
 The reuse and with-loop machinery in `sac2c` is not something to copy
-literally, but it is a strong reminder that high-value optimization decisions
-belong in compiler analysis, not in backend folklore.
+literally, but it is a strong reminder that high-value optimization
+decisions belong in compiler analysis, not in backend folklore.
 
 See also:
 
 - `docs/sac2c-study-notes.md` for a focused internal reread of the most
-  relevant SaC papers, with-loop/reuse implementation details, and the macro-
-  heavy runtime architecture that we do not want to replicate directly.
-- `../docs/tinycc-simd-stencils-design.md` for a practical plan to combine
-  TinyCC in-memory relocation with native SIMD/object-stencil workflows.
+  relevant SaC papers, with-loop/reuse implementation details, and the
+  macro- heavy runtime architecture that we do not want to replicate
+  directly.
+- `../docs/tinycc-simd-stencils-design.md` for a practical plan to
+  combine TinyCC in-memory relocation with native SIMD/object-stencil
+  workflows.
 
 ## Current limits
 
@@ -224,30 +250,31 @@ Current supported core:
 - scalar and elementwise arithmetic
 - comparison and logical vector expressions
 - unary math calls such as `sin()` and `exp()`
-- generic fold-style reducers: `sum`, `prod`, `min`, `max`, `mean`, `any`, and
-  `all`
+- generic fold-style reducers: `sum`, `prod`, `min`, `max`, `mean`,
+  `any`, and `all`
 - limited `Reduce(FUN, x)` lowering for recognized reducer surfaces
 - local bindings
 - scalar indexed reads
 - contiguous slices/views
 - local indexed and range writes
 - explicit fallback boundaries
-- source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`) compilation
-  modes
-- generated differential validation over programmatically constructed cases
+- source-only, TinyCC-backed, and shared-library (`R CMD SHLIB`)
+  compilation modes
+- generated differential validation over programmatically constructed
+  cases
 
 ## Architecture closeout checklist
 
 Implemented now:
 
 - [x] explicit fold IR for more than one reducer surface
-- [x] comparison/logical vector expressions needed for reducer idioms such as
-  `any(x > 0)` and `all((x > 0) & (y > 0))`
+- [x] comparison/logical vector expressions needed for reducer idioms
+  such as `any(x > 0)` and `all((x > 0) & (y > 0))`
 - [x] limited `Reduce(FUN, x)` lowering for recognized reducer operators
 - [x] cross-backend generated validation against direct R evaluation
 - [x] explicit view/index normalization before C emission
-- [x] explicit IR-to-codegen boundary split between R C-API wrapper paths and
-  pure-C kernel regions
+- [x] explicit IR-to-codegen boundary split between R C-API wrapper
+  paths and pure-C kernel regions
 - [x] first shape/domain facts for zip/fusion/storage reasoning
 
 Still open:
@@ -263,53 +290,62 @@ Current important limits:
 - only conservative view handling today
 - no explicit copy-on-write model for formal mutation yet
 - allocation planning exists but is still conservative
-- boundary argument materialization should become a clearer middle-end decision
-- view/index normalization is still much smaller than SAC-style loop metadata
-- shape/domain facts exist now, but they are still first-pass vector-only facts
-  rather than a richer symbolic shape system
-- axis reductions / full `apply`-family semantics still require rank-aware IR
+- boundary argument materialization should become a clearer middle-end
+  decision
+- view/index normalization is still much smaller than SAC-style loop
+  metadata
+- shape/domain facts exist now, but they are still first-pass
+  vector-only facts rather than a richer symbolic shape system
+- axis reductions / full `apply`-family semantics still require
+  rank-aware IR
 - limited `Reduce(FUN, x)` lowering is not yet a claim of full base-R
   `Reduce()` compatibility
 
 ## Highest-value next steps
 
-1. enrich allocation/materialization/reuse planning so codegen consumes a clearer plan
-2. make boundary argument materialization more explicitly middle-end owned
-3. add rank-aware axis-reduction IR before broader `apply`-family lowering
-4. grow validation from generated cases into a larger maintained corpus
-5. deepen shape/domain facts from first-pass vector facts toward richer reuse legality
+1.  enrich allocation/materialization/reuse planning so codegen consumes
+    a clearer plan
+2.  make boundary argument materialization more explicitly middle-end
+    owned
+3.  add rank-aware axis-reduction IR before broader `apply`-family
+    lowering
+4.  grow validation from generated cases into a larger maintained corpus
+5.  deepen shape/domain facts from first-pass vector facts toward richer
+    reuse legality
 
 ## Validation strategy
 
-The current validation direction is intentionally executable rather than merely
-aspirational.
+The current validation direction is intentionally executable rather than
+merely aspirational.
 
 Implemented now:
 
 - explicit tinytests for core semantics and backends
-- generated differential tests comparing compiled results against direct R
-  evaluation
+- generated differential tests comparing compiled results against direct
+  R evaluation
 - cross-backend comparisons between TinyCC and `R CMD SHLIB`
 
 Still to grow:
 
 - larger generated grammars over the supported subset
 - pass-by-pass translation validation for middle-end rewrites
-- harvested corpora from real array-oriented/base-R-style programs where the
-  supported subset overlaps
+- harvested corpora from real array-oriented/base-R-style programs where
+  the supported subset overlaps
 
 ## Backend note: TinyCC and `callme`
 
-After looking at [`callme`](https://github.com/coolbutuseless/callme), the
-useful lesson is backend shape rather than frontend semantics.
+After looking at [`callme`](https://github.com/coolbutuseless/callme),
+the useful lesson is backend shape rather than frontend semantics.
 
-`callme` already demonstrates a practical C-only compilation/loading workflow:
+`callme` already demonstrates a practical C-only compilation/loading
+workflow:
 
 - accept complete C source
 - pass through compiler, preprocessor, and linker flags
 - compile through `R CMD SHLIB`
 - load the resulting shared library and create `.Call` wrappers
 
-That fits `tccquickr` as a backend idea, not as a replacement compiler model.
-The `tccq_*` frontend and middle-end should still decide semantics; a
-`callme`-style path would simply be another way to compile the emitted C.
+That fits `tccquickr` as a backend idea, not as a replacement compiler
+model. The `tccq_*` frontend and middle-end should still decide
+semantics; a `callme`-style path would simply be another way to compile
+the emitted C.

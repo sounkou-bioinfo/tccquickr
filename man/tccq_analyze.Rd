@@ -14,7 +14,6 @@ A list of class \code{tccq_analysis} with fields:
 \itemize{
 \item \code{formals}: formals metadata
 \item \code{ast}: AST observations (calls, symbols, assignments, loops)
-\item \code{compiler}: \code{compiler} package metadata when available
 \item \code{recommendations}: conservative suggestions for lowering success
 }
 }

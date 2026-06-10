@@ -6,6 +6,9 @@
 ^tccquickr\.Rcheck$
 ^AGENTS\.md$
 ^docs$
+^proofs$
+^tools$
+^leanknit$
 ^\.claude$
 ^claude_.*_review\.md$
 ^claude_review_data_.*\.md$

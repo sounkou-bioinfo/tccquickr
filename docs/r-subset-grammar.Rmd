@@ -1,0 +1,76 @@
+---
+output: github_document
+---
+
+<!-- r-subset-grammar.md is generated from .Rmd. Do not edit the .md. -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", echo = FALSE)
+if (requireNamespace("pkgload", quietly = TRUE)) {
+  suppressMessages(pkgload::load_all("..", quiet = TRUE))
+} else {
+  library(tccquickr)
+}
+```
+
+# Accepted R subset — grammar coverage
+
+This is the **mental map** for what `tccquickr` compiles, grounded in R's own
+grammar (the yacc grammar
+[`src/main/gram.y`](https://github.com/r-devel/r-svn/blob/master/src/main/gram.y)).
+It is the layer-1 spec boundary from
+[ADR 0005](decisions/0005-conformance-and-verification.md).
+
+**It is computed, not hand-written.** Each row below is a real probe: a minimal
+`declare(type(...))` function exercising one grammar production is handed to the
+compiler, and the disposition records what actually happens. The table cannot
+drift from the implementation — if support changes, regenerating this document
+changes the table (`tools/render_docs.R`, backed by
+`R/tccq_grammar.R`).
+
+Dispositions:
+
+- **core** — compiles with `fallback = "hard"`: a pure-C kernel, no `r_eval`.
+- **boundary** — rejected in hard mode, but lowers under `fallback = "auto"` to
+  an explicit `r_eval` boundary node.
+- **rejected** — neither mode accepts it (an honest gap, or out of scope).
+
+```{r}
+cov <- tccq_grammar_coverage()
+counts <- table(factor(cov$disposition, levels = c("core", "boundary", "rejected", "error")))
+```
+
+Current coverage: **`r counts[["core"]]` core**, **`r counts[["boundary"]]`
+boundary**, **`r counts[["rejected"]]` rejected** (of `r nrow(cov)` probed
+productions).
+
+```{r}
+ord <- order(
+  match(cov$disposition, c("core", "boundary", "rejected", "error")),
+  cov$production
+)
+show <- cov[ord, c("production", "rule", "example", "disposition")]
+names(show) <- c("Production", "gram.y rule", "Probe", "Disposition")
+knitr::kable(show, row.names = FALSE)
+```
+
+## Reading the gaps
+
+The rejected and boundary rows are the honest edges of the subset, not
+oversights to hide:
+
+- `%%` (modulo) currently lowers to a **boundary** while `%/%` is **core** —
+  the two integer-division operators are not yet at parity in the binary-op
+  lowering (`R/tccq_lower.R`).
+- `&&` / `||` are **boundary**: scalar short-circuit logic is not part of the
+  elementwise kernel surface.
+- `if/else`, `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous
+  functions are **rejected** today — scalar control flow, namespaced calls, and
+  list/S4 access are future work (rank-aware and scalar-control IR), not part of
+  the current numeric-kernel core.
+- `:` is only accepted inside a `for` head and as a slice subscript, not yet as
+  a free integer-sequence producer.
+
+These align with the limits recorded in
+[`fresh-compiler-redesign.md`](fresh-compiler-redesign.md); this table is the
+executable, always-current version of that prose.
