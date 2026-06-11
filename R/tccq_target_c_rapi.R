@@ -740,7 +740,6 @@ tccq_c_expr_data_vars <- function(node, module = NULL) {
     unary = tccq_c_expr_data_vars(node$x, module = module),
     call1 = tccq_c_expr_data_vars(node$x, module = module),
     binary = tccq_unique(c(tccq_c_expr_data_vars(node$lhs, module = module), tccq_c_expr_data_vars(node$rhs, module = module))),
-    cond = tccq_unique(c(tccq_c_expr_data_vars(node$cond, module = module), tccq_c_expr_data_vars(node$yes, module = module), tccq_c_expr_data_vars(node$no, module = module))),
     reduce = tccq_c_expr_data_vars(node$x, module = module),
     arg_reduce = tccq_c_expr_data_vars(node$x, module = module),
     len = tccq_c_expr_length_data_vars(node$x, module = module),
@@ -756,7 +755,12 @@ tccq_c_expr_data_vars <- function(node, module = NULL) {
       node$args %||% list(),
       seq_along(node$args %||% list())
     ), use.names = FALSE)),
-    character()
+    # Generic default: recurse over child IR nodes. New expression nodes get
+    # correct data-var collection without a hand-written case here.
+    tccq_unique(unlist(
+      lapply(tccq_ir_child_nodes(node), tccq_c_expr_data_vars, module = module),
+      use.names = FALSE
+    ))
   )
 }
 
@@ -888,7 +892,6 @@ tccq_c_expr_scalar_value_vars <- function(node) {
     unary = tccq_c_expr_scalar_value_vars(node$x),
     call1 = tccq_c_expr_scalar_value_vars(node$x),
     binary = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$lhs), tccq_c_expr_scalar_value_vars(node$rhs))),
-    cond = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$cond), tccq_c_expr_scalar_value_vars(node$yes), tccq_c_expr_scalar_value_vars(node$no))),
     reduce = tccq_c_expr_scalar_value_vars(node$x),
     arg_reduce = tccq_c_expr_scalar_value_vars(node$x),
     len = tccq_c_expr_length_scalar_value_vars(node$x),
@@ -900,7 +903,12 @@ tccq_c_expr_scalar_value_vars <- function(node) {
     slice_range = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
     view1 = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
     boundary_call = tccq_unique(unlist(lapply(node$args %||% list(), tccq_c_expr_scalar_value_vars), use.names = FALSE)),
-    character()
+    # Generic default: recurse over child IR nodes so new expression nodes get
+    # correct scalar-value-var collection without a hand-written case here.
+    tccq_unique(unlist(
+      lapply(tccq_ir_child_nodes(node), tccq_c_expr_scalar_value_vars),
+      use.names = FALSE
+    ))
   )
 }
 

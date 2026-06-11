@@ -355,6 +355,29 @@ tccq_ir_walk <- function(node, f) {
   invisible(NULL)
 }
 
+# Immediate child IR nodes of a node (one level): every field, and every element
+# of a list field, that is itself an IR node. Lets generic analyses recurse over
+# any node without a hand-written per-tag case (the same trick tccq_ir_walk uses).
+tccq_ir_child_nodes <- function(node) {
+  out <- list()
+  for (nm in names(node)) {
+    if (nm %in% c("tag", "type", "effect", "barrier", "normalized_access")) {
+      next
+    }
+    v <- node[[nm]]
+    if (is.list(v) && !is.null(v$tag)) {
+      out[[length(out) + 1L]] <- v
+    } else if (is.list(v)) {
+      for (el in v) {
+        if (is.list(el) && !is.null(el$tag)) {
+          out[[length(out) + 1L]] <- el
+        }
+      }
+    }
+  }
+  out
+}
+
 tccq_ir_has_tag <- function(node, tag) {
   found <- FALSE
   tccq_ir_walk(node, function(n) {
