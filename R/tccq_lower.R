@@ -325,6 +325,28 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
     return(tccq_lower_expr(args[[1L]], env, fallback = fallback))
   }
 
+  if (identical(head, "if")) {
+    if (length(args) != 3L) {
+      tccq_abort("if currently requires both branches: if (cond) yes else no")
+    }
+    cond <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
+    if (cond$type$rank != 0L || !identical(cond$type$mode, "logical")) {
+      tccq_abort("if condition must be a scalar logical")
+    }
+    yes <- tccq_lower_expr(args[[2L]], env, fallback = fallback)
+    no <- tccq_lower_expr(args[[3L]], env, fallback = fallback)
+    if (yes$type$rank != 0L || no$type$rank != 0L) {
+      tccq_abort("if branches must currently be scalar")
+    }
+    if (!identical(yes$type$mode, no$type$mode)) {
+      tccq_abort(
+        "if branches must currently have the same type (got ",
+        yes$type$mode, " and ", no$type$mode, ")"
+      )
+    }
+    return(tccq_ir_cond(cond, yes, no, type = tccq_type_scalar(yes$type$mode)))
+  }
+
   if (head %in% c("+", "-")) {
     if (length(args) == 1L) {
       x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)

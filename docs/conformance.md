@@ -43,10 +43,27 @@ A sample of the generated programs:
 | -2 + (2 + x) + -1  | pass   |
 | -exp(-x)           | pass   |
 
+## Bounded-exhaustive check
+
+Random sampling can miss cases. The harness also runs a
+**bounded-exhaustive** pass: every depth-1 elementwise kernel (a leaf, a
+unary op of a leaf, or a binary op of two leaves, over `{x, y, 1, 2}`)
+is compiled and diffed against R. This is *complete* up to depth 1, not
+merely sampled.
+
+    #> Warning in sqrt(x): NaNs produced
+    #> Warning in sqrt(x): NaNs produced
+    #> Warning in sqrt(x): NaNs produced
+    #> Warning in sqrt(y): NaNs produced
+    #> Warning in sqrt(y): NaNs produced
+    #> Warning in sqrt(y): NaNs produced
+
+**92 / 92** depth-1 elementwise kernels match the R interpreter.
+
 ## Growing the suite
 
 This generated corpus is the seed. Per ADR 0005 it grows by (1) widening
-the generator as the `core` surface grows, and (2) harvesting in-subset
-fragments from `r-svn/tests/` (`arith.R`, `any-all.R`, `primitives.R`).
-The number only goes up as coverage widens; it must never drop for a
-fixed seed.
+the generator as the `core` surface grows, (2) deepening the
+bounded-exhaustive pass, and (3) harvesting in-subset fragments from
+`r-svn/tests/` (`arith.R`, `any-all.R`, `primitives.R`). The number only
+goes up as coverage widens; it must never drop for a fixed seed.

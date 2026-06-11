@@ -28,6 +28,12 @@ tccq_ir_call1 <- function(fun, x, type = x$type) {
   tccq_node("call1", fun = fun, x = x, type = type)
 }
 
+# Scalar conditional: if (cond) yes else no. `cond` is a scalar logical; `yes`
+# and `no` are scalar expressions of the same mode (the node's type).
+tccq_ir_cond <- function(cond, yes, no, type = yes$type) {
+  tccq_node("cond", cond = cond, yes = yes, no = no, type = type)
+}
+
 tccq_ir_reduce <- function(op, x, type = tccq_type_scalar("double"), surface = op) {
   tccq_node("reduce", op = op, x = x, surface = surface, type = type)
 }

@@ -25,7 +25,7 @@ Dispositions:
 - **rejected** — neither mode accepts it (an honest gap, or out of
   scope).
 
-Current coverage: **28 core**, **5 boundary**, **12 rejected** (of 45
+Current coverage: **29 core**, **5 boundary**, **11 rejected** (of 45
 probed productions).
 
 | Production                        | gram.y rule                                        | Probe                                                                 | Disposition |
@@ -40,6 +40,7 @@ probed productions).
 | divide                            | expr: expr ‘/’ expr                                | x / 2                                                                 | core        |
 | fold reducer call                 | expr: SYMBOL_FUNCTION_CALL ‘(’ … ‘)’               | sum(x)                                                                | core        |
 | for loop + indexed write          | expr: FOR forcond expr_or_assign                   | out \<- x; for (i in 1:n) { out\[i\] \<- out\[i\] \* 2 }; out         | core        |
+| if / else (scalar)                | expr: IF ifcond expr_or_assign ELSE expr_or_assign | if (n \> 0L) n else -n                                                | core        |
 | integer constant                  | expr: NUM_CONST                                    | x + 1L                                                                | core        |
 | integer divide                    | expr: expr SPECIAL expr                            | x %/% 2                                                               | core        |
 | local assignment                  | expr: expr LEFT_ASSIGN expr                        | a \<- x + 1; a                                                        | core        |
@@ -67,7 +68,6 @@ probed productions).
 | break                             | expr: BREAK                                        | out \<- x; for (i in 1:n) { if (i \> 0L) break; out\[i\] \<- 0 }; out | rejected    |
 | colon sequence                    | expr: expr ‘:’ expr                                | 1:n                                                                   | rejected    |
 | dollar ($) |expr: expr '$’ SYMBOL | x\$a                                               | rejected                                                              |             |
-| if / else                         | expr: IF ifcond expr_or_assign ELSE expr_or_assign | if (n \> 0L) x else -x                                                | rejected    |
 | namespaced call (::)              | expr: SYMBOL NS_GET SYMBOL                         | base::sin(x)                                                          | rejected    |
 | next                              | expr: NEXT                                         | out \<- x; for (i in 1:n) { if (i \> 0L) next; out\[i\] \<- 0 }; out  | rejected    |
 | NULL                              | expr: NULL_CONST                                   | NULL                                                                  | rejected    |
@@ -86,10 +86,15 @@ oversights to hide:
   the binary-op lowering (`R/tccq_lower.R`).
 - `&&` / `||` are **boundary**: scalar short-circuit logic is not part
   of the elementwise kernel surface.
-- `if/else`, `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and
-  anonymous functions are **rejected** today — scalar control flow,
-  namespaced calls, and list/S4 access are future work (rank-aware and
-  scalar-control IR), not part of the current numeric-kernel core.
+- **`if/else` is core** for the scalar case: `if (cond) yes else no`
+  with a scalar-logical condition and same-typed scalar branches
+  compiles to a guarded C ternary (an `NA` condition errors like R’s
+  `if`). A vectorized form (`ifelse()`), differently-typed branches, and
+  `if` as a statement around assignments are not yet covered.
+- `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous
+  functions are **rejected** today — the remaining loop forms,
+  namespaced calls, and list/S4 access are future work, not part of the
+  current numeric-kernel core.
 - `:` is only accepted inside a `for` head and as a slice subscript, not
   yet as a free integer-sequence producer.
 

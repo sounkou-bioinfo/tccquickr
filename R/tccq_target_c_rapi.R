@@ -122,6 +122,11 @@ tccq_c_emit_module <- function(module, ctx = list()) {
     "  return 0;",
     "}",
     "",
+    "static TCCQ_UNUSED int tccq_cond_check(int c) {",
+    "  if (c == NA_LOGICAL) Rf_error(\"missing value where TRUE/FALSE needed\");",
+    "  return c;",
+    "}",
+    "",
     paste0("SEXP ", module$entry, "(", params, ") {"),
     tccq_indent(tccq_c_emit_argument_setup(module, sym), 2L),
     tccq_indent(tccq_c_emit_kernel(module, sym), 2L),
@@ -729,6 +734,7 @@ tccq_c_expr_data_vars <- function(node, module = NULL) {
     unary = tccq_c_expr_data_vars(node$x, module = module),
     call1 = tccq_c_expr_data_vars(node$x, module = module),
     binary = tccq_unique(c(tccq_c_expr_data_vars(node$lhs, module = module), tccq_c_expr_data_vars(node$rhs, module = module))),
+    cond = tccq_unique(c(tccq_c_expr_data_vars(node$cond, module = module), tccq_c_expr_data_vars(node$yes, module = module), tccq_c_expr_data_vars(node$no, module = module))),
     reduce = tccq_c_expr_data_vars(node$x, module = module),
     arg_reduce = tccq_c_expr_data_vars(node$x, module = module),
     len = tccq_c_expr_length_data_vars(node$x, module = module),
@@ -875,6 +881,7 @@ tccq_c_expr_scalar_value_vars <- function(node) {
     unary = tccq_c_expr_scalar_value_vars(node$x),
     call1 = tccq_c_expr_scalar_value_vars(node$x),
     binary = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$lhs), tccq_c_expr_scalar_value_vars(node$rhs))),
+    cond = tccq_unique(c(tccq_c_expr_scalar_value_vars(node$cond), tccq_c_expr_scalar_value_vars(node$yes), tccq_c_expr_scalar_value_vars(node$no))),
     reduce = tccq_c_expr_scalar_value_vars(node$x),
     arg_reduce = tccq_c_expr_scalar_value_vars(node$x),
     len = tccq_c_expr_length_scalar_value_vars(node$x),
@@ -2611,6 +2618,7 @@ tccq_c_emit_expr <- function(node, sym, idx = NULL) {
     unary = tccq_c_emit_unary(node, sym, idx),
     binary = tccq_c_emit_binary(node, sym, idx),
     call1 = tccq_c_emit_call1(node, sym, idx),
+    cond = tccq_c_emit_cond(node, sym, idx),
     len = tccq_c_emit_len(node, sym),
     index = tccq_c_emit_index(node, sym, idx),
     index2 = tccq_c_emit_index2(node, sym),
@@ -2652,6 +2660,16 @@ tccq_c_emit_var <- function(node, sym, idx = NULL) {
   }
 
   paste0(s$ptr, "[", idx, "]")
+}
+
+tccq_c_emit_cond <- function(node, sym, idx = NULL) {
+  cond <- tccq_c_emit_expr(node$cond, sym, idx)
+  yes <- tccq_c_emit_expr(node$yes, sym, idx)
+  no <- tccq_c_emit_expr(node$no, sym, idx)
+  # Branches share the node's mode (enforced in lowering), so the C ternary's
+  # result type is correct without a cast. tccq_cond_check errors on an NA
+  # condition, matching R's "missing value where TRUE/FALSE needed".
+  paste0("(tccq_cond_check((int)(", cond, ")) ? (", yes, ") : (", no, "))")
 }
 
 tccq_c_emit_unary <- function(node, sym, idx = NULL) {

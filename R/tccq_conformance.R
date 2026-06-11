@@ -165,3 +165,75 @@ tccq_conformance_run <- function(n_cases = 40L, seed = 20260611L,
     results = results
   )
 }
+
+# Bounded-exhaustive enumeration ---------------------------------------------
+
+# All elementwise numeric kernels of depth 1: a leaf, a unary op of a leaf, or a
+# binary op of two leaves, over the leaves {x, y, 1, 2}. Unlike random sampling,
+# this is *complete* up to depth 1 (small-scope completeness, the idea behind
+# bounded-exhaustive testing).
+tccq_cf_enumerate_depth1 <- function() {
+  leaves <- list(quote(x), quote(y), 1, 2)
+  unary <- c("-", "sin", "cos", "abs", "sqrt", "exp")
+  binop <- c("+", "-", "*", "/")
+  out <- leaves
+  for (u in unary) {
+    for (a in leaves) out <- c(out, list(as.call(list(as.name(u), a))))
+  }
+  for (op in binop) {
+    for (a in leaves) {
+      for (b in leaves) out <- c(out, list(as.call(list(as.name(op), a, b))))
+    }
+  }
+  out
+}
+
+#' Bounded-exhaustive conformance over depth-1 elementwise kernels
+#'
+#' Compiles every depth-1 elementwise kernel and diffs it against R, giving
+#' completeness up to depth 1 rather than random coverage.
+#'
+#' @param seed Random seed for the inputs.
+#' @param backend Backend used to compile cases.
+#' @return A list with `total`, `passed`, and a per-case `results` data frame.
+#' @keywords internal
+#' @noRd
+tccq_conformance_enumerate <- function(seed = 20260611L, backend = tccq_backend_tinycc()) {
+  set.seed(seed)
+  params <- c("x", "y")
+  types <- c(x = quote(double(NA)), y = quote(double(NA)))
+  exprs <- tccq_cf_enumerate_depth1()
+  inputs <- tccq_cf_input_sets(3L)
+
+  rows <- vector("list", length(exprs))
+  for (i in seq_along(exprs)) {
+    expr <- exprs[[i]]
+    status <- "pass"
+    detail <- ""
+    tryCatch({
+      fn <- tccq_cf_declared_fn(params, types, expr)
+      ref <- tccq_cf_ref_fn(params, expr)
+      compiled <- tccq_compile(fn, backend = backend)
+      for (inp in inputs) {
+        if (!tccq_cf_agrees(do.call(compiled, inp), do.call(ref, inp))) {
+          status <- "fail"
+          detail <- paste0("mismatch on n=", length(inp$x))
+          break
+        }
+      }
+    }, error = function(e) {
+      status <<- "error"
+      detail <<- conditionMessage(e)
+    })
+    rows[[i]] <- data.frame(
+      expr = paste(deparse(expr), collapse = " "),
+      status = status, detail = detail, stringsAsFactors = FALSE
+    )
+  }
+  results <- do.call(rbind, rows)
+  list(
+    total = length(exprs),
+    passed = sum(results$status == "pass"),
+    results = results
+  )
+}

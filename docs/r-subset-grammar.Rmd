@@ -64,10 +64,14 @@ oversights to hide:
   lowering (`R/tccq_lower.R`).
 - `&&` / `||` are **boundary**: scalar short-circuit logic is not part of the
   elementwise kernel surface.
-- `if/else`, `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous
-  functions are **rejected** today — scalar control flow, namespaced calls, and
-  list/S4 access are future work (rank-aware and scalar-control IR), not part of
-  the current numeric-kernel core.
+- **`if/else` is core** for the scalar case: `if (cond) yes else no` with a
+  scalar-logical condition and same-typed scalar branches compiles to a guarded
+  C ternary (an `NA` condition errors like R's `if`). A vectorized form
+  (`ifelse()`), differently-typed branches, and `if` as a statement around
+  assignments are not yet covered.
+- `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous functions are
+  **rejected** today — the remaining loop forms, namespaced calls, and list/S4
+  access are future work, not part of the current numeric-kernel core.
 - `:` is only accepted inside a `for` head and as a slice subscript, not yet as
   a free integer-sequence producer.
 
