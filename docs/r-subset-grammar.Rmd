@@ -70,12 +70,15 @@ oversights to hide:
 - **`ifelse()` is core**: the vectorized, elementwise conditional compiles to a
   per-element select that propagates `NA` (matching R, except that the degenerate
   all-`NA` case returns a typed `NA` rather than R's logical-`NA` quirk).
+- **Integer `switch()` is core**: `switch(k, e1, ..., eN)` with a scalar-integer
+  index and same-typed scalar cases lowers to a guarded nested select (an
+  out-of-range or `NA` index errors, since a typed numeric return cannot be R's
+  out-of-range `NULL`). Character/named `switch` waits on a string type.
 - Still **not covered** for conditionals: differently-typed branches, and `if`
   used as a statement around assignments.
-- `while`, `repeat`, `next`, `break`, `switch`, `::`, `$`, `@`, and anonymous
-  functions are **rejected** today — the remaining loop forms, multi-way
-  dispatch, namespaced calls, and list/S4 access are future work, not part of the
-  current numeric-kernel core.
+- `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous functions are
+  **rejected** today — the remaining loop forms, namespaced calls, and list/S4
+  access are future work, not part of the current numeric-kernel core.
 - `:` is only accepted inside a `for` head and as a slice subscript, not yet as
   a free integer-sequence producer.
 

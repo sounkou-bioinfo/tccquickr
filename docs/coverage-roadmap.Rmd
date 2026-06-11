@@ -54,8 +54,8 @@ surface syntax.
   The work is (1) relax the rebind rule into an explicit update with a stable
   type, (2) a `while`/`repeat` loop IR node with a re-evaluated condition, and
   (3) `break`/`continue` lowering. This is the single highest-value enabler.
-- `switch`: the integer-position form (`switch(i, a, b, c)`) lowers to nested
-  conditionals and is tractable now; the character form needs a string type.
+- `switch`: the integer-position form (`switch(i, a, b, c)`) is **core** (a
+  guarded nested select); the character/named form needs a string type.
 
 ## Functional idioms
 

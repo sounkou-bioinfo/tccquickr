@@ -25,7 +25,7 @@ Dispositions:
 - **rejected** — neither mode accepts it (an honest gap, or out of
   scope).
 
-Current coverage: **30 core**, **5 boundary**, **11 rejected** (of 46
+Current coverage: **31 core**, **5 boundary**, **11 rejected** (of 47
 probed productions).
 
 | Production                        | gram.y rule                                        | Probe                                                                 | Disposition |
@@ -54,6 +54,7 @@ probed productions).
 | range slice (\[)                  | expr: expr ‘\[’ subscript ’\]’                     | x\[1:n\]                                                              | core        |
 | single index (\[)                 | expr: expr ‘\[’ subscript ’\]’                     | x\[1L\]                                                               | core        |
 | subtract                          | expr: expr ‘-’ expr                                | x - 1                                                                 | core        |
+| switch (integer)                  | expr: SYMBOL_FUNCTION_CALL ‘(’ … ‘)’               | switch(n, 1, 2, 3)                                                    | core        |
 | symbol                            | expr: SYMBOL                                       | x                                                                     | core        |
 | unary math call                   | expr: SYMBOL_FUNCTION_CALL ‘(’ … ‘)’               | sin(x)                                                                | core        |
 | unary minus                       | expr: ‘-’ expr                                     | -x                                                                    | core        |
@@ -95,12 +96,17 @@ oversights to hide:
   compiles to a per-element select that propagates `NA` (matching R,
   except that the degenerate all-`NA` case returns a typed `NA` rather
   than R’s logical-`NA` quirk).
+- **Integer `switch()` is core**: `switch(k, e1, ..., eN)` with a
+  scalar-integer index and same-typed scalar cases lowers to a guarded
+  nested select (an out-of-range or `NA` index errors, since a typed
+  numeric return cannot be R’s out-of-range `NULL`). Character/named
+  `switch` waits on a string type.
 - Still **not covered** for conditionals: differently-typed branches,
   and `if` used as a statement around assignments.
-- `while`, `repeat`, `next`, `break`, `switch`, `::`, `$`, `@`, and
-  anonymous functions are **rejected** today — the remaining loop forms,
-  multi-way dispatch, namespaced calls, and list/S4 access are future
-  work, not part of the current numeric-kernel core.
+- `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous
+  functions are **rejected** today — the remaining loop forms,
+  namespaced calls, and list/S4 access are future work, not part of the
+  current numeric-kernel core.
 - `:` is only accepted inside a `for` head and as a slice subscript, not
   yet as a free integer-sequence producer.
 

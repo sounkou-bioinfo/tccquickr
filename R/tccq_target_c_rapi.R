@@ -127,6 +127,11 @@ tccq_c_emit_module <- function(module, ctx = list()) {
     "  return c;",
     "}",
     "",
+    "static TCCQ_UNUSED int tccq_switch_check(int k, int n) {",
+    "  if (k == NA_INTEGER || k < 1 || k > n) Rf_error(\"switch: index out of range\");",
+    "  return k;",
+    "}",
+    "",
     paste0("SEXP ", module$entry, "(", params, ") {"),
     tccq_indent(tccq_c_emit_argument_setup(module, sym), 2L),
     tccq_indent(tccq_c_emit_kernel(module, sym), 2L),
@@ -2634,6 +2639,7 @@ tccq_c_emit_expr <- function(node, sym, idx = NULL) {
     binary = tccq_c_emit_binary(node, sym, idx),
     call1 = tccq_c_emit_call1(node, sym, idx),
     cond = tccq_c_emit_cond(node, sym, idx),
+    switch_select = tccq_c_emit_switch(node, sym, idx),
     len = tccq_c_emit_len(node, sym),
     index = tccq_c_emit_index(node, sym, idx),
     index2 = tccq_c_emit_index2(node, sym),
@@ -2695,6 +2701,22 @@ tccq_c_emit_cond <- function(node, sym, idx = NULL) {
     # "missing value where TRUE/FALSE needed".
     paste0("(tccq_cond_check((int)(", cond, ")) ? (", yes, ") : (", no, "))")
   }
+}
+
+tccq_c_emit_switch <- function(node, sym, idx = NULL) {
+  k <- tccq_c_emit_expr(node$index, sym, idx)
+  cases <- vapply(node$cases, function(e) tccq_c_emit_expr(e, sym, idx), character(1))
+  n <- length(cases)
+  # Nested ternary: (k==1) ? c1 : ((k==2) ? c2 : ... : cN). The bounds guard
+  # (comma operator) errors on an out-of-range or NA index before selecting,
+  # since a typed numeric return cannot represent R's out-of-range NULL.
+  expr <- paste0("(", cases[[n]], ")")
+  if (n > 1L) {
+    for (i in seq.int(n - 1L, 1L)) {
+      expr <- paste0("(((int)(", k, ") == ", i, ") ? (", cases[[i]], ") : ", expr, ")")
+    }
+  }
+  paste0("(tccq_switch_check((int)(", k, "), ", n, "), ", expr, ")")
 }
 
 tccq_c_emit_unary <- function(node, sym, idx = NULL) {

@@ -9,7 +9,7 @@ complements the [grammar coverage map](r-subset-grammar.md), which
 reports what the compiler accepts *today* (computed by probing the
 frontend).
 
-Today: **30 core**, **5 boundary**, **11 rejected** of the probed
+Today: **31 core**, **5 boundary**, **11 rejected** of the probed
 productions.
 
 ## The organizing idea
@@ -41,9 +41,9 @@ enabler, not by surface syntax.
   re-evaluated condition, and
   3)  `break`/`continue` lowering. This is the single highest-value
       enabler.
-- `switch`: the integer-position form (`switch(i, a, b, c)`) lowers to
-  nested conditionals and is tractable now; the character form needs a
-  string type.
+- `switch`: the integer-position form (`switch(i, a, b, c)`) is **core**
+  (a guarded nested select); the character/named form needs a string
+  type.
 
 ## Functional idioms
 

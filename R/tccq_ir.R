@@ -41,6 +41,12 @@ tccq_ir_ifelse <- function(test, yes, no, type) {
   tccq_ir_cond(test, yes, no, type = type, na = "propagate")
 }
 
+# Integer positional switch: switch(index, case1, ..., caseN). `index` is a
+# scalar integer (1-based); `cases` is a list of same-typed scalar expressions.
+tccq_ir_switch <- function(index, cases, type) {
+  tccq_node("switch_select", index = index, cases = cases, type = type)
+}
+
 tccq_ir_reduce <- function(op, x, type = tccq_type_scalar("double"), surface = op) {
   tccq_node("reduce", op = op, x = x, surface = surface, type = type)
 }

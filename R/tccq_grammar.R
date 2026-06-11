@@ -82,6 +82,7 @@ tccq_grammar_productions <- function() {
     c("namespaced call (::)", "expr: SYMBOL NS_GET SYMBOL", "base::sin(x)", ""),
     c("if / else (scalar)", "expr: IF ifcond expr_or_assign ELSE expr_or_assign", "if (n > 0L) n else -n", ""),
     c("vectorized ifelse", "expr: SYMBOL_FUNCTION_CALL '(' ... ')'", "ifelse(x > 0, x, -x)", ""),
+    c("switch (integer)", "expr: SYMBOL_FUNCTION_CALL '(' ... ')'", "switch(n, 1, 2, 3)", ""),
     c("for loop + indexed write", "expr: FOR forcond expr_or_assign", "out <- x; for (i in 1:n) { out[i] <- out[i] * 2 }; out", ""),
     c("while loop", "expr: WHILE cond expr_or_assign", "while (n > 0L) { }; x", ""),
     c("repeat loop", "expr: REPEAT expr_or_assign", "repeat { break }; x", ""),

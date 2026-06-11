@@ -373,6 +373,25 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
     return(tccq_ir_ifelse(test, yes, no, type = out_type))
   }
 
+  if (identical(head, "switch")) {
+    if (length(args) < 2L) {
+      tccq_abort("switch(index, case1, ...) requires an index and at least one case")
+    }
+    index <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
+    if (index$type$rank != 0L || !identical(index$type$mode, "integer")) {
+      tccq_abort("switch() index must be a scalar integer (named/character switch is not supported)")
+    }
+    cases <- lapply(args[-1L], tccq_lower_expr, env = env, fallback = fallback)
+    if (any(vapply(cases, function(c) c$type$rank, integer(1)) != 0L)) {
+      tccq_abort("switch() cases must currently be scalar")
+    }
+    modes <- vapply(cases, function(c) c$type$mode, character(1))
+    if (length(unique(modes)) != 1L) {
+      tccq_abort("switch() cases must currently have the same type (got ", paste(unique(modes), collapse = ", "), ")")
+    }
+    return(tccq_ir_switch(index, cases, type = tccq_type_scalar(modes[[1L]])))
+  }
+
   if (head %in% c("+", "-")) {
     if (length(args) == 1L) {
       x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
