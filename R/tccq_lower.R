@@ -347,6 +347,32 @@ tccq_lower_expr <- function(expr, env, fallback = "hard") {
     return(tccq_ir_cond(cond, yes, no, type = tccq_type_scalar(yes$type$mode)))
   }
 
+  if (identical(head, "ifelse")) {
+    if (length(args) != 3L) {
+      tccq_abort("ifelse(test, yes, no) requires three arguments")
+    }
+    test <- tccq_lower_expr(args[[1L]], env, fallback = fallback)
+    if (!identical(test$type$mode, "logical")) {
+      tccq_abort("ifelse() test must be a logical expression")
+    }
+    yes <- tccq_lower_expr(args[[2L]], env, fallback = fallback)
+    no <- tccq_lower_expr(args[[3L]], env, fallback = fallback)
+    if (!identical(yes$type$mode, no$type$mode)) {
+      tccq_abort(
+        "ifelse() branches must currently have the same type (got ",
+        yes$type$mode, " and ", no$type$mode, ")"
+      )
+    }
+    # R: the result takes the shape of `test`; branches must be scalar
+    # (broadcast) or match the test's rank.
+    out_rank <- test$type$rank
+    if (!(yes$type$rank %in% c(0L, out_rank)) || !(no$type$rank %in% c(0L, out_rank))) {
+      tccq_abort("ifelse() branches must be scalar or match the test length")
+    }
+    out_type <- tccq_type(mode = yes$type$mode, rank = out_rank, dims = test$type$dims)
+    return(tccq_ir_ifelse(test, yes, no, type = out_type))
+  }
+
   if (head %in% c("+", "-")) {
     if (length(args) == 1L) {
       x <- tccq_lower_expr(args[[1L]], env, fallback = fallback)

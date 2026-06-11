@@ -28,10 +28,17 @@ tccq_ir_call1 <- function(fun, x, type = x$type) {
   tccq_node("call1", fun = fun, x = x, type = type)
 }
 
-# Scalar conditional: if (cond) yes else no. `cond` is a scalar logical; `yes`
-# and `no` are scalar expressions of the same mode (the node's type).
-tccq_ir_cond <- function(cond, yes, no, type = yes$type) {
-  tccq_node("cond", cond = cond, yes = yes, no = no, type = type)
+# Conditional select. `na` controls condition handling:
+#   "error"     - scalar if(): an NA condition is a runtime error (R's if()).
+#   "propagate" - ifelse(): an NA condition yields NA of the result type.
+# For scalar if() the node is rank 0; for ifelse() it follows the test's rank.
+tccq_ir_cond <- function(cond, yes, no, type = yes$type, na = "error") {
+  tccq_node("cond", cond = cond, yes = yes, no = no, na = na, type = type)
+}
+
+# Vectorized conditional: ifelse(test, yes, no), NA-propagating.
+tccq_ir_ifelse <- function(test, yes, no, type) {
+  tccq_ir_cond(test, yes, no, type = type, na = "propagate")
 }
 
 tccq_ir_reduce <- function(op, x, type = tccq_type_scalar("double"), surface = op) {

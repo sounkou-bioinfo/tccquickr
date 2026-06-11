@@ -25,7 +25,7 @@ Dispositions:
 - **rejected** — neither mode accepts it (an honest gap, or out of
   scope).
 
-Current coverage: **29 core**, **5 boundary**, **11 rejected** (of 45
+Current coverage: **30 core**, **5 boundary**, **11 rejected** (of 46
 probed productions).
 
 | Production                        | gram.y rule                                        | Probe                                                                 | Disposition |
@@ -59,6 +59,7 @@ probed productions).
 | unary minus                       | expr: ‘-’ expr                                     | -x                                                                    | core        |
 | unary not                         | expr: ‘!’ expr                                     | !(x \> 0)                                                             | core        |
 | unary plus                        | expr: ‘+’ expr                                     | +x                                                                    | core        |
+| vectorized ifelse                 | expr: SYMBOL_FUNCTION_CALL ‘(’ … ‘)’               | ifelse(x \> 0, x, -x)                                                 | core        |
 | double index (\[\[)               | expr: expr LBB subscript ‘\]’ ‘\]’                 | x\[\[1L\]\]                                                           | boundary    |
 | logical and (&&)                  | expr: expr AND2 expr                               | (n \> 0L) && (n \< 9L)                                                | boundary    |
 | logical or (\|\|)                 | expr: expr OR2 expr                                | (n \> 0L) \|\| (n \< 9L)                                              | boundary    |
@@ -89,12 +90,17 @@ oversights to hide:
 - **`if/else` is core** for the scalar case: `if (cond) yes else no`
   with a scalar-logical condition and same-typed scalar branches
   compiles to a guarded C ternary (an `NA` condition errors like R’s
-  `if`). A vectorized form (`ifelse()`), differently-typed branches, and
-  `if` as a statement around assignments are not yet covered.
-- `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous
-  functions are **rejected** today — the remaining loop forms,
-  namespaced calls, and list/S4 access are future work, not part of the
-  current numeric-kernel core.
+  `if`).
+- **`ifelse()` is core**: the vectorized, elementwise conditional
+  compiles to a per-element select that propagates `NA` (matching R,
+  except that the degenerate all-`NA` case returns a typed `NA` rather
+  than R’s logical-`NA` quirk).
+- Still **not covered** for conditionals: differently-typed branches,
+  and `if` used as a statement around assignments.
+- `while`, `repeat`, `next`, `break`, `switch`, `::`, `$`, `@`, and
+  anonymous functions are **rejected** today — the remaining loop forms,
+  multi-way dispatch, namespaced calls, and list/S4 access are future
+  work, not part of the current numeric-kernel core.
 - `:` is only accepted inside a `for` head and as a slice subscript, not
   yet as a free integer-sequence producer.
 

@@ -617,6 +617,10 @@ tccq_c_emit_common_length_named <- function(expr, sym, len_name, module = NULL) 
           }
         )
       },
+      cond = c(
+        emit_length(node$cond, paste0(target, "_c")),
+        paste0("R_xlen_t ", target, " = ", target, "_c;")
+      ),
       tccq_abort("cannot infer vector length for expression tag: ", node$tag)
     )
   }
@@ -657,6 +661,7 @@ tccq_c_expr_length_needs_eval <- function(node) {
     unary = tccq_c_expr_length_needs_eval(node$x),
     call1 = tccq_c_expr_length_needs_eval(node$x),
     binary = tccq_c_expr_length_needs_eval(node$lhs) || tccq_c_expr_length_needs_eval(node$rhs),
+    cond = tccq_c_expr_length_needs_eval(node$cond) || tccq_c_expr_length_needs_eval(node$yes) || tccq_c_expr_length_needs_eval(node$no),
     index = tccq_c_expr_length_needs_eval(node$index),
     index2 = tccq_c_expr_length_needs_eval(node$row) || tccq_c_expr_length_needs_eval(node$col),
     matrix_fill = TRUE,
@@ -685,6 +690,7 @@ tccq_c_expr_length_data_vars <- function(node, module = NULL) {
     unary = tccq_c_expr_length_data_vars(node$x, module = module),
     call1 = tccq_c_expr_length_data_vars(node$x, module = module),
     binary = tccq_unique(c(tccq_c_expr_length_data_vars(node$lhs, module = module), tccq_c_expr_length_data_vars(node$rhs, module = module))),
+    cond = tccq_unique(c(tccq_c_expr_length_data_vars(node$cond, module = module), tccq_c_expr_length_data_vars(node$yes, module = module), tccq_c_expr_length_data_vars(node$no, module = module))),
     index = if (!is.null(node$type) && node$type$rank == 1L) {
       tccq_c_expr_length_data_vars(node$index, module = module)
     } else {
@@ -857,6 +863,7 @@ tccq_c_expr_length_scalar_value_vars <- function(node) {
     unary = tccq_c_expr_length_scalar_value_vars(node$x),
     call1 = tccq_c_expr_length_scalar_value_vars(node$x),
     binary = tccq_unique(c(tccq_c_expr_length_scalar_value_vars(node$lhs), tccq_c_expr_length_scalar_value_vars(node$rhs))),
+    cond = tccq_unique(c(tccq_c_expr_length_scalar_value_vars(node$cond), tccq_c_expr_length_scalar_value_vars(node$yes), tccq_c_expr_length_scalar_value_vars(node$no))),
     vector_fill = tccq_c_expr_scalar_value_vars(node$length),
     matrix_view = tccq_c_subscripts_scalar_value_vars(node$subscripts),
     slice_range = tccq_unique(c(tccq_c_access_scalar_value_vars(node), tccq_c_expr_scalar_value_vars(node$start), tccq_c_expr_scalar_value_vars(node$stop))),
@@ -2667,9 +2674,19 @@ tccq_c_emit_cond <- function(node, sym, idx = NULL) {
   yes <- tccq_c_emit_expr(node$yes, sym, idx)
   no <- tccq_c_emit_expr(node$no, sym, idx)
   # Branches share the node's mode (enforced in lowering), so the C ternary's
-  # result type is correct without a cast. tccq_cond_check errors on an NA
-  # condition, matching R's "missing value where TRUE/FALSE needed".
-  paste0("(tccq_cond_check((int)(", cond, ")) ? (", yes, ") : (", no, "))")
+  # result type is correct without a cast.
+  if (identical(node$na %||% "error", "propagate")) {
+    # ifelse(): an NA condition yields NA of the result type (no error).
+    na_val <- tccq_c_emit_na_value_for_mode(node$type$mode)
+    paste0(
+      "(((int)(", cond, ") == NA_LOGICAL) ? ", na_val,
+      " : ((", cond, ") ? (", yes, ") : (", no, ")))"
+    )
+  } else {
+    # scalar if(): tccq_cond_check errors on an NA condition, matching R's
+    # "missing value where TRUE/FALSE needed".
+    paste0("(tccq_cond_check((int)(", cond, ")) ? (", yes, ") : (", no, "))")
+  }
 }
 
 tccq_c_emit_unary <- function(node, sym, idx = NULL) {

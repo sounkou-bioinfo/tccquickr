@@ -66,12 +66,16 @@ oversights to hide:
   elementwise kernel surface.
 - **`if/else` is core** for the scalar case: `if (cond) yes else no` with a
   scalar-logical condition and same-typed scalar branches compiles to a guarded
-  C ternary (an `NA` condition errors like R's `if`). A vectorized form
-  (`ifelse()`), differently-typed branches, and `if` as a statement around
-  assignments are not yet covered.
-- `while`, `repeat`, `next`, `break`, `::`, `$`, `@`, and anonymous functions are
-  **rejected** today — the remaining loop forms, namespaced calls, and list/S4
-  access are future work, not part of the current numeric-kernel core.
+  C ternary (an `NA` condition errors like R's `if`).
+- **`ifelse()` is core**: the vectorized, elementwise conditional compiles to a
+  per-element select that propagates `NA` (matching R, except that the degenerate
+  all-`NA` case returns a typed `NA` rather than R's logical-`NA` quirk).
+- Still **not covered** for conditionals: differently-typed branches, and `if`
+  used as a statement around assignments.
+- `while`, `repeat`, `next`, `break`, `switch`, `::`, `$`, `@`, and anonymous
+  functions are **rejected** today — the remaining loop forms, multi-way
+  dispatch, namespaced calls, and list/S4 access are future work, not part of the
+  current numeric-kernel core.
 - `:` is only accepted inside a `for` head and as a slice subscript, not yet as
   a free integer-sequence producer.
 
