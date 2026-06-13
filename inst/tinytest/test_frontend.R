@@ -30,7 +30,7 @@ expect_true(all(vapply(
 )))
 expect_true(any(vapply(
   result@diagnostics,
-  function(x) identical(x@code, "frontend.unsupported_call"),
+  function(x) identical(x@code, "frontend.unimplemented_call"),
   logical(1)
 )))
 
@@ -48,3 +48,33 @@ buffer_result <- tccq_analyze(buffer_program)
 expect_true(buffer_result@ok)
 expect_equal(buffer_result@value@formals$bytes@type@base, "raw")
 expect_equal(buffer_result@value@formals$scratch@type@base, "buffer")
+
+call_program <- function(x) {
+  declare(type(x = double(n)))
+  if (length(x) > 0L) {
+    x[1L] + sqrt(x[1L])
+  } else {
+    0
+  }
+}
+
+calls <- tccq_collect_calls(body(call_program))
+call_names <- vapply(calls, function(x) x@name, character(1))
+call_kinds <- setNames(vapply(calls, function(x) x@kind, character(1)), call_names)
+
+expect_true("if" %in% call_names)
+expect_equal(call_kinds[["if"]], "control")
+expect_equal(call_kinds[["["]], "index")
+expect_equal(call_kinds[["+"]], "operator")
+
+replacement_calls <- tccq_collect_calls(quote(x[1L] <- 2L))
+replacement_names <- vapply(replacement_calls, function(x) x@name, character(1))
+replacement_kinds <- setNames(
+  vapply(replacement_calls, function(x) x@kind, character(1)),
+  replacement_names
+)
+
+expect_equal(replacement_kinds[["<-"]], "assignment")
+expect_equal(replacement_kinds[["["]], "index")
+expect_equal(tccq_call("[<-")@kind, "replacement")
+expect_equal(tccq_call("function")@kind, "function_definition")

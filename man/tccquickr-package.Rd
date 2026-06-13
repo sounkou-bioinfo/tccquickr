@@ -7,8 +7,9 @@
 \title{tccquickr: typed experimental R transformation core}
 \description{
 \code{tccquickr} is being rebuilt around declared R programs, shape-aware types,
-classed diagnostics, and contract-checked compiler passes. The backend is
-deliberately absent in this reset.
+classed diagnostics, contract-checked compiler passes, and generic backend
+planning. Rtinycc is modeled as one backend descriptor, not as the compiler
+architecture.
 }
 \seealso{
 Useful links:

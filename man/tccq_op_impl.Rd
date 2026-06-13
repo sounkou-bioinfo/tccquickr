@@ -12,6 +12,7 @@ tccq_op_impl(
   uses_rapi = FALSE,
   boundary = FALSE,
   pure = TRUE,
+  effect = NULL,
   supports = function(call, context) TRUE
 )
 }
@@ -26,9 +27,11 @@ tccq_op_impl(
 
 \item{uses_rapi}{Whether the implementation touches the R C API.}
 
-\item{boundary}{Whether the implementation is a boundary/fallback.}
+\item{boundary}{Whether the implementation crosses a boundary.}
 
 \item{pure}{Whether the implementation is semantically pure.}
+
+\item{effect}{Effect summary for calls handled by this implementation.}
 
 \item{supports}{Predicate receiving a \code{TccqCall} and \code{TccqOpContext}.}
 }

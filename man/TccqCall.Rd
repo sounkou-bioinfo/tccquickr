@@ -4,7 +4,15 @@
 \alias{TccqCall}
 \title{R call observed by the frontend}
 \usage{
-TccqCall(name = character(0), expr = NULL, origin = character(0))
+TccqCall(
+  name = character(0),
+  expr = NULL,
+  origin = character(0),
+  kind = character(0),
+  arity = integer(0),
+  argument_names = character(0),
+  attrs = list()
+)
 }
 \arguments{
 \item{name}{Call name.}
@@ -12,6 +20,14 @@ TccqCall(name = character(0), expr = NULL, origin = character(0))
 \item{expr}{Original R call expression.}
 
 \item{origin}{Source of the call observation.}
+
+\item{kind}{Structural call kind.}
+
+\item{arity}{Number of supplied arguments, or \code{NA_integer_}.}
+
+\item{argument_names}{Supplied argument tags.}
+
+\item{attrs}{Structured call attributes.}
 }
 \description{
 R call observed by the frontend

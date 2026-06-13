@@ -12,13 +12,14 @@ TccqOpImpl(
   uses_rapi = logical(0),
   boundary = logical(0),
   pure = logical(0),
+  effect = TccqEffect(),
   supports = function() NULL
 )
 }
 \arguments{
 \item{op}{Operation or function name.}
 
-\item{target}{Implementation target, such as \code{syntax}, \code{r_api}, \code{pure_c},
+\item{target}{Implementation target, such as \code{r_language}, \code{r_api}, \code{pure_c},
 \code{fortran}, \code{mojo}, or \code{cuda}.}
 
 \item{region_kind}{Region kind the implementation can run in, or \code{any}.}
@@ -27,9 +28,11 @@ TccqOpImpl(
 
 \item{uses_rapi}{Whether the implementation touches the R C API.}
 
-\item{boundary}{Whether the implementation is a boundary/fallback.}
+\item{boundary}{Whether the implementation crosses a boundary.}
 
 \item{pure}{Whether the implementation is semantically pure.}
+
+\item{effect}{Effect summary for calls handled by this implementation.}
 
 \item{supports}{Predicate receiving a \code{TccqCall} and \code{TccqOpContext}.}
 }

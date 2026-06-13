@@ -19,6 +19,18 @@ expect_false(tccq_registry_supports(
   tccq_op_context(allow_rapi = FALSE)
 ))
 
+default_registry <- tccq_default_op_registry()
+expect_true(tccq_registry_supports(
+  default_registry,
+  tccq_call("if"),
+  tccq_op_context(target = "r_language")
+))
+expect_false(tccq_registry_supports(
+  default_registry,
+  tccq_call("if"),
+  tccq_op_context(target = "pure_c")
+))
+
 custom_program <- function(x) {
   declare(type(x = double(n)))
   custom_op(x)
@@ -46,3 +58,16 @@ expect_true(any(vapply(
   function(x) identical(x@data$call, "custom_op"),
   logical(1)
 )))
+
+opaque_impl <- tccq_opaque_op_impl()
+opaque_call <- tccq_call("unknown_user_function")
+opaque_registry <- tccq_op_registry_add(tccq_default_op_registry(), opaque_impl)
+
+expect_true(tccq_registry_supports(
+  opaque_registry,
+  opaque_call,
+  tccq_op_context(target = "opaque")
+))
+expect_false(opaque_impl@uses_rapi)
+expect_false(opaque_impl@boundary)
+expect_equal(opaque_impl@target, "opaque")

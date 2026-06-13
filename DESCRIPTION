@@ -11,8 +11,9 @@ Authors@R: c(
   )
 Description: A hard-reset experimental compiler core for a declared subset of R.
     The package now starts from typed schemas, classed diagnostics, explicit
-    compiler contracts, and shape-aware intermediate representations. Backends
-    are intentionally absent until the semantic core is strong enough to lower.
+    compiler contracts, shape-aware intermediate representations, and generic
+    backend planning. Code emission is intentionally absent until the semantic
+    core is strong enough to lower.
 License: GPL (>= 3)
 Depends: R (>= 4.4.0)
 Imports:

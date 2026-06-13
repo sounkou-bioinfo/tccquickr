@@ -4,14 +4,25 @@
 \alias{tccq_compile}
 \title{Compile a declared R function}
 \usage{
-tccq_compile(fn, strict = TRUE)
+tccq_compile(
+  fn,
+  backends = tccq_core_backends(),
+  context = tccq_backend_context(),
+  strict = TRUE
+)
 }
 \arguments{
 \item{fn}{Function to compile.}
 
+\item{backends}{Backend implementation descriptors.}
+
+\item{context}{Backend planning context.}
+
 \item{strict}{If \code{TRUE}, throw the first diagnostic as a classed condition.}
 }
 \description{
-The backend does not exist in the reset. This function exists only to return
-or throw classed diagnostics through the same result path as analysis.
+Compilation currently stops at backend planning. By default it asks the core
+backend suite to account for the same typed program, so C, Fortran,
+graph/device, Rtinycc, and R-call evaluation all report constraints through
+one contract instead of letting one concrete backend shape the IR.
 }

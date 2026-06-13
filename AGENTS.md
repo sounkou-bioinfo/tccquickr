@@ -19,9 +19,9 @@ This repo is responsible for:
 
 - declared-R frontend analysis rooted in `declare(type(...))`
 - S7 schemas for compiler values: dimensions, shapes, types, effects, bindings,
-  IR values, programs, diagnostics, and phase results
+  IR values, programs, diagnostics, backend plans, and phase results
 - `s7contract` interfaces for internal compiler protocols, especially pass
-  execution
+  execution and backend planning
 - classed diagnostics and result values instead of branching on error strings
 - symbolic shape, effect, legality, and pass-pipeline work before backend work
 - compiler-facing tests for schema validity, frontend diagnostics, and contract
@@ -45,6 +45,8 @@ program it is lowering.
 The active architecture is the small typed core:
 
 - `R/aaa-schema.R`: S7 classes and constructors for compiler schemas.
+- `R/zz-backend.R`: generic backend descriptors, bridge plans, safepoints, debug
+  metadata, runtime policies, and backend-planning contracts.
 - `R/conditions.R`: diagnostic/result values and classed compiler conditions.
 - `R/contracts.R`: `s7contract` protocol for compiler passes.
 - `R/frontend.R`: declaration extraction, `codetools`-assisted call discovery,
@@ -62,7 +64,8 @@ The intended growth path is:
 5. Add explicit effects, boundaries, and legality diagnostics.
 6. Add array domains, reducers, matrix operations, and fusion only as typed IR
    concepts.
-7. Add C emission only after the above model is coherent and tested.
+7. Add generic backend planning before target code emission.
+8. Add C emission only after the above model is coherent and tested.
 
 Do not reintroduce the deleted backend stack to get a demo. The demo is the
 semantic core becoming strong enough that a backend is boring.
@@ -117,8 +120,8 @@ That means:
   values before backend design
 - prefer explicit S7 schemas and classed diagnostics over ad hoc lists, strings,
   source-substring checks, or hidden target-side branches
-- treat unsupported R as a structured diagnostic until there is an explicit
-  boundary model
+- treat calls without an implementation as structured diagnostics until there
+  is an explicit operation, effect, or boundary model
 - use `codetools` for R structure inspection where it is enough; do not reach
   for source editing libraries when the task is semantic transformation
 - let `s7contract` express protocol boundaries between compiler passes
@@ -136,6 +139,24 @@ belong in the compiler architecture, not in the emitter.
 For the reset core, keep these rules explicit:
 
 - `declare(type(...))` is the entry point to the accepted subset.
+- R source should be understood through parsed language objects. The C-like
+  surface syntax is notation over calls: assignment is `<-`, indexing is `[`,
+  subset replacement is parsed as assignment over an indexing call and evaluates
+  through `[<-` or another replacement function, operators are calls, blocks
+  are `{`, grouping is `(`, flow control is `if`/`for`/`while`/`repeat`/
+  `break`/`next`, and function definitions are calls that construct closures.
+- The call root does not flatten R's evaluator. Preserve whether a call is a
+  special form, builtin, closure call, replacement evaluation, group generic,
+  method dispatch, promise-forcing site, or lexical-environment dependency as
+  typed facts before backend planning.
+- `TccqCall` is the normal frontend root, not an incidental helper. Every call
+  records its structural kind, arity, argument tags, original expression, and
+  attributes so later passes can attach promise semantics, lexical environment
+  requirements, dispatch rules, effects, domains, implementations, and backend
+  feasibility.
+- An opaque call is still an operation candidate. Do not treat opacity as an
+  R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
+  not the semantic meaning of unknown calls.
 - Type declarations currently model base scalar/storage type plus
   rank/symbolic dimensions. `raw` is an R atomic base type; `buffer` is the
   internal opaque storage-facing base type, not an R vector type.
@@ -157,12 +178,30 @@ For the reset core, keep these rules explicit:
   must fail with structured diagnostics. Keep both minimal probes and composite
   targets; minimal probes isolate one higher-level idea, while programs such as
   logistic-gradient and Viterbi force ideas to compose.
-- Unsupported calls are diagnostics, not implicit fallback.
+- Calls without a current implementation are diagnostics, not implicit fallback
+  and not invalid R. Use `frontend.unimplemented_call` style diagnostics to
+  say what the current registry/context cannot implement.
 - Supported calls are contextual: an operation may be supported by an R C API
   implementation, pure C implementation, Fortran implementation, Mojo
   implementation, CUDA/device implementation, or explicit boundary
   implementation. The frontend asks an operation registry rather than owning
   the support policy.
+- Backend support is generic. Use `TccqBackendSpec`, `TccqBackend`,
+  `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
+  bridge/safepoint/debug metadata. `Rtinycc` is one backend descriptor for a
+  C/TinyCC path; it is not the architecture.
+- Keep several backend families visible while shaping the IR: generic C,
+  Rtinycc/TinyCC C, quickr-style Fortran, anvil-style graph/StableHLO/XLA or
+  device paths, and R call evaluation. Divergence between those families should
+  produce typed capability or legality diagnostics, not target-specific hacks.
+- Backend planning must make representation transitions explicit through
+  `TccqBridgePlan` values. Do not hide `SEXP -> buffer`, `buffer -> SEXP`,
+  host/device transfer, layout conversion, tile materialization, or object-mode
+  boundaries inside emitted strings.
+- Interrupt and debugger support belong in runtime policy, safepoints, and debug
+  sites. Host/R-API regions may use direct R interrupt checks; pure kernel,
+  parallel, and device regions need chunking, polling, or host orchestration
+  safepoints instead.
 - The next acceptable failure point should move deeper through the typed IR,
   not sideways into compatibility glue.
 - Matrix operations, reductions, domains, views, mutation, fusion, and storage

@@ -6,14 +6,162 @@ output: github_document
 
 `tccquickr` is being hard-reset as a typed R transformation core.
 
-The new root is:
+The new root is declared R programs, not source editing. Compiler values are S7
+objects, compiler protocols are expressed with `s7contract` interfaces and
+traits, and failures are classed diagnostics rather than string checks. Shape,
+layout, effects, regions, operation implementations, and fusion candidates are
+modeled before C emission exists. Backend planning is now a typed layer too:
+Rtinycc is represented as one backend descriptor for a C/TinyCC path, not as the
+compiler architecture. Fake backward compatibility is not part of the reset.
 
-- declared R programs, not source editing;
-- S7 schemas for compiler values;
-- `s7contract` interfaces for internal compiler protocols;
-- classed diagnostic values instead of stringly errors;
-- shape-aware analysis before any C emission;
-- no fake backward compatibility while the semantic core is rebuilt.
+## Core model
+
+The compiler state is a typed value graph, not source text. `TccqType` combines
+a base type with a `TccqShape`; the shape carries rank and symbolic dimensions,
+so rank 2 is a matrix and rank N is an array. `TccqLayout` records physical
+order, strides, offset, and contiguity, while `TccqTile` records rectangular
+partition metadata. `TccqLiteral` gives finite values, typed `NA`, `NaN`,
+`Inf`, and `-Inf` their own representation. `TccqValue` is the IR value: it
+names an operation, inputs, type, effects, layout, tile, and attributes.
+`TccqProgram` collects formals, values, regions, result, and diagnostics.
+
+The split is intentional. Shape says what a value means. Layout says how it is
+stored. Tile says how it is partitioned. None of those should be hidden inside
+target-specific code generation.
+
+## Call root
+
+The semantic root is that R programs are language objects made of calls, names,
+constants, promises, and environments. The C-like surface syntax is notation.
+Parsed assignment is a call to `<-`; indexing is a call to `[`, `[[`, or `$`;
+subset replacement is parsed as assignment over an indexing call and evaluates
+through a replacement function such as `[<-`, `[[<-`, `$<-`, or another
+replacement function; arithmetic and logical operators are calls with operator
+names; blocks are calls to `{`; grouping is a call to `(`; flow control is
+represented as calls such as `if`, `for`, `while`, `repeat`, `break`, and
+`next`; function definitions are calls that construct closures.
+
+This call-root view does not erase R's evaluator. Some calls are special forms
+with non-standard promise forcing, some are builtins, some are closures with
+lexical environments, and some dispatch through S3, S4, or S7. The compiler's
+first job is to preserve those distinctions as typed call facts rather than
+falling back to a C-shaped syntax tree. Only after the call has a signature,
+effect, forcing policy, dispatch model, domain, and region can a backend claim
+that it implements the call.
+
+That means `TccqCall` is not a narrow frontend convenience. It is the first
+normal form of the program. A call records its name, structural kind, arity,
+argument tags, source expression, and attributes. Later passes may attach
+signatures, promise-forcing rules, lexical environment requirements, dispatch
+rules, effects, domains, implementations, and backend feasibility. An opaque
+call is still an operation candidate; it is not automatically R call evaluation
+and it is not illegal merely because we do not yet know how to lower it.
+
+## Operations
+
+Function/operator support is contextual. The frontend does not own a fixed
+allowed/not-allowed list. It asks a typed registry. A `TccqOpImpl` describes one
+implementation of an operation, and that implementation must explicitly opt into
+the `TccqOpImplementation` trait. A `TccqOpRegistry` is the visible set of
+implementations, and `TccqOpContext` describes the requested target, region
+kind, memory space, and whether R C API or boundary implementations are allowed.
+
+An operation can be supported by several implementations: R C API evaluation,
+pure C, Fortran, Mojo, CUDA/device code, or an explicit boundary. Those choices
+are different because they have different effects and region constraints.
+
+The operation registry answers implementation questions, not grammar questions.
+If a call has no implementation in the current registry and context, analysis
+returns a classed `frontend.unimplemented_call` diagnostic. That diagnostic says
+what is missing from the compiler model; it does not mean the call is not R.
+
+## Control flow
+
+Control flow has to become structured IR. `for`, `while`, `repeat`, `break`,
+`next`, `switch`, scalar conditionals, vectorized `ifelse`, and idiomatic R
+surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and `Filter` are
+not just more function names to whitelist. They describe regions, exits,
+dominance, carried loop state, effect ordering, reducer legality, allocation,
+and possible boundary regions.
+
+The intended representation is a small set of typed control nodes over the same
+value/effect/domain model. A `for` loop over `1:n`, a `Reduce("+", x)`, and a
+`sum(x)` can all become reduction regions when their reducer implementation,
+identity, missing-value policy, and effects are known. `ifelse` is not ordinary
+branching when it is vectorized; it is a select over a domain with recycling and
+missing-value rules. `switch` is a dispatch boundary until the selector type
+and case set are known. `break` and `next` are structured exits, not hidden
+`goto` strings.
+
+## Regions and bridges
+
+Executable code is grouped into `TccqRegion` values. A region records where code
+may run and what effects are legal. A `host` region is ordinary host
+orchestration. A `kernel` region is an R-API-free scalar or array kernel. A
+`parallel` region is an R-API-free parallel kernel. A `device` region is
+device-side code using device memory.
+
+R C API evaluation is the equivalent of Numba object mode: it should always be
+available as an explicit boundary implementation, but it is a boundary. It
+touches the R API and therefore cannot silently appear inside pure, parallel, or
+device regions.
+
+Bridges are a typed backend-plan layer. They represent transitions such as
+`SEXP -> C buffer`, `C buffer -> SEXP`, `host -> device`, `device -> host`,
+layout conversion, tile materialization, and explicit R call-evaluation
+boundaries.
+These are plan values, not target-side string glue.
+
+## Backend planning
+
+Backends are implementation choices behind a trait. A `TccqBackendSpec`
+describes a backend family, target, driver, supported modes, region kinds,
+memory spaces, capabilities, and a planning function. The compiler calls the
+`TccqBackend` trait and receives a `TccqBackendPlan`, not emitted code. The plan
+contains assigned regions, bridges, safepoints, debug sites, diagnostics,
+capabilities, and backend attributes.
+
+Rtinycc comes for free only in the sense that it is one current driver for C
+source and TinyCC JIT modes. It should not decide the IR. The core backend suite
+also includes a generic C descriptor, a quickr-style Fortran descriptor, an
+anvil-style graph/StableHLO/XLA descriptor, and an R call-evaluation descriptor.
+Those different families pressure the same typed representation from different
+directions, reducing the chance that the IR is secretly reward-hacked for one
+concrete backend.
+
+Runtime concerns are part of backend planning. `TccqRuntimePolicy` says whether
+we are in release, checked, trace, or debug mode; whether interrupts may be
+observed; and how often generated loops or chunks should poll. `TccqSafepoint`
+marks region entries, loop backedges, tile boundaries, reduction chunks,
+boundary calls, and debugger stops. `TccqDebugSite` keeps source and IR
+metadata attached to generated code so debugging is a backend-plan feature, not
+an afterthought in emitted C.
+
+## Fusion
+
+Fusion is a transformation over a typed value graph. It is not a source rewrite
+and not a backend shortcut. `TccqDomain` names the iteration space,
+`TccqAccess` describes how a value maps onto that domain, and
+`TccqFusionGroup` represents a candidate fused group over a domain, values,
+outputs, accesses, target, region kind, and effects.
+
+Simple `f(g(x))` fusion is just one case: a pure single-use producer and pure
+consumer over the same domain with compatible implementations. Map-reduce,
+stencil, tile, and device fusion are extensions of the same domain/access/region
+model.
+
+Fusion stops at explicit barriers: R C API/object-mode calls, unknown effects,
+mutation, incompatible layouts, unmodeled missing-value semantics, illegal
+region effects, or domain mismatches without an explicit broadcast/recycle rule.
+
+## Diagnostics
+
+Failure is a value. Phases return `TccqResult` values and attach
+`TccqDiagnostic` objects. Conditions carry diagnostics as payloads. The goal is
+not to make programs we cannot explain appear to compile; it is to make every
+failure specific enough that the next typed concept to add is obvious.
+
+## Apotheosis suite
 
 The current targets are not hidden package functions. They are explicit
 apotheosis examples: small probes that exercise one compiler idea at a time,
@@ -50,6 +198,25 @@ raw_buffer_roundtrip <- function(bytes, scratch) {
 tiled_stencil_1d <- function(x) {
   declare(type(x = double(n)))
   x[1:(n - 2L)] + x[2:(n - 1L)] + x[3:n]
+}
+
+control_flow_probe <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  out <- 0
+  i <- 1L
+  repeat {
+    if (i > n) {
+      break
+    }
+    out <- out + ifelse(flag, x[i], -x[i])
+    i <- i + 1L
+  }
+  switch(if (flag) "sum" else "neg", sum = out, neg = -out)
+}
+
+apply_reduce_probe <- function(x) {
+  declare(type(x = double(n, p)))
+  Reduce(`+`, lapply(seq_len(p), function(j) sum(x[, j])))
 }
 ```
 
@@ -105,7 +272,7 @@ tccq_analyze(viterbi_decode)
 tccq_compile(viterbi_decode)
 ```
 
-The expected state is structured failure: unsupported operations should be
-reported as classed diagnostics until the frontend, typed IR, region planner,
-operation implementations, bridges, and backend feasibility checks can account
-for them honestly.
+The expected state is structured failure: calls without implementations should
+be reported as classed diagnostics until the frontend, typed IR, region
+planner, operation implementations, bridges, and backend feasibility checks can
+account for them honestly.

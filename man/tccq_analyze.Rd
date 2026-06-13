@@ -23,6 +23,6 @@ supported.}
 }
 \description{
 This is intentionally narrow. It parses \code{declare(type(...))} declarations,
-records a program schema, and reports unsupported operations as classed
-diagnostics. It does not lower or compile yet.
+records a program schema, and reports calls without implementations as
+classed diagnostics. It does not lower or compile yet.
 }

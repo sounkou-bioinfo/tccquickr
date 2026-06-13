@@ -24,7 +24,7 @@ tccq_op_context(
 
 \item{allow_rapi}{Whether implementations touching the R C API are allowed.}
 
-\item{allow_boundary}{Whether boundary/fallback implementations are allowed.}
+\item{allow_boundary}{Whether explicit boundary implementations are allowed.}
 }
 \description{
 Construct an operation support context

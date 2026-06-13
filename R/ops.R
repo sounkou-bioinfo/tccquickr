@@ -1,8 +1,26 @@
+TCCQ_CALL_KINDS <- c(
+  "call",
+  "operator",
+  "assignment",
+  "control",
+  "block",
+  "grouping",
+  "index",
+  "replacement",
+  "function_definition",
+  "unknown"
+)
+TCCQ_ANY_OP <- "<any>"
+
 #' R call observed by the frontend
 #'
 #' @param name Call name.
 #' @param expr Original R call expression.
 #' @param origin Source of the call observation.
+#' @param kind Structural call kind.
+#' @param arity Number of supplied arguments, or `NA_integer_`.
+#' @param argument_names Supplied argument tags.
+#' @param attrs Structured call attributes.
 #' @export
 TccqCall <- S7::new_class(
   "TccqCall",
@@ -10,7 +28,11 @@ TccqCall <- S7::new_class(
   properties = list(
     name = S7::class_character,
     expr = S7::class_any,
-    origin = S7::class_character
+    origin = S7::class_character,
+    kind = S7::class_character,
+    arity = S7::class_integer,
+    argument_names = S7::class_character,
+    attrs = S7::class_list
   )
 )
 
@@ -21,7 +43,7 @@ TccqCall <- S7::new_class(
 #' @param region_kind Requested execution region kind, or `any`.
 #' @param memory_space Requested memory space, or `any`.
 #' @param allow_rapi Whether implementations touching the R C API are allowed.
-#' @param allow_boundary Whether boundary/fallback implementations are allowed.
+#' @param allow_boundary Whether explicit boundary implementations are allowed.
 #' @export
 TccqOpContext <- S7::new_class(
   "TccqOpContext",
@@ -39,13 +61,14 @@ TccqOpContext <- S7::new_class(
 #' Operation implementation descriptor
 #'
 #' @param op Operation or function name.
-#' @param target Implementation target, such as `syntax`, `r_api`, `pure_c`,
+#' @param target Implementation target, such as `r_language`, `r_api`, `pure_c`,
 #'   `fortran`, `mojo`, or `cuda`.
 #' @param region_kind Region kind the implementation can run in, or `any`.
 #' @param memory_space Memory space the implementation expects, or `any`.
 #' @param uses_rapi Whether the implementation touches the R C API.
-#' @param boundary Whether the implementation is a boundary/fallback.
+#' @param boundary Whether the implementation crosses a boundary.
 #' @param pure Whether the implementation is semantically pure.
+#' @param effect Effect summary for calls handled by this implementation.
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
 #' @export
 TccqOpImpl <- S7::new_class(
@@ -59,6 +82,7 @@ TccqOpImpl <- S7::new_class(
     uses_rapi = S7::class_logical,
     boundary = S7::class_logical,
     pure = S7::class_logical,
+    effect = TccqEffect,
     supports = S7::class_function
   )
 )
@@ -124,11 +148,67 @@ tccq_register_traits <- function() {
 #' @param name Call name.
 #' @param expr Original R call expression.
 #' @param origin Source of the call observation.
+#' @param kind Structural call kind.
+#' @param arity Number of supplied arguments, or `NA_integer_`.
+#' @param argument_names Supplied argument tags.
+#' @param attrs Structured call attributes.
 #' @export
-tccq_call <- function(name, expr = NULL, origin = "ast") {
+tccq_call <- function(
+  name,
+  expr = NULL,
+  origin = "ast",
+  kind = NULL,
+  arity = NULL,
+  argument_names = NULL,
+  attrs = list()
+) {
   .tccq_check_character_scalar(name, "name")
   .tccq_check_character_scalar(origin, "origin")
-  TccqCall(name = name, expr = expr, origin = origin)
+  if (is.null(kind)) {
+    kind <- .tccq_infer_call_kind(name)
+  }
+  .tccq_check_character_scalar(kind, "kind")
+  if (!kind %in% TCCQ_CALL_KINDS) {
+    tccq_abort(
+      "schema.invalid_call_kind",
+      "`kind` is not a supported call kind.",
+      phase = "schema",
+      path = "call.kind",
+      data = list(kind = kind, supported = TCCQ_CALL_KINDS)
+    )
+  }
+  if (is.null(arity)) {
+    arity <- if (is.call(expr)) {
+      as.integer(length(expr) - 1L)
+    } else {
+      NA_integer_
+    }
+  } else {
+    arity <- .tccq_check_optional_nonnegative_integer(arity, "arity")
+  }
+  if (is.null(argument_names)) {
+    argument_names <- .tccq_call_argument_names(expr)
+  }
+  if (!is.character(argument_names) || anyNA(argument_names)) {
+    tccq_abort(
+      "schema.invalid_call_argument_names",
+      "`argument_names` must be a character vector.",
+      phase = "schema",
+      path = "call.argument_names",
+      data = list(argument_names = argument_names)
+    )
+  }
+  .tccq_check_list(attrs, "attrs")
+
+  TccqCall(
+    name = name,
+    expr = expr,
+    origin = origin,
+    kind = kind,
+    arity = arity,
+    argument_names = argument_names,
+    attrs = attrs
+  )
 }
 
 #' Construct an operation support context
@@ -138,7 +218,7 @@ tccq_call <- function(name, expr = NULL, origin = "ast") {
 #' @param region_kind Requested execution region kind, or `any`.
 #' @param memory_space Requested memory space, or `any`.
 #' @param allow_rapi Whether implementations touching the R C API are allowed.
-#' @param allow_boundary Whether boundary/fallback implementations are allowed.
+#' @param allow_boundary Whether explicit boundary implementations are allowed.
 #' @export
 tccq_op_context <- function(
   phase = "frontend",
@@ -172,8 +252,9 @@ tccq_op_context <- function(
 #' @param region_kind Region kind the implementation can run in, or `any`.
 #' @param memory_space Memory space the implementation expects, or `any`.
 #' @param uses_rapi Whether the implementation touches the R C API.
-#' @param boundary Whether the implementation is a boundary/fallback.
+#' @param boundary Whether the implementation crosses a boundary.
 #' @param pure Whether the implementation is semantically pure.
+#' @param effect Effect summary for calls handled by this implementation.
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
 #' @export
 tccq_op_impl <- function(
@@ -184,6 +265,7 @@ tccq_op_impl <- function(
   uses_rapi = FALSE,
   boundary = FALSE,
   pure = TRUE,
+  effect = NULL,
   supports = function(call, context) TRUE
 ) {
   .tccq_check_character_scalar(op, "op")
@@ -193,6 +275,16 @@ tccq_op_impl <- function(
   .tccq_check_logical_scalar(uses_rapi, "uses_rapi")
   .tccq_check_logical_scalar(boundary, "boundary")
   .tccq_check_logical_scalar(pure, "pure")
+  if (is.null(effect)) {
+    effect <- tccq_effect(
+      reads = TRUE,
+      writes = !isTRUE(pure),
+      allocates = isTRUE(uses_rapi) || isTRUE(boundary),
+      boundary = boundary,
+      may_error = isTRUE(uses_rapi) || isTRUE(boundary)
+    )
+  }
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
   if (!is.function(supports)) {
     tccq_abort(
       "schema.invalid_op_supports",
@@ -210,6 +302,7 @@ tccq_op_impl <- function(
     uses_rapi = uses_rapi,
     boundary = boundary,
     pure = pure,
+    effect = effect,
     supports = supports
   )
 }
@@ -241,18 +334,54 @@ tccq_op_registry <- function(implementations = list()) {
 
 #' Default operation registry for the reset frontend
 #'
+#' The default registry names the R language call forms that the frontend
+#' recognizes structurally. It is not a source-syntax whitelist and it is not a
+#' backend lowering promise.
+#'
 #' @export
 tccq_default_op_registry <- function() {
-  syntax_ops <- c("{", "(", "<-", "=", "declare", "type", TCCQ_BASE_TYPES)
+  language_ops <- c(
+    "{", "(", "<-", "<<-", "->", "->>", "=",
+    "if", "for", "while", "repeat", "break", "next", "switch", "function",
+    "[", "[[", "$", "@", "[<-", "[[<-", "$<-", "@<-",
+    "declare", "type", TCCQ_BASE_TYPES
+  )
   scalar_ops <- c("+", "-", "*", "/", "^", "sqrt", "exp")
   tccq_op_registry(c(
-    lapply(syntax_ops, function(op) {
-      tccq_op_impl(op, target = "syntax", pure = FALSE)
+    lapply(language_ops, function(op) {
+      tccq_op_impl(op, target = "r_language", pure = FALSE)
     }),
     lapply(scalar_ops, function(op) {
       tccq_op_impl(op, target = "pure_c", region_kind = "kernel")
     })
   ))
+}
+
+#' Opaque operation implementation
+#'
+#' In R, every call is an operation candidate. This descriptor represents calls
+#' whose concrete implementation, purity, and effects have not been refined yet.
+#' It is not R call evaluation; that is only one possible backend implementation
+#' family.
+#'
+#' @export
+tccq_opaque_op_impl <- function() {
+  tccq_op_impl(
+    op = TCCQ_ANY_OP,
+    target = "opaque",
+    region_kind = "any",
+    memory_space = "any",
+    uses_rapi = FALSE,
+    boundary = FALSE,
+    pure = FALSE,
+    effect = tccq_effect(
+      reads = TRUE,
+      writes = TRUE,
+      allocates = TRUE,
+      boundary = FALSE,
+      may_error = TRUE
+    )
+  )
 }
 
 #' Add operation implementations to a registry
@@ -292,13 +421,13 @@ tccq_collect_calls <- function(expr, global_calls = character()) {
   calls
 }
 
-#' Find unsupported calls for an operation registry and context
+#' Find calls without an implementation for a registry and context
 #'
 #' @param calls List of `TccqCall` objects.
 #' @param registry Operation registry.
 #' @param context Operation query context.
 #' @export
-tccq_unsupported_calls <- function(
+tccq_unimplemented_calls <- function(
   calls,
   registry = tccq_default_op_registry(),
   context = tccq_op_context()
@@ -308,14 +437,14 @@ tccq_unsupported_calls <- function(
   .tccq_check_s7(context, TccqOpContext, "TccqOpContext", "context")
 
   names <- unique(vapply(calls, function(call) call@name, character(1)))
-  unsupported <- character()
+  unimplemented <- character()
   for (name in names) {
     call <- calls[[match(name, vapply(calls, function(x) x@name, character(1)))]]
     if (!tccq_registry_supports(registry, call, context)) {
-      unsupported <- c(unsupported, name)
+      unimplemented <- c(unimplemented, name)
     }
   }
-  sort(unsupported)
+  sort(unimplemented)
 }
 
 #' Query whether any registry implementation supports a call
@@ -357,11 +486,66 @@ tccq_call_name <- function(call) {
   if (is.symbol(head)) {
     return(as.character(head))
   }
+  if (is.character(head) && length(head) == 1L && !is.na(head)) {
+    return(head)
+  }
   deparse1(head)
 }
 
+.tccq_call_argument_names <- function(expr) {
+  if (!is.call(expr)) {
+    return(character())
+  }
+  args <- as.list(expr)[-1L]
+  names <- names(args)
+  if (is.null(names)) {
+    return(rep("", length(args)))
+  }
+  names[is.na(names)] <- ""
+  names
+}
+
+.tccq_infer_call_kind <- function(name) {
+  if (identical(name, "{")) {
+    return("block")
+  }
+  if (identical(name, "(")) {
+    return("grouping")
+  }
+  if (name %in% c("if", "for", "while", "repeat", "break", "next", "switch")) {
+    return("control")
+  }
+  if (identical(name, "function")) {
+    return("function_definition")
+  }
+  if (name %in% c("[", "[[", "$", "@")) {
+    return("index")
+  }
+  if (name %in% c("<-", "<<-", "->", "->>", "=")) {
+    return("assignment")
+  }
+  if (
+    grepl("<-$", name) &&
+      !name %in% c("<-", "<<-", "->", "->>")
+  ) {
+    return("replacement")
+  }
+  if (name %in% .tccq_operator_names()) {
+    return("operator")
+  }
+  "call"
+}
+
+.tccq_operator_names <- function() {
+  c(
+    "+", "-", "*", "/", "^", "%%", "%/%", "%*%", "%o%", "%x%", "%in%", "%||%",
+    ":", ">", ">=", "<", "<=", "==", "!=", "!", "&", "&&", "|", "||", "~",
+    "<-", "<<-", "->", "->>", "="
+  )
+}
+
 .tccq_op_impl_supports <- function(impl, call, context) {
-  if (!identical(impl@op, call@name)) {
+  if (!identical(impl@op, TCCQ_ANY_OP) && !identical(impl@op, call@name)) {
     return(FALSE)
   }
   if (!identical(context@target, "any") && !identical(impl@target, context@target)) {

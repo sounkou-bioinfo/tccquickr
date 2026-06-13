@@ -4,7 +4,15 @@
 \alias{tccq_call}
 \title{Construct an observed call}
 \usage{
-tccq_call(name, expr = NULL, origin = "ast")
+tccq_call(
+  name,
+  expr = NULL,
+  origin = "ast",
+  kind = NULL,
+  arity = NULL,
+  argument_names = NULL,
+  attrs = list()
+)
 }
 \arguments{
 \item{name}{Call name.}
@@ -12,6 +20,14 @@ tccq_call(name, expr = NULL, origin = "ast")
 \item{expr}{Original R call expression.}
 
 \item{origin}{Source of the call observation.}
+
+\item{kind}{Structural call kind.}
+
+\item{arity}{Number of supplied arguments, or \code{NA_integer_}.}
+
+\item{argument_names}{Supplied argument tags.}
+
+\item{attrs}{Structured call attributes.}
 }
 \description{
 Construct an observed call

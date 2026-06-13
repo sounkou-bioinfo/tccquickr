@@ -1,8 +1,8 @@
 #' Analyze a declared R function into the fresh program schema
 #'
 #' This is intentionally narrow. It parses `declare(type(...))` declarations,
-#' records a program schema, and reports unsupported operations as classed
-#' diagnostics. It does not lower or compile yet.
+#' records a program schema, and reports calls without implementations as
+#' classed diagnostics. It does not lower or compile yet.
 #'
 #' @param fn Function to analyze.
 #' @param strict If `TRUE`, throw the first diagnostic as a classed condition.
@@ -51,11 +51,11 @@ tccq_analyze <- function(
   }
 
   calls <- tccq_collect_calls(body(fn), global_calls)
-  unsupported <- tccq_unsupported_calls(calls, registry, context)
-  diagnostics <- c(diagnostics, lapply(unsupported, function(call_name) {
+  unimplemented <- tccq_unimplemented_calls(calls, registry, context)
+  diagnostics <- c(diagnostics, lapply(unimplemented, function(call_name) {
     tccq_diagnostic(
-      "frontend.unsupported_call",
-      sprintf("Call `%s` is outside the current declared subset.", call_name),
+      "frontend.unimplemented_call",
+      sprintf("Call `%s` has no implementation in the current registry/context.", call_name),
       phase = "frontend",
       path = "body",
       data = list(call = call_name, global_calls = global_calls)
@@ -77,13 +77,22 @@ tccq_analyze <- function(
 
 #' Compile a declared R function
 #'
-#' The backend does not exist in the reset. This function exists only to return
-#' or throw classed diagnostics through the same result path as analysis.
+#' Compilation currently stops at backend planning. By default it asks the core
+#' backend suite to account for the same typed program, so C, Fortran,
+#' graph/device, Rtinycc, and R-call evaluation all report constraints through
+#' one contract instead of letting one concrete backend shape the IR.
 #'
 #' @param fn Function to compile.
+#' @param backends Backend implementation descriptors.
+#' @param context Backend planning context.
 #' @param strict If `TRUE`, throw the first diagnostic as a classed condition.
 #' @export
-tccq_compile <- function(fn, strict = TRUE) {
+tccq_compile <- function(
+  fn,
+  backends = tccq_core_backends(),
+  context = tccq_backend_context(),
+  strict = TRUE
+) {
   analysis <- tccq_analyze(fn, strict = FALSE)
   if (!analysis@ok) {
     if (isTRUE(strict)) {
@@ -92,16 +101,11 @@ tccq_compile <- function(fn, strict = TRUE) {
     return(analysis)
   }
 
-  diagnostic <- tccq_diagnostic(
-    "compiler.backend_absent",
-    "No backend exists in the hard-reset compiler core yet.",
-    phase = "compiler",
-    path = "backend"
-  )
-  if (isTRUE(strict)) {
-    tccq_abort_diagnostic(diagnostic)
+  plan <- tccq_plan_backends(analysis@value, backends = backends, context = context)
+  if (!plan@ok && isTRUE(strict)) {
+    tccq_abort_diagnostic(plan@diagnostics[[1L]])
   }
-  tccq_result(FALSE, value = analysis@value, diagnostics = list(diagnostic))
+  plan
 }
 
 .tccq_extract_declarations <- function(fn) {
