@@ -1,6 +1,0 @@
-name = "TccqLir"
-version = "0.1.0"
-defaultTargets = ["TccqLir"]
-
-[[lean_lib]]
-name = "TccqLir"

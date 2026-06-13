@@ -32,11 +32,11 @@ dev-install:
 	R CMD INSTALL --preclean .
 
 test1:
-	R -e "tinytest::test_package('$(PKGNAME)', testdir = 'inst/tinytest', ncpus=1L)"
+	R -e "tinytest::test_package('$(PKGNAME)', testdir = 'tinytest', ncpus=1L)"
 test2:
-	R -e "tinytest::test_package('$(PKGNAME)', testdir = 'inst/tinytest', ncpus=2L)"
+	R -e "tinytest::test_package('$(PKGNAME)', testdir = 'tinytest', ncpus=2L)"
 test: install
-	R -e "tinytest::test_package('$(PKGNAME)', testdir = 'inst/tinytest')"
+	R -e "tinytest::test_package('$(PKGNAME)', testdir = 'tinytest')"
 
 rdm:
 	R -e "rmarkdown::render('README.Rmd')"
@@ -44,7 +44,4 @@ rdm:
 docs:
 	Rscript tools/render_docs.R
 
-proofs:
-	cd proofs && lake build
-
-.PHONY: all rd build check install_deps install clean dev-install test1 test2 test rdm docs proofs
+.PHONY: all rd build check install_deps install clean dev-install test1 test2 test rdm docs

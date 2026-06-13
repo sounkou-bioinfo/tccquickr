@@ -8,6 +8,4 @@ docs/**/*.html
 docs/**/*_files/
 tccquickr*tar.gz
 tccquickr.Rcheck/*
-
-# leanknit is its own repository (github.com/sounkou-bioinfo/leanknit)
-leanknit/
+.sync/
