@@ -10,96 +10,179 @@ write R as a r-lib programmer rather than a Python programmer that failed upward
 
 ## Scope
 
-`tccquickr` is the experimental compiler and transformation package built on
-`Rtinycc`.
+`tccquickr` is a hard-reset experimental compiler core for a declared subset of
+R. The current package is not a working R-to-C compiler and should not pretend
+to be one. It is the typed semantic foundation that future lowering and backend
+work must justify itself against.
 
 This repo is responsible for:
 
-- the `tccq_*` compiler path
-- typed frontend parsing and lowering for the declared R subset
-- IR design, validation, middle-end passes, and legality checks
-- C target emission through the R C API
-- compiler-facing tests, examples, and design docs
-- backend-neutral architecture work, with `Rtinycc` used as the current TinyCC
-  runtime/backend layer rather than re-owned here
+- declared-R frontend analysis rooted in `declare(type(...))`
+- S7 schemas for compiler values: dimensions, shapes, types, effects, bindings,
+  IR values, programs, diagnostics, and phase results
+- `s7contract` interfaces for internal compiler protocols, especially pass
+  execution
+- classed diagnostics and result values instead of branching on error strings
+- symbolic shape, effect, legality, and pass-pipeline work before backend work
+- compiler-facing tests for schema validity, frontend diagnostics, and contract
+  behavior
+- the known failing apotheosis suite documented in `README.Rmd`
 
-This repo should depend on `Rtinycc` for TinyCC runtime, FFI compilation, and
-low-level execution support rather than re-implementing that functionality.
+This repo is not currently responsible for:
+
+- C emission
+- TinyCC integration
+- shared-library compilation
+- a JIT cache
+- fake compatibility shims for deleted compiler paths
+- vignettes, ADR sprawl, or proof scaffolding ahead of a stable semantic core
+
+Backends may come back later, but only after the typed core can explain the
+program it is lowering.
 
 ## Current Architecture
 
-Treat `tccq_*` as the only active compiler architecture.
+The active architecture is the small typed core:
 
-The intended split is:
+- `R/aaa-schema.R`: S7 classes and constructors for compiler schemas.
+- `R/conditions.R`: diagnostic/result values and classed compiler conditions.
+- `R/contracts.R`: `s7contract` protocol for compiler passes.
+- `R/frontend.R`: declaration extraction, `codetools`-assisted call discovery,
+  and operation-registry diagnostics.
+- `R/utils.R`: small schema validation helpers.
+- `docs/root.md`: the current root direction.
 
-- frontend: `declare(type(...))` parsing plus typed lowering from R AST to IR
-- middle-end: validation, effects, kernelization, fusion, reducer handling,
-  boundary handling, storage planning, allocation planning, and protection
-  planning
-- target: C + R C API emission
-- backend: source-only output, TinyCC via `Rtinycc`, or shared-library
-  compilation through `R CMD SHLIB`, with room for further C-only backends such
-  as other system-compiler or `callme`-style paths
+The intended growth path is:
 
-Do not introduce parallel replacement paths lightly. New compiler work should
-land in `tccq_*` unless the task is explicitly about a temporary migration or
-compatibility shim.
+1. Parse declarations from a deliberately narrow R subset.
+2. Represent formals, values, effects, diagnostics, and pass outputs as S7
+   objects.
+3. Build a typed program graph with stable value identity.
+4. Add rank and symbolic-shape constraints before lowering operations.
+5. Add explicit effects, boundaries, and legality diagnostics.
+6. Add array domains, reducers, matrix operations, and fusion only as typed IR
+   concepts.
+7. Add C emission only after the above model is coherent and tested.
 
-Prefer one primary target language first: C. If we want more deployment modes,
-add more C backends before inventing extra target IRs.
+Do not reintroduce the deleted backend stack to get a demo. The demo is the
+semantic core becoming strong enough that a backend is boring.
+
+## Typed OOP And Contract Discipline
+
+The project style is functional OOP with explicit typed values, generics,
+interfaces, traits, and gradual runtime contracts. Do not let the codebase
+collapse into a pile of private `.something()` functions that encode the real
+architecture by convention.
+
+Rules:
+
+- Prefer S7 classes for compiler data and S7 generics for compiler behavior.
+- Prefer `s7contract` interfaces for structural protocols between phases and
+  pass-like components.
+- Use explicit traits when an implementation must opt into behavior rather than
+  merely having a compatible method shape.
+- Use gradual interface typing: specify argument and return contracts on
+  protocol requirements as soon as the expected shape is known.
+- Operation/function/kernel support must go through typed implementation
+  declarations. Use `TccqOpImpl`, `TccqOpImplementation`, and
+  `TccqOpRegistry`; do not hardcode local allowed/not-allowed vectors in the
+  frontend.
+- Functions should mostly be constructors, pure transformations, generic
+  methods, protocol runners, or small local helpers in service of one of those.
+- A private helper is acceptable only when it is truly local glue. It is not
+  acceptable for a helper to become the hidden owner of a compiler concept,
+  protocol, type rule, legality rule, or pass contract.
+- If a helper starts needing a name from the compiler vocabulary, promote the
+  concept into an S7 class, S7 generic, `s7contract` interface, explicit trait,
+  or classed diagnostic.
+- Avoid untyped list protocols. Lists may hold collections, but their elements
+  must be checked at constructor or interface boundaries.
+- Avoid stringly dispatch. Stable strings are fine as data fields such as
+  diagnostic codes, operation names, or region kinds; they are not a substitute
+  for typed values and protocols.
+- Mutating S7 objects in place should be exceptional. Prefer functional
+  transformations that return new typed values.
+- Tests should exercise the typed boundary: constructor validation, interface
+  conformance, trait behavior, classed diagnostics, and pass return contracts.
 
 ## Semantic Staging Rule
 
 Keep as much semantic information as possible in the R-level compiler before
-emitting C.
+emitting anything.
 
 That means:
 
-- decide legality, ownership, aliasing, view semantics, mutation barriers, and
-  fallback boundaries in IR or middle-end plans
-- prefer explicit IR nodes and explicit plans over target-side special cases
-- treat emitted C as a target artifact that consumes compiler decisions, not as
-  the place where the compiler first discovers semantics
-- when a choice matters for correctness or optimization, model it in the
-  middle-end rather than hiding it in code generation branches
+- decide legality, shape constraints, type constraints, effects, ownership,
+  aliasing, mutation barriers, reducers, and boundary behavior in typed program
+  values before backend design
+- prefer explicit S7 schemas and classed diagnostics over ad hoc lists, strings,
+  source-substring checks, or hidden target-side branches
+- treat unsupported R as a structured diagnostic until there is an explicit
+  boundary model
+- use `codetools` for R structure inspection where it is enough; do not reach
+  for source editing libraries when the task is semantic transformation
+- let `s7contract` express protocol boundaries between compiler passes
+- introduce proof artifacts only for small, stable pass laws; before that, use
+  executable tests and structured diagnostics
 
 This is the closest useful lesson from SAC / `sac2c` for this repo: the
 compiler knows the array program before it becomes C, so the important
-reasoning should happen before C emission.
+reasoning should happen before C emission. It is also the useful lesson from
+Hermes and Numba: phase boundaries, effects, verification, and type inference
+belong in the compiler architecture, not in the emitter.
 
 ## Current Semantic Commitments
 
-For `tccq`, keep these rules explicit:
+For the reset core, keep these rules explicit:
 
-- `a <- expr` is a local binding, not mutation
-- `x[i]` is an indexed read
-- `x[lo:hi]` is a contiguous slice/view expression
-- `a[i] <- v` and `a[lo:hi] <- v` are mutation barriers
-- direct mutation of formals such as `x[i] <- v` is rejected for now
-- rebinding an already-bound local name is rejected for now
-- comparison and logical vector code should stay explicit in IR rather than
-  being hidden in target-only lowering
-- reducers should go through the reducer registry / fold path rather than
-  adding one-off codegen-only special cases
-- limited `Reduce(FUN, x)` lowering is acceptable only for recognized reducer
-  surfaces within the current subset; do not reason about it as full base-R
-  `Reduce()` semantics yet
-- do not fuse across `store_index`, `store_range`, or explicit boundary nodes
-- unsupported calls only cross into fallback through explicit boundary nodes
-- views may stay borrowed in IR, but writes, boundary crossing, and return paths
-  may force materialization
+- `declare(type(...))` is the entry point to the accepted subset.
+- Type declarations currently model base scalar/storage type plus
+  rank/symbolic dimensions. `raw` is an R atomic base type; `buffer` is the
+  internal opaque storage-facing base type, not an R vector type.
+- Matrix and array structure is represented by `TccqShape` rank and dimensions:
+  rank 2 is a matrix, rank N is an array. Do not introduce separate matrix or
+  array type families unless behavior proves shape rank is insufficient.
+- Physical representation is separate from semantic type. Use `TccqLayout` for
+  order/strides/contiguity and `TccqTile` for rectangular partition metadata.
+- Scalar special values use `TccqLiteral`, with distinct representations for
+  finite values, typed `NA`, `NaN`, `Inf`, and `-Inf`.
+- Code sections use `TccqRegion`. `kernel`, `parallel`, and `device` regions
+  must not touch the R C API or contain boundary effects; `device` regions must
+  declare device memory space.
+- Compiler internals are typed with S7 classes, not loose stringly lists.
+- Errors are classed conditions carrying `TccqDiagnostic` values.
+- Phase APIs return `TccqResult` or typed program values; they do not smuggle
+  failure through messages.
+- The apotheosis examples in `README.Rmd` are expected to fail today, but they
+  must fail with structured diagnostics. Keep both minimal probes and composite
+  targets; minimal probes isolate one higher-level idea, while programs such as
+  logistic-gradient and Viterbi force ideas to compose.
+- Unsupported calls are diagnostics, not implicit fallback.
+- Supported calls are contextual: an operation may be supported by an R C API
+  implementation, pure C implementation, Fortran implementation, Mojo
+  implementation, CUDA/device implementation, or explicit boundary
+  implementation. The frontend asks an operation registry rather than owning
+  the support policy.
+- The next acceptable failure point should move deeper through the typed IR,
+  not sideways into compatibility glue.
+- Matrix operations, reductions, domains, views, mutation, fusion, and storage
+  planning must first appear as typed IR concepts.
+- No backend should be added until the typed IR can represent the apotheosis
+  suite honestly.
 
 ## Docs And Tests Rules
 
 - Never manually write `.Rd` files.
 - Generate `.Rd` files from source documentation using `roxygen2`.
 - `README.Rmd` is the source for `README.md`.
-- Keep docs aligned with the current `tccq_*` architecture.
+- Keep docs aligned with the current typed-core architecture.
 - Remove stale references to deleted legacy paths or transitional naming.
-- Prefer semantic/runtime tests and structured IR/plan checks over brittle
-  source-substring assertions.
-- When adding language coverage, extend the generated/differential validation
-  suite so compiled behavior is compared against direct R evaluation over many
-  programmatically constructed cases.
-- Treat corpus growth as part of the architecture work: generated tests come
-  first, and harvested real-world/base-R-style cases can be added on top.
+- Prefer schema, diagnostic, pass-contract, and structured IR checks over
+  brittle source-substring assertions.
+- Run `make test1` for fast test feedback.
+- Run `R CMD check --no-manual` before committing broad package changes.
+- Keep `README.md` rendered from `README.Rmd` when the README changes.
+- Keep `.sync/` ignored. It is a local research cache for Hermes, Numba,
+  quickr, anvl, Simple, and s7contract, not package source.
+- Do not add vignettes or broad docs until the semantic core has more than one
+  real layer to explain.

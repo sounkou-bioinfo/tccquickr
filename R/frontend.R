@@ -6,8 +6,16 @@
 #'
 #' @param fn Function to analyze.
 #' @param strict If `TRUE`, throw the first diagnostic as a classed condition.
+#' @param registry Operation registry used to decide whether calls are
+#'   supported.
+#' @param context Operation support context.
 #' @export
-tccq_analyze <- function(fn, strict = FALSE) {
+tccq_analyze <- function(
+  fn,
+  strict = FALSE,
+  registry = tccq_default_op_registry(),
+  context = tccq_op_context()
+) {
   if (!is.function(fn)) {
     diagnostic <- tccq_diagnostic(
       "frontend.not_function",
@@ -42,7 +50,8 @@ tccq_analyze <- function(fn, strict = FALSE) {
     }))
   }
 
-  unsupported <- .tccq_find_unsupported_calls(body(fn), global_calls)
+  calls <- tccq_collect_calls(body(fn), global_calls)
+  unsupported <- tccq_unsupported_calls(calls, registry, context)
   diagnostics <- c(diagnostics, lapply(unsupported, function(call_name) {
     tccq_diagnostic(
       "frontend.unsupported_call",
@@ -93,36 +102,6 @@ tccq_compile <- function(fn, strict = TRUE) {
     tccq_abort_diagnostic(diagnostic)
   }
   tccq_result(FALSE, value = analysis@value, diagnostics = list(diagnostic))
-}
-
-#' A known failing target program for the rebuilt compiler
-#'
-#' The goal is for this statistical kernel to eventually pass through the full
-#' declared-R pipeline: symbolic shapes, matrix normalization, logistic map,
-#' reductions, matrix-vector multiply, and gradient construction. It currently
-#' fails by design and gives us a concrete north star.
-#'
-#' @export
-tccq_apotheosis_kernel <- function() {
-  src <- "
-    function(x, y, w, lambda) {
-      declare(type(
-        x = double(n, p),
-        y = double(n),
-        w = double(p),
-        lambda = double()
-      ))
-
-      mu <- colMeans(x)
-      sigma <- sqrt(colSums((x - mu)^2) / (n - 1L))
-      z <- (x - mu) / sigma
-      eta <- z %*% w
-      prob <- 1 / (1 + exp(-eta))
-      grad <- crossprod(z, prob - y) / n + lambda * w
-      w - 0.01 * grad
-    }
-  "
-  eval(parse(text = src, keep.source = FALSE)[[1L]], envir = baseenv())
 }
 
 .tccq_extract_declarations <- function(fn) {
@@ -180,9 +159,9 @@ tccq_apotheosis_kernel <- function() {
     if (!is.call(node)) {
       return(NULL)
     }
-    if (identical(.tccq_call_name(node), "declare") && length(node) >= 2L) {
+    if (identical(tccq_call_name(node), "declare") && length(node) >= 2L) {
       candidate <- node[[2L]]
-      if (is.call(candidate) && identical(.tccq_call_name(candidate), "type")) {
+      if (is.call(candidate) && identical(tccq_call_name(candidate), "type")) {
         found <<- candidate
         return(NULL)
       }
@@ -207,7 +186,7 @@ tccq_apotheosis_kernel <- function() {
     )
   }
 
-  base <- .tccq_call_name(expr)
+  base <- tccq_call_name(expr)
   dims <- lapply(as.list(expr)[-1L], .tccq_dim_from_expr)
   tccq_type(base, tccq_shape(dims))
 }
@@ -226,36 +205,6 @@ tccq_apotheosis_kernel <- function() {
     path = "declare.dimension",
     data = list(expr = deparse1(expr))
   )
-}
-
-.tccq_find_unsupported_calls <- function(expr, global_calls = character()) {
-  calls <- character()
-  walk <- function(node) {
-    if (!is.call(node)) {
-      return(NULL)
-    }
-    calls <<- c(calls, .tccq_call_name(node))
-    for (child in as.list(node)[-1L]) {
-      walk(child)
-    }
-    NULL
-  }
-  walk(expr)
-  calls <- c(calls, global_calls)
-  allowed <- c(
-    "{", "(", "<-", "=", "declare", "type",
-    "logical", "integer", "double", "complex", "character",
-    "+", "-", "*", "/", "^", "sqrt", "exp"
-  )
-  sort(setdiff(unique(calls), allowed))
-}
-
-.tccq_call_name <- function(call) {
-  head <- call[[1L]]
-  if (is.symbol(head)) {
-    return(as.character(head))
-  }
-  deparse1(head)
 }
 
 .tccq_function_name <- function(fn) {

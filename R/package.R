@@ -8,5 +8,6 @@
 "_PACKAGE"
 
 .onLoad <- function(...) {
+  tccq_register_traits()
   S7::methods_register()
 }

@@ -8,6 +8,7 @@ tccq_program(
   name,
   formals,
   values = list(),
+  regions = list(),
   result = NULL,
   diagnostics = list()
 )
@@ -18,6 +19,8 @@ tccq_program(
 \item{formals}{Named list of formal bindings.}
 
 \item{values}{List of IR values.}
+
+\item{regions}{List of executable code regions.}
 
 \item{result}{Result value id or object.}
 

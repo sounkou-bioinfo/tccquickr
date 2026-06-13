@@ -4,12 +4,22 @@
 \alias{tccq_analyze}
 \title{Analyze a declared R function into the fresh program schema}
 \usage{
-tccq_analyze(fn, strict = FALSE)
+tccq_analyze(
+  fn,
+  strict = FALSE,
+  registry = tccq_default_op_registry(),
+  context = tccq_op_context()
+)
 }
 \arguments{
 \item{fn}{Function to analyze.}
 
 \item{strict}{If \code{TRUE}, throw the first diagnostic as a classed condition.}
+
+\item{registry}{Operation registry used to decide whether calls are
+supported.}
+
+\item{context}{Operation support context.}
 }
 \description{
 This is intentionally narrow. It parses \code{declare(type(...))} declarations,

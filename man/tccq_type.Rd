@@ -7,7 +7,7 @@
 tccq_type(base, shape = tccq_shape())
 }
 \arguments{
-\item{base}{Scalar base type.}
+\item{base}{Scalar or storage base type.}
 
 \item{shape}{Shape value.}
 }
