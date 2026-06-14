@@ -439,11 +439,55 @@ tccq_call <- function(
   argument_names = NULL,
   attrs = list()
 ) {
+  infer_kind <- function(call_name) {
+    if (identical(call_name, "{")) {
+      return("block")
+    }
+    if (identical(call_name, "(")) {
+      return("grouping")
+    }
+    if (call_name %in% c("if", "for", "while", "repeat", "break", "next", "switch")) {
+      return("control")
+    }
+    if (identical(call_name, "function")) {
+      return("function_definition")
+    }
+    if (call_name %in% c("[", "[[", "$", "@")) {
+      return("index")
+    }
+    if (call_name %in% c("<-", "<<-", "->", "->>", "=")) {
+      return("assignment")
+    }
+    if (
+      grepl("<-$", call_name) &&
+        !call_name %in% c("<-", "<<-", "->", "->>")
+    ) {
+      return("replacement")
+    }
+    if (call_name %in% TCCQ_OPERATOR_CALL_NAMES) {
+      return("operator")
+    }
+    "call"
+  }
+
+  argument_names_from_expr <- function(call_expr) {
+    if (!is.call(call_expr)) {
+      return(character())
+    }
+    args <- as.list(call_expr)[-1L]
+    names <- names(args)
+    if (is.null(names)) {
+      return(rep("", length(args)))
+    }
+    names[is.na(names)] <- ""
+    names
+  }
+
   .tccq_check_character_scalar(name, "name")
   .tccq_check_character_scalar(origin, "origin")
   .tccq_check_character_or_empty(id, "id")
   if (is.null(kind)) {
-    kind <- .tccq_infer_call_kind(name)
+    kind <- infer_kind(name)
   }
   .tccq_check_character_scalar(kind, "kind")
   if (!kind %in% TCCQ_CALL_KINDS) {
@@ -465,7 +509,7 @@ tccq_call <- function(
     arity <- .tccq_check_optional_nonnegative_integer(arity, "arity")
   }
   if (is.null(argument_names)) {
-    argument_names <- .tccq_call_argument_names(expr)
+    argument_names <- argument_names_from_expr(expr)
   }
   if (!is.character(argument_names) || anyNA(argument_names)) {
     tccq_abort(
@@ -523,7 +567,105 @@ tccq_call_semantics <- function(
       data = list(actual = typeof(env))
     )
   }
-  facts <- .tccq_infer_call_semantics(call, env)
+
+  function_from_env <- function(call_name) {
+    if (call_name %in% c("declare", "type")) {
+      return(NULL)
+    }
+    get0(call_name, envir = env, mode = "function", inherits = TRUE)
+  }
+
+  body_uses_call <- function(expr, call_name) {
+    found <- FALSE
+    walk <- function(node) {
+      if (found || !is.call(node)) {
+        return(NULL)
+      }
+      if (identical(tccq_call_name(node), call_name)) {
+        found <<- TRUE
+        return(NULL)
+      }
+      for (child in as.list(node)[-1L]) {
+        walk(child)
+      }
+      NULL
+    }
+    walk(expr)
+    found
+  }
+
+  evaluator_kind_from_function <- function(function_object) {
+    if (call@name %in% c("declare", "type")) {
+      return("compiler_directive")
+    }
+    if (is.function(function_object)) {
+      kind <- typeof(function_object)
+      if (kind %in% c("special", "builtin", "closure")) {
+        return(kind)
+      }
+    }
+    "unknown"
+  }
+
+  forcing_policy_from_evaluator <- function(inferred_evaluator_kind) {
+    if (identical(call@kind, "replacement")) {
+      return("replacement")
+    }
+    switch(
+      inferred_evaluator_kind,
+      compiler_directive = "compiler",
+      special = "special",
+      builtin = "eager",
+      closure = "lazy",
+      unknown = "unknown",
+      "unknown"
+    )
+  }
+
+  dispatch_kind_from_function <- function(function_object, inferred_evaluator_kind) {
+    if (identical(call@kind, "replacement")) {
+      return("replacement")
+    }
+    if (call@name %in% c("UseMethod", "NextMethod")) {
+      return("s3")
+    }
+    if (call@name %in% c(
+      TCCQ_OPS_GROUP_CALL_NAMES,
+      TCCQ_MATH_GROUP_CALL_NAMES,
+      TCCQ_SUMMARY_GROUP_CALL_NAMES
+    )) {
+      return("group_generic")
+    }
+    if (call@name %in% TCCQ_S3_PRIMITIVE_GENERIC_NAMES) {
+      return("s3_primitive")
+    }
+    if (
+      identical(inferred_evaluator_kind, "closure") &&
+        body_uses_call(body(function_object), "UseMethod")
+    ) {
+      return("s3")
+    }
+    if (identical(inferred_evaluator_kind, "unknown")) {
+      return("unknown")
+    }
+    "none"
+  }
+
+  function_object <- function_from_env(call@name)
+  inferred_evaluator_kind <- evaluator_kind_from_function(function_object)
+  facts <- list(
+    evaluator_kind = inferred_evaluator_kind,
+    forcing_policy = forcing_policy_from_evaluator(inferred_evaluator_kind),
+    dispatch_kind = dispatch_kind_from_function(function_object, inferred_evaluator_kind),
+    lexical_scope = identical(inferred_evaluator_kind, "closure") ||
+      identical(call@kind, "function_definition"),
+    replacement = identical(call@kind, "replacement"),
+    control = identical(call@kind, "control"),
+    attrs = list(
+      resolved = !is.null(function_object),
+      primitive = is.function(function_object) && is.primitive(function_object)
+    )
+  )
   evaluator_kind <- evaluator_kind %||% facts$evaluator_kind
   forcing_policy <- forcing_policy %||% facts$forcing_policy
   dispatch_kind <- dispatch_kind %||% facts$dispatch_kind
@@ -611,12 +753,51 @@ tccq_call_index <- function(
   attrs = list()
 ) {
   .tccq_check_list_of(calls, TccqCall, "TccqCall", "calls")
-  calls <- .tccq_ensure_call_ids(calls)
+
+  call_with_id <- function(call, id) {
+    tccq_call(
+      call@name,
+      expr = call@expr,
+      origin = call@origin,
+      id = id,
+      kind = call@kind,
+      arity = call@arity,
+      argument_names = call@argument_names,
+      attrs = call@attrs
+    )
+  }
+
+  call_ids <- vapply(calls, function(call) call@id, character(1))
+  if (any(!nzchar(call_ids)) || anyDuplicated(call_ids)) {
+    calls <- lapply(seq_along(calls), function(i) {
+      call_with_id(calls[[i]], sprintf("call_%04d", i))
+    })
+  }
+
   if (is.null(semantics)) {
     semantics <- tccq_collect_call_semantics(calls, env = env)
   }
   .tccq_check_list_of(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
-  .tccq_check_call_index_alignment(calls, semantics)
+  call_ids <- vapply(calls, function(call) call@id, character(1))
+  if (any(!nzchar(call_ids)) || anyDuplicated(call_ids)) {
+    tccq_abort(
+      "schema.invalid_call_index_ids",
+      "Call index ids must be non-empty and unique.",
+      phase = "schema",
+      path = "call_index.calls",
+      data = list(ids = call_ids)
+    )
+  }
+  semantic_ids <- vapply(semantics, function(x) x@call@id, character(1))
+  if (!identical(call_ids, semantic_ids)) {
+    tccq_abort(
+      "schema.call_index_mismatch",
+      "Call semantics must align one-to-one with calls by id.",
+      phase = "schema",
+      path = "call_index.semantics",
+      data = list(calls = call_ids, semantics = semantic_ids)
+    )
+  }
   .tccq_check_list(attrs, "attrs")
 
   TccqCallIndex(calls = calls, semantics = semantics, attrs = attrs)
@@ -1044,197 +1225,6 @@ tccq_call_name <- function(call) {
     return(head)
   }
   deparse1(head)
-}
-
-.tccq_call_argument_names <- function(expr) {
-  if (!is.call(expr)) {
-    return(character())
-  }
-  args <- as.list(expr)[-1L]
-  names <- names(args)
-  if (is.null(names)) {
-    return(rep("", length(args)))
-  }
-  names[is.na(names)] <- ""
-  names
-}
-
-.tccq_ensure_call_ids <- function(calls) {
-  ids <- vapply(calls, function(call) call@id, character(1))
-  if (all(nzchar(ids)) && !anyDuplicated(ids)) {
-    return(calls)
-  }
-  lapply(seq_along(calls), function(i) {
-    .tccq_call_with_id(calls[[i]], sprintf("call_%04d", i))
-  })
-}
-
-.tccq_call_with_id <- function(call, id) {
-  tccq_call(
-    call@name,
-    expr = call@expr,
-    origin = call@origin,
-    id = id,
-    kind = call@kind,
-    arity = call@arity,
-    argument_names = call@argument_names,
-    attrs = call@attrs
-  )
-}
-
-.tccq_check_call_index_alignment <- function(calls, semantics) {
-  call_ids <- vapply(calls, function(call) call@id, character(1))
-  if (any(!nzchar(call_ids)) || anyDuplicated(call_ids)) {
-    tccq_abort(
-      "schema.invalid_call_index_ids",
-      "Call index ids must be non-empty and unique.",
-      phase = "schema",
-      path = "call_index.calls",
-      data = list(ids = call_ids)
-    )
-  }
-  semantic_ids <- vapply(semantics, function(x) x@call@id, character(1))
-  if (!identical(call_ids, semantic_ids)) {
-    tccq_abort(
-      "schema.call_index_mismatch",
-      "Call semantics must align one-to-one with calls by id.",
-      phase = "schema",
-      path = "call_index.semantics",
-      data = list(calls = call_ids, semantics = semantic_ids)
-    )
-  }
-  invisible(TRUE)
-}
-
-.tccq_infer_call_kind <- function(name) {
-  if (identical(name, "{")) {
-    return("block")
-  }
-  if (identical(name, "(")) {
-    return("grouping")
-  }
-  if (name %in% c("if", "for", "while", "repeat", "break", "next", "switch")) {
-    return("control")
-  }
-  if (identical(name, "function")) {
-    return("function_definition")
-  }
-  if (name %in% c("[", "[[", "$", "@")) {
-    return("index")
-  }
-  if (name %in% c("<-", "<<-", "->", "->>", "=")) {
-    return("assignment")
-  }
-  if (
-    grepl("<-$", name) &&
-      !name %in% c("<-", "<<-", "->", "->>")
-  ) {
-    return("replacement")
-  }
-  if (name %in% TCCQ_OPERATOR_CALL_NAMES) {
-    return("operator")
-  }
-  "call"
-}
-
-.tccq_infer_call_semantics <- function(call, env) {
-  fn <- .tccq_resolve_call_function(call@name, env)
-  evaluator_kind <- .tccq_infer_evaluator_kind(call, fn)
-  forcing_policy <- .tccq_infer_forcing_policy(call, evaluator_kind)
-  dispatch_kind <- .tccq_infer_dispatch_kind(call, fn, evaluator_kind)
-  list(
-    evaluator_kind = evaluator_kind,
-    forcing_policy = forcing_policy,
-    dispatch_kind = dispatch_kind,
-    lexical_scope = identical(evaluator_kind, "closure") ||
-      identical(call@kind, "function_definition"),
-    replacement = identical(call@kind, "replacement"),
-    control = identical(call@kind, "control"),
-    attrs = list(
-      resolved = !is.null(fn),
-      primitive = is.function(fn) && is.primitive(fn)
-    )
-  )
-}
-
-.tccq_resolve_call_function <- function(name, env) {
-  if (name %in% c("declare", "type")) {
-    return(NULL)
-  }
-  get0(name, envir = env, mode = "function", inherits = TRUE)
-}
-
-.tccq_infer_evaluator_kind <- function(call, fn) {
-  if (call@name %in% c("declare", "type")) {
-    return("compiler_directive")
-  }
-  if (is.function(fn)) {
-    kind <- typeof(fn)
-    if (kind %in% c("special", "builtin", "closure")) {
-      return(kind)
-    }
-  }
-  "unknown"
-}
-
-.tccq_infer_forcing_policy <- function(call, evaluator_kind) {
-  if (identical(call@kind, "replacement")) {
-    return("replacement")
-  }
-  switch(
-    evaluator_kind,
-    compiler_directive = "compiler",
-    special = "special",
-    builtin = "eager",
-    closure = "lazy",
-    unknown = "unknown",
-    "unknown"
-  )
-}
-
-.tccq_infer_dispatch_kind <- function(call, fn, evaluator_kind) {
-  if (identical(call@kind, "replacement")) {
-    return("replacement")
-  }
-  if (call@name %in% c("UseMethod", "NextMethod")) {
-    return("s3")
-  }
-  if (call@name %in% c(
-    TCCQ_OPS_GROUP_CALL_NAMES,
-    TCCQ_MATH_GROUP_CALL_NAMES,
-    TCCQ_SUMMARY_GROUP_CALL_NAMES
-  )) {
-    return("group_generic")
-  }
-  if (call@name %in% TCCQ_S3_PRIMITIVE_GENERIC_NAMES) {
-    return("s3_primitive")
-  }
-  if (identical(evaluator_kind, "closure") && .tccq_body_uses_call(body(fn), "UseMethod")) {
-    return("s3")
-  }
-  if (identical(evaluator_kind, "unknown")) {
-    return("unknown")
-  }
-  "none"
-}
-
-.tccq_body_uses_call <- function(expr, name) {
-  found <- FALSE
-  walk <- function(node) {
-    if (found || !is.call(node)) {
-      return(NULL)
-    }
-    if (identical(tccq_call_name(node), name)) {
-      found <<- TRUE
-      return(NULL)
-    }
-    for (child in as.list(node)[-1L]) {
-      walk(child)
-    }
-    NULL
-  }
-  walk(expr)
-  found
 }
 
 .tccq_check_region_query_kind <- function(kind, arg) {

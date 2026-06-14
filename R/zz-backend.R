@@ -576,12 +576,84 @@ TccqBackend <- s7contract::new_trait(
 )
 
 tccq_register_backend_traits <- function() {
+  empty_backend_plan <- function(backend, context, diagnostics = list()) {
+    tccq_backend_plan(
+      id = sprintf("%s.%s.plan", backend@id, context@mode),
+      backend_id = backend@id,
+      family = backend@family,
+      mode = context@mode,
+      target = if (identical(context@target, "any")) backend@target else context@target,
+      capabilities = backend@capabilities,
+      diagnostics = diagnostics,
+      attrs = list(
+        driver = backend@driver,
+        runtime = context@runtime
+      )
+    )
+  }
+
+  backend_context_diagnostic <- function(backend, context) {
+    if (!context@mode %in% backend@modes) {
+      return(tccq_diagnostic(
+        "backend.unsupported_mode",
+        "Backend does not support the requested mode.",
+        phase = "backend",
+        path = "backend_context.mode",
+        data = list(
+          backend = backend@id,
+          requested = context@mode,
+          supported = backend@modes
+        )
+      ))
+    }
+
+    if (!identical(context@target, "any") && !identical(context@target, backend@target)) {
+      return(tccq_diagnostic(
+        "backend.unsupported_target",
+        "Backend does not support the requested target.",
+        phase = "backend",
+        path = "backend_context.target",
+        data = list(
+          backend = backend@id,
+          requested = context@target,
+          supported = backend@target
+        )
+      ))
+    }
+
+    missing_capabilities <- setdiff(context@required_capabilities, backend@capabilities)
+    if (length(missing_capabilities) > 0L) {
+      return(tccq_diagnostic(
+        "backend.missing_capability",
+        "Backend does not expose all requested capabilities.",
+        phase = "backend",
+        path = "backend_context.required_capabilities",
+        data = list(
+          backend = backend@id,
+          requested = context@required_capabilities,
+          missing = missing_capabilities,
+          supported = backend@capabilities
+        )
+      ))
+    }
+
+    NULL
+  }
+
   s7contract::impl_trait(
     TccqBackend,
     TccqBackendSpec,
     methods = list(
       prepare = function(backend, program, context) {
-        .tccq_backend_spec_prepare(backend, program, context)
+        context_diagnostic <- backend_context_diagnostic(backend, context)
+        if (!is.null(context_diagnostic)) {
+          plan <- empty_backend_plan(backend, context, diagnostics = list(context_diagnostic))
+          return(tccq_result(success = FALSE, value = plan, diagnostics = list(context_diagnostic)))
+        }
+
+        result <- backend@prepare(backend, program, context)
+        .tccq_check_s7(result, TccqResult, "TccqResult", "backend result")
+        result
       }
     ),
     replace = TRUE
@@ -957,7 +1029,7 @@ tccq_backend_spec <- function(
   capabilities,
   uses_rapi,
   attrs = list(),
-  prepare = .tccq_backend_lowering_absent
+  prepare = NULL
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_character_scalar(family, "family")
@@ -978,6 +1050,39 @@ tccq_backend_spec <- function(
   .tccq_check_character_set(capabilities, TCCQ_BACKEND_CAPABILITIES, "capabilities")
   .tccq_check_logical_scalar(uses_rapi, "uses_rapi")
   .tccq_check_list(attrs, "attrs")
+  if (is.null(prepare)) {
+    prepare <- function(backend, program, context) {
+      diagnostic <- tccq_diagnostic(
+        "backend.lowering_absent",
+        "Backend planning is typed, but lowering is not implemented for this program yet.",
+        phase = "backend",
+        path = sprintf("backend.%s", backend@id),
+        data = list(
+          backend = backend@id,
+          family = backend@family,
+          driver = backend@driver,
+          target = backend@target,
+          mode = context@mode,
+          capabilities = backend@capabilities,
+          program = program@name
+        )
+      )
+      plan <- tccq_backend_plan(
+        id = sprintf("%s.%s.plan", backend@id, context@mode),
+        backend_id = backend@id,
+        family = backend@family,
+        mode = context@mode,
+        target = if (identical(context@target, "any")) backend@target else context@target,
+        capabilities = backend@capabilities,
+        diagnostics = list(diagnostic),
+        attrs = list(
+          driver = backend@driver,
+          runtime = context@runtime
+        )
+      )
+      tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic))
+    }
+  }
   if (!is.function(prepare)) {
     tccq_abort(
       "schema.invalid_backend_prepare",
@@ -1278,6 +1383,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       program@values[[program@result]]
     }
 
+    diagnostic_plan <- function(diagnostics) {
+      tccq_backend_plan(
+        id = sprintf("%s.%s.plan", backend@id, context@mode),
+        backend_id = backend@id,
+        family = backend@family,
+        mode = context@mode,
+        target = if (identical(context@target, "any")) backend@target else context@target,
+        capabilities = backend@capabilities,
+        diagnostics = diagnostics,
+        attrs = list(driver = backend@driver, runtime = context@runtime)
+      )
+    }
+
     validate_lowered_program <- function(result, formals) {
       if (is.null(result) || length(program@regions) == 0L) {
         return(tccq_diagnostic(
@@ -1563,12 +1681,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     formals <- formal_values()
     lowered_diagnostic <- validate_lowered_program(result, formals)
     if (!is.null(lowered_diagnostic)) {
-      plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(lowered_diagnostic))
+      plan <- diagnostic_plan(list(lowered_diagnostic))
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(lowered_diagnostic)))
     }
     source_expression_result <- tccq_expression_tree(program)
     if (!source_expression_result@success) {
-      plan <- .tccq_backend_empty_plan(backend, context, diagnostics = source_expression_result@diagnostics)
+      plan <- diagnostic_plan(source_expression_result@diagnostics)
       return(tccq_result(
         success = FALSE,
         value = plan,
@@ -1595,7 +1713,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     )
     if (inherits(source_result, "tccq_error")) {
       diagnostic <- tccq_condition_diagnostic(source_result)
-      plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(diagnostic))
+      plan <- diagnostic_plan(list(diagnostic))
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
     }
     source <- source_result
@@ -1646,117 +1764,4 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     }
     tccq_result(success = TRUE, value = plan, diagnostics = list())
   }
-}
-
-.tccq_backend_spec_prepare <- function(backend, program, context) {
-  mode_diagnostic <- .tccq_backend_mode_diagnostic(backend, context)
-  if (!is.null(mode_diagnostic)) {
-    plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(mode_diagnostic))
-    return(tccq_result(success = FALSE, value = plan, diagnostics = list(mode_diagnostic)))
-  }
-
-  target_diagnostic <- .tccq_backend_target_diagnostic(backend, context)
-  if (!is.null(target_diagnostic)) {
-    plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(target_diagnostic))
-    return(tccq_result(success = FALSE, value = plan, diagnostics = list(target_diagnostic)))
-  }
-
-  capability_diagnostic <- .tccq_backend_capability_diagnostic(backend, context)
-  if (!is.null(capability_diagnostic)) {
-    plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(capability_diagnostic))
-    return(tccq_result(success = FALSE, value = plan, diagnostics = list(capability_diagnostic)))
-  }
-
-  result <- backend@prepare(backend, program, context)
-  .tccq_check_s7(result, TccqResult, "TccqResult", "backend result")
-  result
-}
-
-.tccq_backend_lowering_absent <- function(backend, program, context) {
-  diagnostic <- tccq_diagnostic(
-    "backend.lowering_absent",
-    "Backend planning is typed, but lowering is not implemented for this program yet.",
-    phase = "backend",
-    path = sprintf("backend.%s", backend@id),
-    data = list(
-      backend = backend@id,
-      family = backend@family,
-      driver = backend@driver,
-      target = backend@target,
-      mode = context@mode,
-      capabilities = backend@capabilities,
-      program = program@name
-    )
-  )
-  plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(diagnostic))
-  tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic))
-}
-
-.tccq_backend_empty_plan <- function(backend, context, diagnostics = list()) {
-  tccq_backend_plan(
-    id = sprintf("%s.%s.plan", backend@id, context@mode),
-    backend_id = backend@id,
-    family = backend@family,
-    mode = context@mode,
-    target = if (identical(context@target, "any")) backend@target else context@target,
-    capabilities = backend@capabilities,
-    diagnostics = diagnostics,
-    attrs = list(
-      driver = backend@driver,
-      runtime = context@runtime
-    )
-  )
-}
-
-.tccq_backend_capability_diagnostic <- function(backend, context) {
-  missing <- setdiff(context@required_capabilities, backend@capabilities)
-  if (length(missing) == 0L) {
-    return(NULL)
-  }
-  tccq_diagnostic(
-    "backend.missing_capability",
-    "Backend does not expose all requested capabilities.",
-    phase = "backend",
-    path = "backend_context.required_capabilities",
-    data = list(
-      backend = backend@id,
-      requested = context@required_capabilities,
-      missing = missing,
-      supported = backend@capabilities
-    )
-  )
-}
-
-.tccq_backend_mode_diagnostic <- function(backend, context) {
-  if (context@mode %in% backend@modes) {
-    return(NULL)
-  }
-  tccq_diagnostic(
-    "backend.unsupported_mode",
-    "Backend does not support the requested mode.",
-    phase = "backend",
-    path = "backend_context.mode",
-    data = list(
-      backend = backend@id,
-      requested = context@mode,
-      supported = backend@modes
-    )
-  )
-}
-
-.tccq_backend_target_diagnostic <- function(backend, context) {
-  if (identical(context@target, "any") || identical(context@target, backend@target)) {
-    return(NULL)
-  }
-  tccq_diagnostic(
-    "backend.unsupported_target",
-    "Backend does not support the requested target.",
-    phase = "backend",
-    path = "backend_context.target",
-    data = list(
-      backend = backend@id,
-      requested = context@target,
-      supported = backend@target
-    )
-  )
 }

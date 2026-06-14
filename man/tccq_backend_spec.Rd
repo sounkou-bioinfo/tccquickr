@@ -15,7 +15,7 @@ tccq_backend_spec(
   capabilities,
   uses_rapi,
   attrs = list(),
-  prepare = .tccq_backend_lowering_absent
+  prepare = NULL
 )
 }
 \arguments{
