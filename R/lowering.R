@@ -52,7 +52,9 @@ tccq_lower_function <- function(
 
   new_lowering_state <- function() {
     state <- new.env(parent = emptyenv())
+    state$formal_names <- names(bindings)
     state$symbol_value_ids <- list()
+    state$local_bindings <- list()
     state$values <- list()
     state$value_counter <- 0L
     for (binding_index in seq_along(bindings)) {
@@ -85,6 +87,74 @@ tccq_lower_function <- function(
     sprintf("value_%04d", state$value_counter)
   }
 
+  lower_statement <- function(expr, state) {
+    if (is.call(expr) && tccq_call_name(expr) %in% c("<-", "=") && length(expr) == 3L) {
+      return(lower_assignment(expr, state))
+    }
+    lower_expression(expr, state)
+  }
+
+  lower_assignment <- function(expr, state) {
+    target <- expr[[2L]]
+    value_expr <- expr[[3L]]
+    if (is.call(target)) {
+      target_name <- tccq_call_name(target)
+      target_root <- if (length(target) >= 2L && is.symbol(target[[2L]])) {
+        as.character(target[[2L]])
+      } else {
+        NULL
+      }
+      if (!is.null(target_root) && target_root %in% state$formal_names) {
+        return(diagnostic_value(
+          "lowering.formal_mutation",
+          sprintf("Formal `%s` cannot be mutated by the current single-assignment lowerer.", target_root),
+          expr,
+          data = list(symbol = target_root, target = target_name)
+        ))
+      }
+      return(diagnostic_value(
+        "lowering.unsupported_assignment_target",
+        "Only simple local symbol bindings are lowerable assignments for now.",
+        expr,
+        data = list(target = target_name)
+      ))
+    }
+    if (!is.symbol(target)) {
+      return(diagnostic_value(
+        "lowering.unsupported_assignment_target",
+        "Assignment targets must be local symbols in the current lowerer.",
+        expr,
+        data = list(target = typeof(target))
+      ))
+    }
+
+    binding_name <- as.character(target)
+    if (binding_name %in% state$formal_names) {
+      return(diagnostic_value(
+        "lowering.formal_assignment",
+        sprintf("Formal `%s` cannot be rebound by the current single-assignment lowerer.", binding_name),
+        expr,
+        data = list(symbol = binding_name)
+      ))
+    }
+    if (!is.null(state$local_bindings[[binding_name]])) {
+      return(diagnostic_value(
+        "lowering.local_rebinding",
+        sprintf("Local `%s` is already bound; rebinding is not lowerable yet.", binding_name),
+        expr,
+        data = list(symbol = binding_name)
+      ))
+    }
+
+    result <- lower_expression(value_expr, state)
+    if (length(result$diagnostics) > 0L) {
+      return(result)
+    }
+    state$symbol_value_ids[[binding_name]] <- result$value_id
+    state$local_bindings[[binding_name]] <- result$value_id
+    result
+  }
+
   lower_expression <- function(expr, state) {
     if (is.symbol(expr)) {
       return(lower_symbol(expr, state))
@@ -114,8 +184,12 @@ tccq_lower_function <- function(
     if (call_name %in% c("sqrt", "exp") && length(expr) == 2L) {
       return(lower_call(call_name, as.list(expr)[-1L], expr, state))
     }
-    if (identical(call_name, "sum")) {
-      return(lower_reduction(call_name, as.list(expr)[-1L], expr, state))
+    reduction_resolution <- tccq_resolve_call(registry, tccq_call(call_name, expr = expr), context)
+    if (
+      reduction_resolution@success &&
+        S7::S7_inherits(reduction_resolution@value@reduction, TccqReductionSpec)
+    ) {
+      return(lower_reduction(reduction_resolution@value, as.list(expr)[-1L], expr, state))
     }
 
     diagnostic_value(
@@ -226,7 +300,9 @@ tccq_lower_function <- function(
     list(value_id = value_id, type = result_type, diagnostics = list())
   }
 
-  lower_reduction <- function(reducer, args, expr, state) {
+  lower_reduction <- function(resolved_operation, args, expr, state) {
+    reduction_spec <- resolved_operation@reduction
+    reducer <- reduction_spec@name
     if (length(args) != 1L) {
       return(diagnostic_value(
         "lowering.unsupported_reducer_arity",
@@ -236,17 +312,6 @@ tccq_lower_function <- function(
       ))
     }
 
-    call <- tccq_call(reducer, expr = expr)
-    resolution <- tccq_resolve_call(registry, call, context)
-    if (!resolution@success) {
-      return(diagnostic_value(
-        "lowering.unimplemented_operation",
-        sprintf("Reducer `%s` has no lowerable implementation in this context.", reducer),
-        expr,
-        data = list(op = reducer, diagnostics = resolution@diagnostics)
-      ))
-    }
-    resolved_operation <- resolution@value
     if (!isTRUE(resolved_operation@pure) || isTRUE(resolved_operation@boundary)) {
       return(diagnostic_value(
         "lowering.effectful_operation",
@@ -283,8 +348,10 @@ tccq_lower_function <- function(
     }
 
     result_type <- tccq_type(lowered_arg$type@base)
-    identity_value <- if (identical(result_type@base, "integer")) 0L else 0
-    identity <- tccq_literal_finite(identity_value, type = result_type)
+    identity_result <- tccq_reduction_identity(reduction_spec, result_type)
+    if (!identity_result@success) {
+      return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))
+    }
     value_id <- next_value_id(state)
     add_value(
       state,
@@ -297,7 +364,8 @@ tccq_lower_function <- function(
         attrs = list(
           lowering = "reduction",
           reducer = reducer,
-          identity = identity,
+          reduction = reduction_spec,
+          identity = identity_result@value,
           resolved_op = resolved_operation
         )
       )
@@ -396,6 +464,7 @@ tccq_lower_function <- function(
       list(
         storage = "fused-map-reduce",
         reducer = result_value@attrs$reducer,
+        reduction = result_value@attrs$reduction,
         identity = result_value@attrs$identity
       )
     } else {
@@ -530,9 +599,16 @@ tccq_lower_function <- function(
   }
 
   state <- new_lowering_state()
-  result <- lower_expression(expressions[[length(expressions)]], state)
-  if (length(result$diagnostics) > 0L) {
-    return(new_plan(values = state$values, diagnostics = result$diagnostics))
+  result <- NULL
+  for (expr in expressions) {
+    result <- lower_statement(expr, state)
+    if (length(result$diagnostics) > 0L) {
+      return(new_plan(
+        values = state$values,
+        diagnostics = result$diagnostics,
+        attrs = list(local_bindings = state$local_bindings)
+      ))
+    }
   }
 
   storage_plan <- plan_storage(state$values, result$value_id)
@@ -546,6 +622,6 @@ tccq_lower_function <- function(
       "map-reduce-expression"
     } else {
       "elementwise-expression"
-    })
+    }, local_bindings = state$local_bindings)
   )
 }

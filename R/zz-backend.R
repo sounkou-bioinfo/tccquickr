@@ -1486,6 +1486,45 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       render_result@value
     }
 
+    literal_text <- function(literal, language) {
+      if (identical(literal@type@base, "integer")) {
+        return(sprintf("%d", as.integer(literal@value)))
+      }
+      value <- formatC(as.numeric(literal@value), digits = 17L, format = "fg")
+      if (identical(literal@type@base, "double") && !grepl("[.eE]", value)) {
+        value <- paste0(value, ".0")
+      }
+      if (identical(language, "fortran") && identical(literal@type@base, "double")) {
+        return(sprintf("%s_c_double", value))
+      }
+      value
+    }
+
+    reduction_identity_text <- function(reduction_spec, result_type, language) {
+      identity_result <- tccq_reduction_identity(reduction_spec, result_type)
+      if (!identity_result@success) {
+        tccq_abort_diagnostic(identity_result@diagnostics[[1L]])
+      }
+      literal_text(identity_result@value, language)
+    }
+
+    reduction_combine_text <- function(reduction_spec, accumulator, value, language) {
+      combine_result <- tccq_reduction_combine(
+        reduction_spec,
+        accumulator,
+        value,
+        tccq_op_render_context(
+          language = language,
+          backend_id = backend@id,
+          attrs = list(reducer = reduction_spec@name)
+        )
+      )
+      if (!combine_result@success) {
+        tccq_abort_diagnostic(combine_result@diagnostics[[1L]])
+      }
+      combine_result@value
+    }
+
     emit_c_source <- function(symbol, source_expression, result, formals) {
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_by_value_id <- as.list(stats::setNames(
@@ -1506,10 +1545,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
       }, formals, parameter_names)
       if (expression_is_reduction(source_expression)) {
-        if (!identical(source_expression@attrs$reducer, "sum")) {
+        reduction_spec <- source_expression@attrs$reduction
+        if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
           tccq_abort(
-            "backend.unsupported_reducer",
-            "The source printer does not support this reducer yet.",
+            "backend.invalid_reduction",
+            "Reduction expressions must carry a <TccqReductionSpec>.",
             phase = "backend",
             path = sprintf("backend.%s.reducer", backend@id),
             data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
@@ -1518,10 +1558,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         length_name <- "length_0001"
         index_name <- "index_0001"
         accumulator_name <- "accumulator_0001"
+        identity <- reduction_identity_text(reduction_spec, result@type, "c")
         reduced_expression <- expression_text(
           source_expression@inputs[[1L]],
           parameter_by_value_id,
           index_name,
+          "c"
+        )
+        combined_expression <- reduction_combine_text(
+          reduction_spec,
+          accumulator_name,
+          reduced_expression,
           "c"
         )
         signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
@@ -1534,9 +1581,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             symbol,
             paste(signature_declarations, collapse = ", ")
           ),
-          sprintf("  double %s = 0.0;", accumulator_name),
+          sprintf("  double %s = %s;", accumulator_name, identity),
           sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, length_name, index_name),
-          sprintf("    %s += %s;", accumulator_name, reduced_expression),
+          sprintf("    %s = %s;", accumulator_name, combined_expression),
           "  }",
           sprintf("  return %s;", accumulator_name),
           "}"
@@ -1591,10 +1638,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ))
 
       if (expression_is_reduction(source_expression)) {
-        if (!identical(source_expression@attrs$reducer, "sum")) {
+        reduction_spec <- source_expression@attrs$reduction
+        if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
           tccq_abort(
-            "backend.unsupported_reducer",
-            "The source printer does not support this reducer yet.",
+            "backend.invalid_reduction",
+            "Reduction expressions must carry a <TccqReductionSpec>.",
             phase = "backend",
             path = sprintf("backend.%s.reducer", backend@id),
             data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
@@ -1609,10 +1657,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             sprintf("  real(c_double), intent(in) :: %s(%s)", parameter_name, length_name)
           }
         }, formals, parameter_names)
+        identity <- reduction_identity_text(reduction_spec, result@type, "fortran")
         reduced_expression <- expression_text(
           source_expression@inputs[[1L]],
           parameter_by_value_id,
           index_name,
+          "fortran"
+        )
+        combined_expression <- reduction_combine_text(
+          reduction_spec,
+          "output",
+          reduced_expression,
           "fortran"
         )
         return(paste(c(
@@ -1628,9 +1683,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           unlist(declarations),
           "  real(c_double) :: output",
           sprintf("  integer(c_int) :: %s", index_name),
-          "  output = 0.0_c_double",
+          sprintf("  output = %s", identity),
           sprintf("  do %s = 1, %s", index_name, length_name),
-          sprintf("    output = output + %s", reduced_expression),
+          sprintf("    output = %s", combined_expression),
           "  end do",
           sprintf("end function %s", symbol)
         ), collapse = "\n"))

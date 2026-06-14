@@ -304,6 +304,33 @@ expect_true(grepl("iso_c_binding", fortran_source_plan@value@attrs$source, fixed
 expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$expression, TccqExpression))
 expect_equal(length(fortran_source_plan@value@bridges), 3L)
 
+bound_chain <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  shifted <- sqrt(x)
+  weighted <- exp(shifted) * y
+  weighted + y
+}
+
+bound_program <- tccq_analyze(bound_chain)
+expect_true(bound_program@success)
+expect_true(bound_program@value@attrs$lowered)
+
+bound_c_source_plan <- tccq_plan_backend(
+  bound_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(bound_c_source_plan@success)
+expect_true(grepl("exp(sqrt(input_0001[index_0001]))", bound_c_source_plan@value@attrs$source, fixed = TRUE))
+
+bound_fortran_source_plan <- tccq_plan_backend(
+  bound_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(bound_fortran_source_plan@success)
+expect_true(grepl("exp(sqrt(input_0001(index_0001)))", bound_fortran_source_plan@value@attrs$source, fixed = TRUE))
+
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
   jit_plan <- tccq_plan_backend(
     vector_program@value,
@@ -338,7 +365,7 @@ expect_true(reduction_c_source_plan@success)
 expect_equal(reduction_c_source_plan@value@attrs$source_language, "c")
 expect_true(grepl("double accumulator_0001 = 0.0;", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("for (int index_0001 = 0;", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("accumulator_0001 += ", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("accumulator_0001 = accumulator_0001 + ", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("int length_0001", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
 expect_equal(length(reduction_c_source_plan@value@bridges), 3L)
 
@@ -356,6 +383,36 @@ expect_true(grepl("do index_0001 = 1, length_0001", reduction_fortran_source_pla
 expect_true(grepl("output = output + ", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_equal(length(reduction_fortran_source_plan@value@bridges), 3L)
 
+fold_add <- function(x) x
+fold_add_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "fold_add",
+    target = "pure_c",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE),
+    reduction = tccq_reduction_spec(
+      "fold_add",
+      identity = function(type) tccq_literal_finite(0, type = type),
+      combine = function(accumulator, value, context) sprintf("%s + %s", accumulator, value)
+    )
+  )
+)
+custom_reduce <- function(x) {
+  declare(type(x = double(n)))
+  fold_add(exp(x))
+}
+custom_reduction_program <- tccq_analyze(custom_reduce, registry = fold_add_registry)
+expect_true(custom_reduction_program@success)
+expect_true(custom_reduction_program@value@attrs$lowered)
+custom_c_source_plan <- tccq_plan_backend(
+  custom_reduction_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(custom_c_source_plan@success)
+expect_true(grepl("accumulator_0001 = accumulator_0001 + ", custom_c_source_plan@value@attrs$source, fixed = TRUE))
+
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
   reduction_jit_plan <- tccq_plan_backend(
     reduction_program@value,
@@ -368,5 +425,15 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   expect_equal(
     reduction_jit_plan@value@attrs$callable(x, y),
     sum(exp(x) * y)
+  )
+  custom_reduction_jit_plan <- tccq_plan_backend(
+    custom_reduction_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(custom_reduction_jit_plan@success)
+  expect_equal(
+    custom_reduction_jit_plan@value@attrs$callable(x),
+    sum(exp(x))
   )
 }

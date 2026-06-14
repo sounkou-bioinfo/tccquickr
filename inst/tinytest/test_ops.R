@@ -88,6 +88,19 @@ resolved_sum <- tccq_resolve_call(default_registry, tccq_call("sum"), tccq_op_co
 expect_true(resolved_sum@success)
 expect_equal(resolved_sum@value@target, "pure_c")
 expect_equal(resolved_sum@value@region_kind, "kernel")
+expect_true(S7::S7_inherits(resolved_sum@value@reduction, TccqReductionSpec))
+sum_identity <- tccq_reduction_identity(resolved_sum@value@reduction, tccq_type("double"))
+expect_true(sum_identity@success)
+expect_true(S7::S7_inherits(sum_identity@value, TccqLiteral))
+expect_equal(sum_identity@value@value, 0)
+sum_combine <- tccq_reduction_combine(
+  resolved_sum@value@reduction,
+  "accumulator",
+  "current",
+  render_context
+)
+expect_true(sum_combine@success)
+expect_equal(sum_combine@value, "accumulator + current")
 unrendered_sum <- tccq_op_render(
   resolved_sum@value@implementation,
   "input_0001",

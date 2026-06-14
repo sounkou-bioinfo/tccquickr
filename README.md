@@ -110,6 +110,15 @@ backend-local switch over operation strings. The next tightening is
 richer signatures and domain rules on implementations, not another
 source whitelist.
 
+Reducers follow the same rule. A reducer is not recognized because the
+lowerer knows the text `sum`; a call lowers as a reduction only when the
+resolved operation carries a `TccqReductionSpec`. That spec supplies the
+identity literal and the accumulator combine expression for source
+printers. The default registry models base `sum` as one such
+implementation, and another registry can model a different fold surface
+through the same contract without changing the lowerer or the C and
+Fortran printers.
+
 ## Current lowering boundary
 
 The first lowering pass is deliberately small. It handles scalar and
@@ -121,6 +130,14 @@ carries a `TccqResolvedOp`, and the generated fusion group derives its
 target and effect from those resolved operations. This is not a general
 legality pass and it is not the place where new language coverage should
 sprawl.
+
+Top-level local assignment is currently modeled as single-assignment
+binding. In `a <- expr`, the local symbol `a` becomes a name for the
+lowered value of `expr`; it is not treated as mutation. Rebinding a
+local name, rebinding a formal, or mutating through a formal such as
+`x[i] <- value` produces a classed lowering diagnostic. That is
+intentionally strict until mutation barriers, aliasing, materialization,
+and view semantics are represented in the middle-end.
 
 The important constraint is that lowering failure is not frontend
 failure. A registered opaque operation can be a valid analyzed operation

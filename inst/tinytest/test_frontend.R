@@ -105,6 +105,7 @@ expect_equal(reduction_value@op, "sum")
 expect_equal(reduction_value@type@shape@rank, 0L)
 expect_equal(reduction_value@attrs$lowering, "reduction")
 expect_equal(reduction_value@attrs$reducer, "sum")
+expect_true(S7::S7_inherits(reduction_value@attrs$reduction, TccqReductionSpec))
 expect_true(S7::S7_inherits(reduction_value@attrs$identity, TccqLiteral))
 
 reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
@@ -113,6 +114,96 @@ expect_equal(reduction_fusion@region_kind, "kernel")
 expect_equal(reduction_fusion@domain@shape@rank, 1L)
 expect_equal(reduction_fusion@attrs$reducer, "sum")
 expect_equal(map_reduce_result@value@storage_plan@attrs$strategy, "fused-map-reduce")
+
+bound_chain <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  shifted <- sqrt(x)
+  weighted <- exp(shifted) * y
+  weighted + y
+}
+
+bound_result <- tccq_analyze(bound_chain)
+expect_true(bound_result@success)
+expect_true(bound_result@value@attrs$lowered)
+expect_equal(bound_result@value@result, "value_0004")
+expect_equal(bound_result@value@attrs$lowering$local_bindings$shifted, "value_0001")
+expect_equal(bound_result@value@attrs$lowering$local_bindings$weighted, "value_0003")
+expect_equal(bound_result@value@values$value_0004@inputs, list("value_0003", "formal_0002"))
+
+rebound_local <- function(x) {
+  declare(type(x = double(n)))
+  shifted <- sqrt(x)
+  shifted <- exp(x)
+  shifted
+}
+
+rebound_result <- tccq_analyze(rebound_local)
+expect_true(rebound_result@success)
+expect_false(rebound_result@value@attrs$lowered)
+expect_true(any(vapply(
+  rebound_result@value@diagnostics,
+  function(x) identical(x@code, "lowering.local_rebinding"),
+  logical(1)
+)))
+
+formal_rebinding <- function(x) {
+  declare(type(x = double(n)))
+  x <- sqrt(x)
+  x
+}
+
+formal_rebinding_result <- tccq_analyze(formal_rebinding)
+expect_true(formal_rebinding_result@success)
+expect_false(formal_rebinding_result@value@attrs$lowered)
+expect_true(any(vapply(
+  formal_rebinding_result@value@diagnostics,
+  function(x) identical(x@code, "lowering.formal_assignment"),
+  logical(1)
+)))
+
+formal_mutation <- function(x) {
+  declare(type(x = double(n)))
+  x[1L] <- 2
+  x
+}
+
+formal_mutation_result <- tccq_analyze(formal_mutation)
+expect_true(formal_mutation_result@success)
+expect_false(formal_mutation_result@value@attrs$lowered)
+expect_true(any(vapply(
+  formal_mutation_result@value@diagnostics,
+  function(x) identical(x@code, "lowering.formal_mutation"),
+  logical(1)
+)))
+
+fold_add <- function(x) x
+fold_add_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "fold_add",
+    target = "pure_c",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE),
+    reduction = tccq_reduction_spec(
+      "fold_add",
+      identity = function(type) tccq_literal_finite(0, type = type),
+      combine = function(accumulator, value, context) sprintf("%s + %s", accumulator, value)
+    )
+  )
+)
+custom_reduce <- function(x) {
+  declare(type(x = double(n)))
+  fold_add(exp(x))
+}
+
+custom_reduce_result <- tccq_analyze(custom_reduce, registry = fold_add_registry)
+expect_true(custom_reduce_result@success)
+expect_true(custom_reduce_result@value@attrs$lowered)
+expect_equal(custom_reduce_result@value@attrs$lowering$strategy, "map-reduce-expression")
+custom_reduction_value <- custom_reduce_result@value@values[[custom_reduce_result@value@result]]
+expect_equal(custom_reduction_value@op, "fold_add")
+expect_equal(custom_reduction_value@attrs$reducer, "fold_add")
+expect_true(S7::S7_inherits(custom_reduction_value@attrs$reduction, TccqReductionSpec))
 
 call_program <- function(x) {
   declare(type(x = double(n)))

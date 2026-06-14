@@ -14,7 +14,8 @@ TccqOpImpl(
   pure = logical(0),
   effect = TccqEffect(),
   supports = function() NULL,
-  render = NULL
+  render = NULL,
+  reduction = NULL
 )
 }
 \arguments{
@@ -39,6 +40,8 @@ TccqOpImpl(
 
 \item{render}{Optional source renderer receiving operand strings and a
 \code{TccqOpRenderContext}.}
+
+\item{reduction}{Optional reduction metadata.}
 }
 \description{
 Operation implementation descriptor
