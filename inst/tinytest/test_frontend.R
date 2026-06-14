@@ -72,8 +72,23 @@ expect_true(all(grepl(
   "^slot_[0-9]{4}$",
   vapply(map_result@value@storage_plan@slots, function(slot) slot@id, character(1))
 )))
+operation_values <- Filter(
+  function(value) !value@op %in% c("formal", "literal"),
+  map_result@value@values
+)
+expect_true(all(vapply(
+  operation_values,
+  function(value) S7::S7_inherits(value@attrs$resolved_op, TccqResolvedOp),
+  logical(1)
+)))
+expect_true(all(vapply(
+  operation_values,
+  function(value) identical(value@attrs$resolved_op@target, "pure_c"),
+  logical(1)
+)))
 expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@kind, "map")
 expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@region_kind, "kernel")
+expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@target, "pure_c")
 
 call_program <- function(x) {
   declare(type(x = double(n)))

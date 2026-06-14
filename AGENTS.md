@@ -95,6 +95,11 @@ Rules:
 - A private helper is acceptable only when it is truly local glue. It is not
   acceptable for a helper to become the hidden owner of a compiler concept,
   protocol, type rule, legality rule, or pass contract.
+- Do not add package-level `.tccq_*` functions for one-use predicates,
+  constant-returning name sets, source-name cleanup, or disguised type checks.
+  Inline one-use logic, store fixed facts as constants, use local closures
+  inside one exported transformation, or promote the concept to typed S7/S7
+  contract machinery.
 - If a helper starts needing a name from the compiler vocabulary, promote the
   concept into an S7 class, S7 generic, `s7contract` interface, explicit trait,
   or classed diagnostic.

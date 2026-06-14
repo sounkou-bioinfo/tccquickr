@@ -19,6 +19,25 @@ expect_false(tccq_registry_supports(
   tccq_op_context(allow_rapi = FALSE)
 ))
 
+resolved_custom <- tccq_resolve_call(registry, call, tccq_op_context())
+expect_true(resolved_custom@success)
+expect_true(S7::S7_inherits(resolved_custom@value, TccqResolvedOp))
+expect_equal(resolved_custom@value@call@name, "custom_op")
+expect_equal(resolved_custom@value@implementation@target, "r_api")
+expect_true(resolved_custom@value@uses_rapi)
+
+unresolved_custom <- tccq_resolve_call(
+  registry,
+  call,
+  tccq_op_context(allow_rapi = FALSE)
+)
+expect_false(unresolved_custom@success)
+expect_true(any(vapply(
+  unresolved_custom@diagnostics,
+  function(x) identical(x@code, "ops.unresolved_call"),
+  logical(1)
+)))
+
 default_registry <- tccq_default_op_registry()
 expect_true(tccq_registry_supports(
   default_registry,
@@ -88,6 +107,29 @@ expect_true(any(vapply(
 
 custom_result <- tccq_analyze(custom_program, registry = registry)
 expect_true(custom_result@success)
+
+effectful_plus <- tccq_op_impl(
+  "+",
+  target = "r_api",
+  uses_rapi = TRUE,
+  pure = FALSE
+)
+effectful_registry <- tccq_op_registry(c(
+  list(effectful_plus),
+  default_registry@implementations
+))
+effectful_program <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  x + y
+}
+effectful_result <- tccq_analyze(effectful_program, registry = effectful_registry)
+expect_true(effectful_result@success)
+expect_false(effectful_result@value@attrs$lowered)
+expect_true(any(vapply(
+  effectful_result@value@diagnostics,
+  function(x) identical(x@code, "lowering.effectful_operation"),
+  logical(1)
+)))
 
 device_result <- tccq_analyze(
   custom_program,

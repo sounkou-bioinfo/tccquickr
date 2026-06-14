@@ -1,5 +1,33 @@
 TCCQ_ANY_OP <- "<any>"
 
+TCCQ_OPERATOR_CALL_NAMES <- c(
+  "+", "-", "*", "/", "^", "%%", "%/%", "%*%", "%o%", "%x%", "%in%", "%||%",
+  ":", ">", ">=", "<", "<=", "==", "!=", "!", "&", "&&", "|", "||", "~",
+  "<-", "<<-", "->", "->>", "="
+)
+
+TCCQ_OPS_GROUP_CALL_NAMES <- c(
+  "+", "-", "*", "/", "^", "%%", "%/%", "&", "|", "!", "==", "!=", "<",
+  "<=", ">=", ">"
+)
+
+TCCQ_MATH_GROUP_CALL_NAMES <- c(
+  "abs", "sign", "sqrt", "floor", "ceiling", "trunc", "round", "signif",
+  "exp", "log", "expm1", "log1p", "cos", "sin", "tan", "cospi", "sinpi",
+  "tanpi", "acos", "asin", "atan", "cosh", "sinh", "tanh", "acosh",
+  "asinh", "atanh", "lgamma", "gamma", "digamma", "trigamma", "cumsum",
+  "cumprod", "cummax", "cummin"
+)
+
+TCCQ_SUMMARY_GROUP_CALL_NAMES <- c("all", "any", "sum", "prod", "min", "max", "range")
+
+TCCQ_S3_PRIMITIVE_GENERIC_NAMES <- get0(
+  ".S3PrimitiveGenerics",
+  envir = baseenv(),
+  inherits = FALSE,
+  ifnotfound = character()
+)
+
 #' Operation support query context
 #'
 #' @param phase Compiler phase issuing the query.
@@ -138,6 +166,72 @@ TccqOpRegistry <- S7::new_class(
   }
 )
 
+#' Resolved operation implementation
+#'
+#' A resolved operation records the implementation selected for one observed
+#' call in one operation context. Lowering and middle-end passes should carry
+#' this object rather than re-checking support from raw operation names.
+#'
+#' @param call Observed R call.
+#' @param implementation Selected operation implementation.
+#' @param target Selected implementation target.
+#' @param region_kind Region kind supplied by the implementation.
+#' @param memory_space Memory space supplied by the implementation.
+#' @param uses_rapi Whether the selected implementation touches the R C API.
+#' @param boundary Whether the selected implementation crosses a boundary.
+#' @param pure Whether the selected implementation is semantically pure.
+#' @param effect Effect summary supplied by the implementation.
+#' @param attrs Structured resolution metadata.
+#' @export
+TccqResolvedOp <- S7::new_class(
+  "TccqResolvedOp",
+  package = "tccquickr",
+  properties = list(
+    call = TccqCall,
+    implementation = TccqOpImpl,
+    target = S7::class_character,
+    region_kind = S7::class_character,
+    memory_space = S7::class_character,
+    uses_rapi = S7::class_logical,
+    boundary = S7::class_logical,
+    pure = S7::class_logical,
+    effect = TccqEffect,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@target) != 1L || is.na(self@target) || !nzchar(self@target)) {
+      problems <- c(problems, "@target must be a single non-empty string")
+    }
+    if (
+      length(self@region_kind) != 1L ||
+        is.na(self@region_kind) ||
+        !self@region_kind %in% c("any", TCCQ_REGION_KINDS)
+    ) {
+      problems <- c(problems, "@region_kind must be any or one supported region kind")
+    }
+    if (
+      length(self@memory_space) != 1L ||
+        is.na(self@memory_space) ||
+        !self@memory_space %in% c("any", TCCQ_MEMORY_SPACES)
+    ) {
+      problems <- c(problems, "@memory_space must be any or one supported memory space")
+    }
+    logical_fields <- list(
+      uses_rapi = self@uses_rapi,
+      boundary = self@boundary,
+      pure = self@pure
+    )
+    for (field_name in names(logical_fields)) {
+      field_value <- logical_fields[[field_name]]
+      if (length(field_value) != 1L || is.na(field_value)) {
+        problems <- c(problems, sprintf("@%s must be a single TRUE/FALSE value", field_name))
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Query operation implementation support
 #'
 #' @param impl Operation implementation.
@@ -174,7 +268,33 @@ tccq_register_traits <- function() {
     TccqOpImpl,
     methods = list(
       supports = function(impl, call, context) {
-        .tccq_op_impl_supports(impl, call, context)
+        if (!identical(impl@op, TCCQ_ANY_OP) && !identical(impl@op, call@name)) {
+          return(FALSE)
+        }
+        if (!identical(context@target, "any") && !identical(impl@target, context@target)) {
+          return(FALSE)
+        }
+        if (
+          !identical(context@region_kind, "any") &&
+            !identical(impl@region_kind, "any") &&
+            !identical(impl@region_kind, context@region_kind)
+        ) {
+          return(FALSE)
+        }
+        if (
+          !identical(context@memory_space, "any") &&
+            !identical(impl@memory_space, "any") &&
+            !identical(impl@memory_space, context@memory_space)
+        ) {
+          return(FALSE)
+        }
+        if (isTRUE(impl@uses_rapi) && !isTRUE(context@allow_rapi)) {
+          return(FALSE)
+        }
+        if (isTRUE(impl@boundary) && !isTRUE(context@allow_boundary)) {
+          return(FALSE)
+        }
+        isTRUE(impl@supports(call, context))
       }
     ),
     replace = TRUE
@@ -527,6 +647,31 @@ tccq_op_registry <- function(implementations = list()) {
   TccqOpRegistry(implementations = implementations)
 }
 
+#' Construct a resolved operation
+#'
+#' @param call Observed R call.
+#' @param implementation Selected operation implementation.
+#' @param attrs Structured resolution metadata.
+#' @export
+tccq_resolved_op <- function(call, implementation, attrs = list()) {
+  .tccq_check_s7(call, TccqCall, "TccqCall", "call")
+  .tccq_check_s7(implementation, TccqOpImpl, "TccqOpImpl", "implementation")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqResolvedOp(
+    call = call,
+    implementation = implementation,
+    target = implementation@target,
+    region_kind = implementation@region_kind,
+    memory_space = implementation@memory_space,
+    uses_rapi = implementation@uses_rapi,
+    boundary = implementation@boundary,
+    pure = implementation@pure,
+    effect = implementation@effect,
+    attrs = attrs
+  )
+}
+
 #' Default operation registry for the reset frontend
 #'
 #' The default registry names the R language call forms that the frontend
@@ -659,21 +804,52 @@ tccq_unimplemented_calls <- function(
 #' @param context Operation query context.
 #' @export
 tccq_registry_supports <- function(registry, call, context = tccq_op_context()) {
+  tccq_resolve_call(registry, call, context)@success
+}
+
+#' Resolve a call to one operation implementation
+#'
+#' @param registry Operation registry.
+#' @param call Observed R call.
+#' @param context Operation query context.
+#' @export
+tccq_resolve_call <- function(registry, call, context = tccq_op_context()) {
   .tccq_check_s7(registry, TccqOpRegistry, "TccqOpRegistry", "registry")
   .tccq_check_s7(call, TccqCall, "TccqCall", "call")
   .tccq_check_s7(context, TccqOpContext, "TccqOpContext", "context")
 
-  for (impl in registry@implementations) {
-    s7contract::assert_trait(impl, TccqOpImplementation, arg = "impl")
+  for (implementation in registry@implementations) {
+    s7contract::assert_trait(implementation, TccqOpImplementation, arg = "implementation")
     implementation_supports_call <- with(
       TccqOpImplementation,
-      tccq_op_supports(impl, call, context)
+      tccq_op_supports(implementation, call, context)
     )
     if (isTRUE(implementation_supports_call)) {
-      return(TRUE)
+      return(tccq_result(
+        success = TRUE,
+        value = tccq_resolved_op(
+          call,
+          implementation,
+          attrs = list(context = context)
+        )
+      ))
     }
   }
-  FALSE
+  diagnostic <- tccq_diagnostic(
+    "ops.unresolved_call",
+    sprintf("Call `%s` has no implementation in the current registry/context.", call@name),
+    phase = "ops",
+    path = "call",
+    data = list(
+      call = call@name,
+      target = context@target,
+      region_kind = context@region_kind,
+      memory_space = context@memory_space,
+      allow_rapi = context@allow_rapi,
+      allow_boundary = context@allow_boundary
+    )
+  )
+  tccq_result(success = FALSE, diagnostics = list(diagnostic))
 }
 
 #' Return the name of an R call
@@ -785,18 +961,10 @@ tccq_call_name <- function(call) {
   ) {
     return("replacement")
   }
-  if (name %in% .tccq_operator_names()) {
+  if (name %in% TCCQ_OPERATOR_CALL_NAMES) {
     return("operator")
   }
   "call"
-}
-
-.tccq_operator_names <- function() {
-  c(
-    "+", "-", "*", "/", "^", "%%", "%/%", "%*%", "%o%", "%x%", "%in%", "%||%",
-    ":", ">", ">=", "<", "<=", "==", "!=", "!", "&", "&&", "|", "||", "~",
-    "<-", "<<-", "->", "->>", "="
-  )
 }
 
 .tccq_infer_call_semantics <- function(call, env) {
@@ -861,10 +1029,14 @@ tccq_call_name <- function(call) {
   if (call@name %in% c("UseMethod", "NextMethod")) {
     return("s3")
   }
-  if (call@name %in% c(.tccq_ops_group(), .tccq_math_group(), .tccq_summary_group())) {
+  if (call@name %in% c(
+    TCCQ_OPS_GROUP_CALL_NAMES,
+    TCCQ_MATH_GROUP_CALL_NAMES,
+    TCCQ_SUMMARY_GROUP_CALL_NAMES
+  )) {
     return("group_generic")
   }
-  if (call@name %in% .tccq_s3_primitive_generics()) {
+  if (call@name %in% TCCQ_S3_PRIMITIVE_GENERIC_NAMES) {
     return("s3_primitive")
   }
   if (identical(evaluator_kind, "closure") && .tccq_body_uses_call(body(fn), "UseMethod")) {
@@ -893,61 +1065,6 @@ tccq_call_name <- function(call) {
   }
   walk(expr)
   found
-}
-
-.tccq_s3_primitive_generics <- function() {
-  get(".S3PrimitiveGenerics", envir = baseenv(), inherits = FALSE)
-}
-
-.tccq_ops_group <- function() {
-  c(
-    "+", "-", "*", "/", "^", "%%", "%/%", "&", "|", "!", "==", "!=", "<",
-    "<=", ">=", ">"
-  )
-}
-
-.tccq_math_group <- function() {
-  c(
-    "abs", "sign", "sqrt", "floor", "ceiling", "trunc", "round", "signif",
-    "exp", "log", "expm1", "log1p", "cos", "sin", "tan", "cospi", "sinpi",
-    "tanpi", "acos", "asin", "atan", "cosh", "sinh", "tanh", "acosh",
-    "asinh", "atanh", "lgamma", "gamma", "digamma", "trigamma", "cumsum",
-    "cumprod", "cummax", "cummin"
-  )
-}
-
-.tccq_summary_group <- function() {
-  c("all", "any", "sum", "prod", "min", "max", "range")
-}
-
-.tccq_op_impl_supports <- function(impl, call, context) {
-  if (!identical(impl@op, TCCQ_ANY_OP) && !identical(impl@op, call@name)) {
-    return(FALSE)
-  }
-  if (!identical(context@target, "any") && !identical(impl@target, context@target)) {
-    return(FALSE)
-  }
-  if (
-    !identical(context@region_kind, "any") &&
-      !identical(impl@region_kind, "any") &&
-      !identical(impl@region_kind, context@region_kind)
-  ) {
-    return(FALSE)
-  }
-  if (
-    !identical(context@memory_space, "any") &&
-      !identical(impl@memory_space, "any") &&
-      !identical(impl@memory_space, context@memory_space)
-  ) {
-    return(FALSE)
-  }
-  if (isTRUE(impl@uses_rapi) && !isTRUE(context@allow_rapi)) {
-    return(FALSE)
-  }
-  if (isTRUE(impl@boundary) && !isTRUE(context@allow_boundary)) {
-    return(FALSE)
-  }
-  isTRUE(impl@supports(call, context))
 }
 
 .tccq_check_region_query_kind <- function(kind, arg) {

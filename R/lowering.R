@@ -33,8 +33,6 @@ tccq_lower_function <- function(
     )
   }
 
-  scalar_elementwise_ops <- c("+", "-", "*", "/", "negate", "sqrt", "exp")
-
   executable_expressions <- function(expr) {
     expressions <- if (is.call(expr) && identical(tccq_call_name(expr), "{")) {
       as.list(expr)[-1L]
@@ -169,18 +167,28 @@ tccq_lower_function <- function(
   }
 
   lower_call <- function(op, args, expr, state) {
-    operation_is_available <- op %in% scalar_elementwise_ops &&
-      tccq_registry_supports(
-        registry,
-        tccq_call(if (identical(op, "negate")) "-" else op),
-        context
-      )
-    if (!operation_is_available) {
+    call <- tccq_call(if (identical(op, "negate")) "-" else op, expr = expr)
+    resolution <- tccq_resolve_call(registry, call, context)
+    if (!resolution@success) {
       return(diagnostic_value(
         "lowering.unimplemented_operation",
         sprintf("Operation `%s` has no lowerable implementation in this context.", op),
         expr,
-        data = list(op = op)
+        data = list(op = op, diagnostics = resolution@diagnostics)
+      ))
+    }
+    resolved_operation <- resolution@value
+    if (!isTRUE(resolved_operation@pure) || isTRUE(resolved_operation@boundary)) {
+      return(diagnostic_value(
+        "lowering.effectful_operation",
+        sprintf("Operation `%s` is modeled but is not legal in an elementwise fused region.", op),
+        expr,
+        data = list(
+          op = op,
+          target = resolved_operation@target,
+          boundary = resolved_operation@boundary,
+          pure = resolved_operation@pure
+        )
       ))
     }
 
@@ -205,8 +213,11 @@ tccq_lower_function <- function(
         op = op,
         inputs = input_ids,
         type = result_type,
-        effect = tccq_effect(reads = TRUE),
-        attrs = list(lowering = "elementwise")
+        effect = resolved_operation@effect,
+        attrs = list(
+          lowering = "elementwise",
+          resolved_op = resolved_operation
+        )
       )
     )
     list(value_id = value_id, type = result_type, diagnostics = list())
@@ -278,11 +289,21 @@ tccq_lower_function <- function(
       function(value) !value@op %in% c("formal", "literal"),
       lowered_values
     )
+    resolved_operations <- Filter(
+      function(resolved_operation) S7::S7_inherits(resolved_operation, TccqResolvedOp),
+      lapply(operation_values, function(value) value@attrs$resolved_op)
+    )
     accesses <- lapply(lowered_values, function(value) {
       access_kind <- if (value@type@shape@rank == 0L) "scalar" else "identity"
       tccq_access(value@id, domain, kind = access_kind)
     })
     region_kind <- if (result_shape@rank > 0L) "kernel" else "host"
+    region_target <- common_region_field(
+      resolved_operations,
+      function(resolved_operation) resolved_operation@target,
+      default = "any"
+    )
+    region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
     fusion <- tccq_fusion_group(
       "fusion_main",
       "map",
@@ -291,8 +312,8 @@ tccq_lower_function <- function(
       outputs = result_id,
       accesses = accesses,
       region_kind = region_kind,
-      target = "any",
-      effect = tccq_effect(reads = TRUE),
+      target = region_target,
+      effect = region_effect,
       attrs = list(storage = "fused-elementwise")
     )
     list(tccq_region(
@@ -300,11 +321,33 @@ tccq_lower_function <- function(
       region_kind,
       values = lowered_values,
       fusion_groups = list(fusion),
-      effect = tccq_effect(reads = TRUE),
+      effect = region_effect,
       memory_space = "host",
       touches_rapi = FALSE,
       attrs = list(result = result_id)
     ))
+  }
+
+  common_region_field <- function(resolved_operations, field, default) {
+    values <- unique(vapply(resolved_operations, field, character(1)))
+    values <- setdiff(values, "any")
+    if (length(values) == 1L) {
+      return(values[[1L]])
+    }
+    default
+  }
+
+  combine_effects <- function(effects) {
+    if (length(effects) == 0L) {
+      return(tccq_effect())
+    }
+    tccq_effect(
+      reads = any(vapply(effects, function(effect) effect@reads, logical(1))),
+      writes = any(vapply(effects, function(effect) effect@writes, logical(1))),
+      allocates = any(vapply(effects, function(effect) effect@allocates, logical(1))),
+      boundary = any(vapply(effects, function(effect) effect@boundary, logical(1))),
+      may_error = any(vapply(effects, function(effect) effect@may_error, logical(1)))
+    )
   }
 
   plan_storage <- function(values, result_id) {

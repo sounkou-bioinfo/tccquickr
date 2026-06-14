@@ -72,9 +72,10 @@ stores both observed calls and these semantics in a `TccqCallIndex`,
 then attaches that typed index to `TccqProgram@call_index` so lowering
 has checked facts available rather than digging through untyped
 attributes. The current expression lowerer still reconstructs value
-dependencies from the function body for a very small subset; moving
-operation resolution fully onto typed call and implementation records is
-one of the next tightening passes.
+dependencies from the function body for a very small subset, but
+operation availability is no longer a yes/no string predicate. Each
+lowerable call is resolved to a typed implementation record before a
+value is created.
 
 ## Operations
 
@@ -97,13 +98,24 @@ context, analysis returns a classed `frontend.unimplemented_call`
 diagnostic. That diagnostic says what is missing from the compiler
 model; it does not mean the call is not R.
 
+`TccqResolvedOp` is the handoff from registry query to lowering. It
+records the observed call, selected `TccqOpImpl`, target, region kind,
+memory space, purity, boundary status, R C API usage, and effect.
+Lowered operation values carry that resolved operation so fusion,
+storage, and backend planning can read typed implementation facts
+instead of rediscovering semantics from `TccqValue@op`. The next
+tightening is richer signatures and domain rules on implementations, not
+another source whitelist.
+
 ## Current lowering boundary
 
 The first lowering pass is deliberately small. It handles scalar and
 rank-one elementwise expressions over declared `integer` and `double`
 values for `+`, `-`, `*`, `/`, unary negation, `sqrt`, and `exp`. It
 returns a `TccqLoweringPlan`, then embeds the plan into `TccqProgram` as
-values, regions, fusion groups, and storage facts. This is not a general
+values, regions, fusion groups, and storage facts. Each operation value
+carries a `TccqResolvedOp`, and the generated fusion group derives its
+target and effect from those resolved operations. This is not a general
 legality pass and it is not the place where new language coverage should
 sprawl.
 
