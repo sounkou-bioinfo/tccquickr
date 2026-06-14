@@ -13,7 +13,8 @@ TccqOpImpl(
   boundary = logical(0),
   pure = logical(0),
   effect = TccqEffect(),
-  supports = function() NULL
+  supports = function() NULL,
+  render = NULL
 )
 }
 \arguments{
@@ -35,6 +36,9 @@ TccqOpImpl(
 \item{effect}{Effect summary for calls handled by this implementation.}
 
 \item{supports}{Predicate receiving a \code{TccqCall} and \code{TccqOpContext}.}
+
+\item{render}{Optional source renderer receiving operand strings and a
+\code{TccqOpRenderContext}.}
 }
 \description{
 Operation implementation descriptor

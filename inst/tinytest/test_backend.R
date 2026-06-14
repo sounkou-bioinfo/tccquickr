@@ -288,7 +288,7 @@ unhandled_source_plan <- tccq_plan_backend(
 expect_false(unhandled_source_plan@success)
 expect_true(any(vapply(
   unhandled_source_plan@diagnostics,
-  function(x) identical(x@code, "backend.unhandled_expression_operation"),
+  function(x) identical(x@code, "expression.operation_mismatch"),
   logical(1)
 )))
 

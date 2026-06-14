@@ -230,6 +230,21 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       )))
       return(NULL)
     }
+    operation_matches_resolution <- identical(value@op, resolved_operation@call@name) ||
+      (identical(value@op, "negate") && identical(resolved_operation@call@name, "-"))
+    if (!operation_matches_resolution) {
+      diagnostics <<- c(diagnostics, list(expression_diagnostic(
+        "expression.operation_mismatch",
+        "Operation value name must match its resolved call implementation.",
+        "expression.resolved_op",
+        data = list(
+          value_id = current_value_id,
+          op = value@op,
+          resolved_call = resolved_operation@call@name
+        )
+      )))
+      return(NULL)
+    }
 
     input_expressions <- lapply(
       value@inputs,

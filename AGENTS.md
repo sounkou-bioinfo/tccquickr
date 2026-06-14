@@ -222,6 +222,9 @@ For the reset core, keep these rules explicit:
 - Source printers consume `TccqExpression` trees built from lowered programs.
   Do not make C, Fortran, TinyCC, CUDA, or graph printers rediscover expression
   semantics by walking raw values and switching on operation strings.
+- Operation-specific target spelling belongs to typed implementations through
+  `tccq_op_render()` and `TccqOpRenderContext`, not backend-local `if`/`switch`
+  ladders over operation names.
 - No backend should be added until the typed IR can represent the apotheosis
   suite honestly.
 

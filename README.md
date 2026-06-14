@@ -103,9 +103,12 @@ records the observed call, selected `TccqOpImpl`, target, region kind,
 memory space, purity, boundary status, R C API usage, and effect.
 Lowered operation values carry that resolved operation so fusion,
 storage, and backend planning can read typed implementation facts
-instead of rediscovering semantics from `TccqValue@op`. The next
-tightening is richer signatures and domain rules on implementations, not
-another source whitelist.
+instead of rediscovering semantics from `TccqValue@op`. Operation
+implementations may also expose a source renderer through
+`tccq_op_render()`. That renderer is an implementation capability, not a
+backend-local switch over operation strings. The next tightening is
+richer signatures and domain rules on implementations, not another
+source whitelist.
 
 ## Current lowering boundary
 
@@ -138,7 +141,9 @@ lowered program result. That tree preserves reference leaves, literal
 leaves, operation nodes, result types, and selected operation
 implementations. C, Fortran, and Rtinycc therefore share one neutral
 expression handoff before syntax printing; the printers should not walk
-the raw value graph and rediscover expression semantics themselves.
+the raw value graph or rediscover operation semantics themselves. When a
+printer reaches an operation node, it asks the resolved implementation
+to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
 ## Control flow
 

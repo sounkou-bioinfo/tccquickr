@@ -21,6 +21,8 @@ TCCQ_MATH_GROUP_CALL_NAMES <- c(
 
 TCCQ_SUMMARY_GROUP_CALL_NAMES <- c("all", "any", "sum", "prod", "min", "max", "range")
 
+TCCQ_OP_RENDER_LANGUAGES <- c("c", "fortran")
+
 TCCQ_S3_PRIMITIVE_GENERIC_NAMES <- get0(
   ".S3PrimitiveGenerics",
   envir = baseenv(),
@@ -78,6 +80,36 @@ TccqOpContext <- S7::new_class(
   }
 )
 
+#' Operation source-rendering context
+#'
+#' @param language Target source language.
+#' @param backend_id Backend requesting rendering.
+#' @param attrs Structured rendering metadata.
+#' @export
+TccqOpRenderContext <- S7::new_class(
+  "TccqOpRenderContext",
+  package = "tccquickr",
+  properties = list(
+    language = S7::class_character,
+    backend_id = S7::class_character,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@language) != 1L ||
+        is.na(self@language) ||
+        !self@language %in% TCCQ_OP_RENDER_LANGUAGES
+    ) {
+      problems <- c(problems, "@language must be one supported render language")
+    }
+    if (length(self@backend_id) != 1L || is.na(self@backend_id) || !nzchar(self@backend_id)) {
+      problems <- c(problems, "@backend_id must be a single non-empty string")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Operation implementation descriptor
 #'
 #' @param op Operation or function name.
@@ -90,6 +122,8 @@ TccqOpContext <- S7::new_class(
 #' @param pure Whether the implementation is semantically pure.
 #' @param effect Effect summary for calls handled by this implementation.
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
+#' @param render Optional source renderer receiving operand strings and a
+#'   `TccqOpRenderContext`.
 #' @export
 TccqOpImpl <- S7::new_class(
   "TccqOpImpl",
@@ -103,7 +137,8 @@ TccqOpImpl <- S7::new_class(
     boundary = S7::class_logical,
     pure = S7::class_logical,
     effect = TccqEffect,
-    supports = S7::class_function
+    supports = S7::class_function,
+    render = S7::new_union(NULL, S7::class_function)
   ),
   validator = function(self) {
     problems <- character()
@@ -243,6 +278,87 @@ tccq_op_supports <- S7::new_generic(
   dispatch_args = "impl",
   function(impl, call, context) S7::S7_dispatch()
 )
+
+#' Render an operation implementation for source output
+#'
+#' @param impl Operation implementation.
+#' @param operands Rendered operand strings.
+#' @param context Rendering context.
+#' @export
+tccq_op_render <- S7::new_generic(
+  "tccq_op_render",
+  dispatch_args = "impl",
+  function(impl, operands, context) S7::S7_dispatch()
+)
+
+S7::method(tccq_op_render, TccqOpImpl) <- function(impl, operands, context) {
+  if (!is.character(operands) || anyNA(operands) || any(!nzchar(operands))) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_render_operands",
+      "Operation render operands must be non-empty strings.",
+      phase = "ops",
+      path = "op.render.operands",
+      data = list(op = impl@op, operands = operands)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  .tccq_check_s7(context, TccqOpRenderContext, "TccqOpRenderContext", "context")
+  if (is.null(impl@render)) {
+    diagnostic <- tccq_diagnostic(
+      "ops.unrenderable_operation",
+      "Operation implementation has no source renderer.",
+      phase = "ops",
+      path = "op.render",
+      data = list(
+        op = impl@op,
+        target = impl@target,
+        language = context@language,
+        backend = context@backend_id
+      )
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  rendered_operation <- tryCatch(
+    impl@render(operands, context),
+    error = identity
+  )
+  if (inherits(rendered_operation, "error")) {
+    diagnostic <- tccq_diagnostic(
+      "ops.render_failed",
+      conditionMessage(rendered_operation),
+      phase = "ops",
+      path = "op.render",
+      data = list(
+        op = impl@op,
+        target = impl@target,
+        language = context@language,
+        backend = context@backend_id
+      )
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  if (
+    !is.character(rendered_operation) ||
+      length(rendered_operation) != 1L ||
+      is.na(rendered_operation) ||
+      !nzchar(rendered_operation)
+  ) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_render_result",
+      "Operation renderer must return one non-empty source string.",
+      phase = "ops",
+      path = "op.render",
+      data = list(
+        op = impl@op,
+        target = impl@target,
+        language = context@language,
+        backend = context@backend_id
+      )
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  tccq_result(success = TRUE, value = rendered_operation)
+}
 
 #' Operation implementation trait
 #'
@@ -560,6 +676,24 @@ tccq_op_context <- function(
   )
 }
 
+#' Construct an operation source-rendering context
+#'
+#' @param language Target source language.
+#' @param backend_id Backend requesting rendering.
+#' @param attrs Structured rendering metadata.
+#' @export
+tccq_op_render_context <- function(language, backend_id, attrs = list()) {
+  .tccq_check_character_scalar(language, "language")
+  .tccq_check_character_scalar(backend_id, "backend_id")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqOpRenderContext(
+    language = language,
+    backend_id = backend_id,
+    attrs = attrs
+  )
+}
+
 #' Construct an operation implementation
 #'
 #' @param op Operation or function name.
@@ -571,6 +705,8 @@ tccq_op_context <- function(
 #' @param pure Whether the implementation is semantically pure.
 #' @param effect Effect summary for calls handled by this implementation.
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
+#' @param render Optional source renderer receiving operand strings and a
+#'   `TccqOpRenderContext`.
 #' @export
 tccq_op_impl <- function(
   op,
@@ -581,7 +717,8 @@ tccq_op_impl <- function(
   boundary = FALSE,
   pure = TRUE,
   effect = NULL,
-  supports = function(call, context) TRUE
+  supports = function(call, context) TRUE,
+  render = NULL
 ) {
   .tccq_check_character_scalar(op, "op")
   .tccq_check_character_scalar(target, "target")
@@ -608,6 +745,14 @@ tccq_op_impl <- function(
       path = "op.supports"
     )
   }
+  if (!is.null(render) && !is.function(render)) {
+    tccq_abort(
+      "schema.invalid_op_renderer",
+      "`render` must be NULL or a function.",
+      phase = "schema",
+      path = "op.render"
+    )
+  }
 
   TccqOpImpl(
     op = op,
@@ -618,7 +763,8 @@ tccq_op_impl <- function(
     boundary = boundary,
     pure = pure,
     effect = effect,
-    supports = supports
+    supports = supports,
+    render = render
   )
 }
 
@@ -680,6 +826,25 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
 #'
 #' @export
 tccq_default_op_registry <- function() {
+  scalar_renderers <- list(
+    "+" = function(operands, context) sprintf("(%s + %s)", operands[[1L]], operands[[2L]]),
+    "-" = function(operands, context) {
+      if (length(operands) == 1L) {
+        return(sprintf("(-%s)", operands[[1L]]))
+      }
+      sprintf("(%s - %s)", operands[[1L]], operands[[2L]])
+    },
+    "*" = function(operands, context) sprintf("(%s * %s)", operands[[1L]], operands[[2L]]),
+    "/" = function(operands, context) sprintf("(%s / %s)", operands[[1L]], operands[[2L]]),
+    "^" = function(operands, context) {
+      if (identical(context@language, "fortran")) {
+        return(sprintf("(%s ** %s)", operands[[1L]], operands[[2L]]))
+      }
+      sprintf("pow(%s, %s)", operands[[1L]], operands[[2L]])
+    },
+    sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
+    exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
+  )
   language_ops <- c(
     "{", "(", "<-", "<<-", "->", "->>", "=",
     "if", "for", "while", "repeat", "break", "next", "switch", "function",
@@ -692,7 +857,12 @@ tccq_default_op_registry <- function() {
       tccq_op_impl(op, target = "r_language", pure = FALSE)
     }),
     lapply(scalar_ops, function(op) {
-      tccq_op_impl(op, target = "pure_c", region_kind = "kernel")
+      tccq_op_impl(
+        op,
+        target = "pure_c",
+        region_kind = "kernel",
+        render = scalar_renderers[[op]]
+      )
     })
   ))
 }

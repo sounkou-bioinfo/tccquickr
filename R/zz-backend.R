@@ -1343,30 +1343,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         expression_text(child_expression, parameter_by_value_id, index_name, language)
       }
       inputs <- vapply(expression@inputs, child_expression_text, character(1))
-      if (identical(expression@op, "negate")) {
-        return(sprintf("(-%s)", inputs[[1L]]))
-      }
-      if (expression@op %in% c("+", "-", "*", "/")) {
-        return(sprintf("(%s %s %s)", inputs[[1L]], expression@op, inputs[[2L]]))
-      }
-      if (identical(expression@op, "sqrt")) {
-        return(sprintf("sqrt(%s)", inputs[[1L]]))
-      }
-      if (identical(expression@op, "exp")) {
-        return(sprintf("exp(%s)", inputs[[1L]]))
-      }
-      tccq_abort(
-        "backend.unhandled_expression_operation",
-        "The source printer does not handle this expression operation.",
-        phase = "backend",
-        path = sprintf("backend.%s.expression", backend@id),
-        data = list(
-          backend = backend@id,
+      render_result <- tccq_op_render(
+        expression@resolved_op@implementation,
+        inputs,
+        tccq_op_render_context(
           language = language,
-          op = expression@op,
-          value_id = expression@value_id
+          backend_id = backend@id,
+          attrs = list(value_id = expression@value_id, op = expression@op)
         )
       )
+      if (!render_result@success) {
+        tccq_abort_diagnostic(render_result@diagnostics[[1L]])
+      }
+      render_result@value
     }
 
     emit_c_source <- function(symbol, source_expression, result, formals) {

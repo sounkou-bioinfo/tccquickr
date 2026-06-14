@@ -26,6 +26,21 @@ expect_equal(resolved_custom@value@call@name, "custom_op")
 expect_equal(resolved_custom@value@implementation@target, "r_api")
 expect_true(resolved_custom@value@uses_rapi)
 
+render_context <- tccq_op_render_context(language = "c", backend_id = "unit_backend")
+expect_true(S7::S7_inherits(render_context, TccqOpRenderContext))
+
+unrenderable_custom <- tccq_op_render(
+  resolved_custom@value@implementation,
+  "input_0001",
+  render_context
+)
+expect_false(unrenderable_custom@success)
+expect_true(any(vapply(
+  unrenderable_custom@diagnostics,
+  function(x) identical(x@code, "ops.unrenderable_operation"),
+  logical(1)
+)))
+
 unresolved_custom <- tccq_resolve_call(
   registry,
   call,
@@ -49,6 +64,25 @@ expect_false(tccq_registry_supports(
   tccq_call("if"),
   tccq_op_context(target = "pure_c")
 ))
+
+resolved_plus <- tccq_resolve_call(default_registry, tccq_call("+"), tccq_op_context())
+expect_true(resolved_plus@success)
+c_plus <- tccq_op_render(
+  resolved_plus@value@implementation,
+  c("left", "right"),
+  render_context
+)
+expect_true(c_plus@success)
+expect_equal(c_plus@value, "(left + right)")
+
+resolved_power <- tccq_resolve_call(default_registry, tccq_call("^"), tccq_op_context())
+fortran_power <- tccq_op_render(
+  resolved_power@value@implementation,
+  c("left", "right"),
+  tccq_op_render_context(language = "fortran", backend_id = "unit_backend")
+)
+expect_true(fortran_power@success)
+expect_equal(fortran_power@value, "(left ** right)")
 
 if_semantics <- tccq_call_semantics(tccq_call("if"))
 expect_equal(if_semantics@evaluator_kind, "special")
