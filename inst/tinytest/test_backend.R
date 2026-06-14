@@ -176,6 +176,14 @@ expect_true(any(vapply(
   logical(1)
 )))
 
+missing_expression <- tccq_expression_tree(program)
+expect_false(missing_expression@success)
+expect_true(any(vapply(
+  missing_expression@diagnostics,
+  function(x) identical(x@code, "expression.missing_result"),
+  logical(1)
+)))
+
 missing_capability <- tccq_plan_backend(
   program,
   backend,
@@ -233,6 +241,13 @@ vector_program <- tccq_analyze(vector_add)
 expect_true(vector_program@success)
 expect_true(vector_program@value@attrs$lowered)
 
+expression_result <- tccq_expression_tree(vector_program@value)
+expect_true(expression_result@success)
+expect_true(S7::S7_inherits(expression_result@value, TccqExpression))
+expect_equal(expression_result@value@kind, "operation")
+expect_equal(expression_result@value@op, "+")
+expect_true(S7::S7_inherits(expression_result@value@resolved_op, TccqResolvedOp))
+
 c_source_plan <- tccq_plan_backend(
   vector_program@value,
   tccq_c_backend(),
@@ -242,8 +257,40 @@ expect_true(c_source_plan@success)
 expect_equal(c_source_plan@value@attrs$source_language, "c")
 expect_true(grepl("double \\*", c_source_plan@value@attrs$source))
 expect_true(grepl("input_0001", c_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(S7::S7_inherits(c_source_plan@value@attrs$expression, TccqExpression))
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$storage_plan, TccqStoragePlan))
 expect_equal(length(c_source_plan@value@bridges), 3L)
+
+unhandled_values <- vector_program@value@values
+unhandled_result <- unhandled_values[[vector_program@value@result]]
+unhandled_values[[vector_program@value@result]] <- tccq_value(
+  unhandled_result@id,
+  "cos",
+  inputs = unhandled_result@inputs,
+  type = unhandled_result@type,
+  effect = unhandled_result@effect,
+  attrs = unhandled_result@attrs
+)
+unhandled_program <- tccq_program(
+  "unhandled_expression",
+  formals = vector_program@value@formals,
+  values = unhandled_values,
+  regions = vector_program@value@regions,
+  result = vector_program@value@result,
+  storage_plan = vector_program@value@storage_plan,
+  attrs = vector_program@value@attrs
+)
+unhandled_source_plan <- tccq_plan_backend(
+  unhandled_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_false(unhandled_source_plan@success)
+expect_true(any(vapply(
+  unhandled_source_plan@diagnostics,
+  function(x) identical(x@code, "backend.unhandled_expression_operation"),
+  logical(1)
+)))
 
 fortran_source_plan <- tccq_plan_backend(
   vector_program@value,
@@ -254,6 +301,7 @@ expect_true(fortran_source_plan@success)
 expect_equal(fortran_source_plan@value@attrs$source_language, "fortran")
 expect_true(grepl("subroutine", fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("iso_c_binding", fortran_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$expression, TccqExpression))
 expect_equal(length(fortran_source_plan@value@bridges), 3L)
 
 if (requireNamespace("Rtinycc", quietly = TRUE)) {

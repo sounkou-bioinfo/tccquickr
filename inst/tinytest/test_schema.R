@@ -69,6 +69,52 @@ expect_equal(matrix_value@type@shape@rank, 2L)
 expect_equal(matrix_value@layout@order, "column_major")
 expect_equal(matrix_value@tile@shape@rank, 2L)
 
+resolved_add <- tccq_resolve_call(
+  tccq_default_op_registry(),
+  tccq_call("+"),
+  tccq_op_context()
+)@value
+reference_expression <- tccq_expression(
+  "formal_0001",
+  "reference",
+  type = finite@type,
+  value_id = "formal_0001",
+  op = "formal"
+)
+literal_expression <- tccq_expression(
+  "value_0001",
+  "literal",
+  type = finite@type,
+  value_id = "value_0001",
+  op = "literal",
+  literal = finite
+)
+operation_expression <- tccq_expression(
+  "value_0002",
+  "operation",
+  type = finite@type,
+  value_id = "value_0002",
+  op = "+",
+  inputs = list(reference_expression, literal_expression),
+  resolved_op = resolved_add
+)
+
+expect_true(S7::S7_inherits(reference_expression, TccqExpression))
+expect_true(S7::S7_inherits(operation_expression@resolved_op, TccqResolvedOp))
+expect_equal(operation_expression@inputs[[2L]]@literal@value, 1.5)
+
+bad_expression <- tryCatch(
+  tccq_expression(
+    "bad_expression",
+    "operation",
+    type = finite@type,
+    op = "+",
+    inputs = list(reference_expression)
+  ),
+  error = identity
+)
+expect_true(inherits(bad_expression, "error"))
+
 domain <- tccq_domain("d_matrix", matrix_type@shape, axes = c("i", "j"))
 access <- tccq_access("m1", domain)
 fusion <- tccq_fusion_group(

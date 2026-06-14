@@ -219,6 +219,9 @@ For the reset core, keep these rules explicit:
   not sideways into compatibility glue.
 - Matrix operations, reductions, domains, views, mutation, fusion, and storage
   planning must first appear as typed IR concepts.
+- Source printers consume `TccqExpression` trees built from lowered programs.
+  Do not make C, Fortran, TinyCC, CUDA, or graph printers rediscover expression
+  semantics by walking raw values and switching on operation strings.
 - No backend should be added until the typed IR can represent the apotheosis
   suite honestly.
 

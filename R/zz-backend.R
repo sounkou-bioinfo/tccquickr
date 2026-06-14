@@ -1320,11 +1320,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       NULL
     }
 
-    expression_text <- function(value_id, parameter_by_value_id, index_name, language) {
-      value <- program@values[[value_id]]
-      if (identical(value@op, "formal")) {
-        parameter_name <- parameter_by_value_id[[value_id]]
-        if (value@type@shape@rank == 0L) {
+    expression_text <- function(expression, parameter_by_value_id, index_name, language) {
+      if (identical(expression@kind, "reference")) {
+        parameter_name <- parameter_by_value_id[[expression@value_id]]
+        if (expression@type@shape@rank == 0L) {
           return(parameter_name)
         }
         if (identical(language, "fortran")) {
@@ -1332,34 +1331,45 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         return(sprintf("%s[%s]", parameter_name, index_name))
       }
-      if (identical(value@op, "literal")) {
-        literal <- value@attrs$literal
-        if (identical(value@type@base, "integer")) {
+      if (identical(expression@kind, "literal")) {
+        literal <- expression@literal
+        if (identical(expression@type@base, "integer")) {
           return(sprintf("%d", as.integer(literal@value)))
         }
         return(formatC(as.numeric(literal@value), digits = 17L, format = "fg"))
       }
 
-      input_expression <- function(input_id) {
-        expression_text(input_id, parameter_by_value_id, index_name, language)
+      child_expression_text <- function(child_expression) {
+        expression_text(child_expression, parameter_by_value_id, index_name, language)
       }
-      inputs <- vapply(value@inputs, input_expression, character(1))
-      if (identical(value@op, "negate")) {
+      inputs <- vapply(expression@inputs, child_expression_text, character(1))
+      if (identical(expression@op, "negate")) {
         return(sprintf("(-%s)", inputs[[1L]]))
       }
-      if (value@op %in% c("+", "-", "*", "/")) {
-        return(sprintf("(%s %s %s)", inputs[[1L]], value@op, inputs[[2L]]))
+      if (expression@op %in% c("+", "-", "*", "/")) {
+        return(sprintf("(%s %s %s)", inputs[[1L]], expression@op, inputs[[2L]]))
       }
-      if (identical(value@op, "sqrt")) {
+      if (identical(expression@op, "sqrt")) {
         return(sprintf("sqrt(%s)", inputs[[1L]]))
       }
-      if (identical(value@op, "exp")) {
+      if (identical(expression@op, "exp")) {
         return(sprintf("exp(%s)", inputs[[1L]]))
       }
-      stop(sprintf("unhandled lowered operation: %s", value@op), call. = FALSE)
+      tccq_abort(
+        "backend.unhandled_expression_operation",
+        "The source printer does not handle this expression operation.",
+        phase = "backend",
+        path = sprintf("backend.%s.expression", backend@id),
+        data = list(
+          backend = backend@id,
+          language = language,
+          op = expression@op,
+          value_id = expression@value_id
+        )
+      )
     }
 
-    emit_c_source <- function(symbol, result, formals) {
+    emit_c_source <- function(symbol, source_expression, result, formals) {
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_by_value_id <- as.list(stats::setNames(
         parameter_names,
@@ -1379,7 +1389,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
       }, formals, parameter_names)
       if (result@type@shape@rank == 0L) {
-        expression <- expression_text(program@result, parameter_by_value_id, NULL, "c")
+        expression <- expression_text(source_expression, parameter_by_value_id, NULL, "c")
         return(paste(c(
           "#include <math.h>",
           "",
@@ -1391,7 +1401,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
       length_name <- "length_0001"
       index_name <- "index_0001"
-      expression <- expression_text(program@result, parameter_by_value_id, index_name, "c")
+      expression <- expression_text(source_expression, parameter_by_value_id, index_name, "c")
       signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
       paste(c(
         "#include <math.h>",
@@ -1418,7 +1428,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ), collapse = "\n")
     }
 
-    emit_fortran_source <- function(symbol, result, formals) {
+    emit_fortran_source <- function(symbol, source_expression, result, formals) {
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_by_value_id <- as.list(stats::setNames(
         parameter_names,
@@ -1428,7 +1438,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         declarations <- Map(function(value, parameter_name) {
           sprintf("  real(c_double), value :: %s", parameter_name)
         }, formals, parameter_names)
-        expression <- expression_text(program@result, parameter_by_value_id, NULL, "fortran")
+        expression <- expression_text(source_expression, parameter_by_value_id, NULL, "fortran")
         return(paste(c(
           sprintf("function %s(%s) bind(c, name = \"%s\") result(output)", symbol, paste(parameter_names, collapse = ", "), symbol),
           "  use iso_c_binding, only: c_double",
@@ -1449,7 +1459,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           sprintf("  real(c_double), intent(in) :: %s(%s)", parameter_name, length_name)
         }
       }, formals, parameter_names)
-      expression <- expression_text(program@result, parameter_by_value_id, index_name, "fortran")
+      expression <- expression_text(source_expression, parameter_by_value_id, index_name, "fortran")
       paste(c(
         sprintf(
           "subroutine %s(%s, %s, output) bind(c, name = \"%s\")",
@@ -1567,14 +1577,39 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(lowered_diagnostic))
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(lowered_diagnostic)))
     }
+    source_expression_result <- tccq_expression_tree(program)
+    if (!source_expression_result@success) {
+      plan <- .tccq_backend_empty_plan(backend, context, diagnostics = source_expression_result@diagnostics)
+      return(tccq_result(
+        success = FALSE,
+        value = plan,
+        diagnostics = source_expression_result@diagnostics
+      ))
+    }
+    source_expression <- source_expression_result@value
 
     symbol <- source_symbol()
-    source <- switch(
-      source_language,
-      c = emit_c_source(symbol, result, formals),
-      fortran = emit_fortran_source(symbol, result, formals),
-      stop(sprintf("unsupported source language: %s", source_language), call. = FALSE)
+    source_result <- tryCatch(
+      switch(
+        source_language,
+        c = emit_c_source(symbol, source_expression, result, formals),
+        fortran = emit_fortran_source(symbol, source_expression, result, formals),
+        tccq_abort(
+          "backend.unsupported_source_language",
+          "The source printer does not support this target language.",
+          phase = "backend",
+          path = sprintf("backend.%s.source_language", backend@id),
+          data = list(backend = backend@id, source_language = source_language)
+        )
+      ),
+      tccq_error = identity
     )
+    if (inherits(source_result, "tccq_error")) {
+      diagnostic <- tccq_condition_diagnostic(source_result)
+      plan <- .tccq_backend_empty_plan(backend, context, diagnostics = list(diagnostic))
+      return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
+    }
+    source <- source_result
     bridges <- c(
       Map(function(value, bridge_index) {
         tccq_bridge_plan(
@@ -1612,6 +1647,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         source_language = source_language,
         symbol = symbol,
         source = source,
+        expression = source_expression,
         storage_plan = program@storage_plan
       )
     )

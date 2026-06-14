@@ -124,6 +124,13 @@ conservative scaffolding for the elementwise subset; real storage reuse needs a
 liveness, aliasing, mutation, materialization, and layout pass before it can
 become aggressive.
 
+Source printers now consume a `TccqExpression` tree built from the lowered
+program result. That tree preserves reference leaves, literal leaves, operation
+nodes, result types, and selected operation implementations. C, Fortran, and
+Rtinycc therefore share one neutral expression handoff before syntax printing;
+the printers should not walk the raw value graph and rediscover expression
+semantics themselves.
+
 ## Control flow
 
 Control flow has to become structured IR. `for`, `while`, `repeat`, `break`,
@@ -173,12 +180,12 @@ capabilities, and backend attributes.
 Rtinycc comes for free only in the sense that it is one current driver for C
 source and TinyCC JIT modes. It should not decide the IR. The generic C
 descriptor, the Rtinycc descriptor, and the quickr-style Fortran descriptor now
-print source from the same lowered elementwise program. The anvil-style
-graph/StableHLO/XLA descriptor and the R call-evaluation descriptor still report
-typed planning diagnostics until their corresponding lowerings exist. Those
-different families pressure the same typed representation from different
-directions, reducing the chance that the IR is secretly reward-hacked for one
-concrete backend.
+print source from the same lowered elementwise program through the same
+`TccqExpression` handoff. The anvil-style graph/StableHLO/XLA descriptor and
+the R call-evaluation descriptor still report typed planning diagnostics until
+their corresponding lowerings exist. Those different families pressure the same
+typed representation from different directions, reducing the chance that the IR
+is secretly reward-hacked for one concrete backend.
 
 Runtime concerns are part of backend planning. `TccqRuntimePolicy` says whether
 we are in release, checked, trace, or debug mode; whether interrupts may be
