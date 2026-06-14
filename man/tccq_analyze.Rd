@@ -23,6 +23,7 @@ supported.}
 }
 \description{
 This is intentionally narrow. It parses \code{declare(type(...))} declarations,
-records a program schema, and reports calls without implementations as
-classed diagnostics. It does not lower or compile yet.
+records a program schema, reports calls without implementations as classed
+diagnostics, and runs the first backend-neutral expression lowering pass when
+frontend facts are clean.
 }

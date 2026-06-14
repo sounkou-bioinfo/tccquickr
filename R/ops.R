@@ -1,40 +1,4 @@
-TCCQ_CALL_KINDS <- c(
-  "call",
-  "operator",
-  "assignment",
-  "control",
-  "block",
-  "grouping",
-  "index",
-  "replacement",
-  "function_definition",
-  "unknown"
-)
 TCCQ_ANY_OP <- "<any>"
-
-#' R call observed by the frontend
-#'
-#' @param name Call name.
-#' @param expr Original R call expression.
-#' @param origin Source of the call observation.
-#' @param kind Structural call kind.
-#' @param arity Number of supplied arguments, or `NA_integer_`.
-#' @param argument_names Supplied argument tags.
-#' @param attrs Structured call attributes.
-#' @export
-TccqCall <- S7::new_class(
-  "TccqCall",
-  package = "tccquickr",
-  properties = list(
-    name = S7::class_character,
-    expr = S7::class_any,
-    origin = S7::class_character,
-    kind = S7::class_character,
-    arity = S7::class_integer,
-    argument_names = S7::class_character,
-    attrs = S7::class_list
-  )
-)
 
 #' Operation support query context
 #'
@@ -55,7 +19,35 @@ TccqOpContext <- S7::new_class(
     memory_space = S7::class_character,
     allow_rapi = S7::class_logical,
     allow_boundary = S7::class_logical
-  )
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@phase) != 1L || is.na(self@phase) || !nzchar(self@phase)) {
+      problems <- c(problems, "@phase must be a single non-empty string")
+    }
+    if (length(self@target) != 1L || is.na(self@target) || !nzchar(self@target)) {
+      problems <- c(problems, "@target must be a single non-empty string")
+    }
+    has_supported_region_query <- length(self@region_kind) == 1L &&
+      !is.na(self@region_kind) &&
+      self@region_kind %in% c("any", TCCQ_REGION_KINDS)
+    if (!has_supported_region_query) {
+      problems <- c(problems, "@region_kind must be `any` or a supported region kind")
+    }
+    has_supported_memory_query <- length(self@memory_space) == 1L &&
+      !is.na(self@memory_space) &&
+      self@memory_space %in% c("any", TCCQ_MEMORY_SPACES)
+    if (!has_supported_memory_query) {
+      problems <- c(problems, "@memory_space must be `any` or a supported memory space")
+    }
+    if (length(self@allow_rapi) != 1L || is.na(self@allow_rapi)) {
+      problems <- c(problems, "@allow_rapi must be a single TRUE/FALSE value")
+    }
+    if (length(self@allow_boundary) != 1L || is.na(self@allow_boundary)) {
+      problems <- c(problems, "@allow_boundary must be a single TRUE/FALSE value")
+    }
+    if (length(problems) > 0L) problems
+  }
 )
 
 #' Operation implementation descriptor
@@ -84,7 +76,41 @@ TccqOpImpl <- S7::new_class(
     pure = S7::class_logical,
     effect = TccqEffect,
     supports = S7::class_function
-  )
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@op) != 1L || is.na(self@op) || !nzchar(self@op)) {
+      problems <- c(problems, "@op must be a single non-empty string")
+    }
+    if (length(self@target) != 1L || is.na(self@target) || !nzchar(self@target)) {
+      problems <- c(problems, "@target must be a single non-empty string")
+    }
+    has_supported_region_query <- length(self@region_kind) == 1L &&
+      !is.na(self@region_kind) &&
+      self@region_kind %in% c("any", TCCQ_REGION_KINDS)
+    if (!has_supported_region_query) {
+      problems <- c(problems, "@region_kind must be `any` or a supported region kind")
+    }
+    has_supported_memory_query <- length(self@memory_space) == 1L &&
+      !is.na(self@memory_space) &&
+      self@memory_space %in% c("any", TCCQ_MEMORY_SPACES)
+    if (!has_supported_memory_query) {
+      problems <- c(problems, "@memory_space must be `any` or a supported memory space")
+    }
+    if (length(self@uses_rapi) != 1L || is.na(self@uses_rapi)) {
+      problems <- c(problems, "@uses_rapi must be a single TRUE/FALSE value")
+    }
+    if (length(self@boundary) != 1L || is.na(self@boundary)) {
+      problems <- c(problems, "@boundary must be a single TRUE/FALSE value")
+    }
+    if (length(self@pure) != 1L || is.na(self@pure)) {
+      problems <- c(problems, "@pure must be a single TRUE/FALSE value")
+    }
+    if (!is.function(self@supports)) {
+      problems <- c(problems, "@supports must be a predicate function")
+    }
+    if (length(problems) > 0L) problems
+  }
 )
 
 #' Operation registry
@@ -96,7 +122,20 @@ TccqOpRegistry <- S7::new_class(
   package = "tccquickr",
   properties = list(
     implementations = S7::class_list
-  )
+  ),
+  validator = function(self) {
+    problems <- character()
+    implementations_are_tccq_op_impls <- vapply(
+      self@implementations,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqOpImpl
+    )
+    if (!all(implementations_are_tccq_op_impls)) {
+      problems <- c(problems, "@implementations must contain only <TccqOpImpl> values")
+    }
+    if (length(problems) > 0L) problems
+  }
 )
 
 #' Query operation implementation support
@@ -145,6 +184,7 @@ tccq_register_traits <- function() {
 
 #' Construct an observed call
 #'
+#' @param id Stable call id.
 #' @param name Call name.
 #' @param expr Original R call expression.
 #' @param origin Source of the call observation.
@@ -157,6 +197,7 @@ tccq_call <- function(
   name,
   expr = NULL,
   origin = "ast",
+  id = "",
   kind = NULL,
   arity = NULL,
   argument_names = NULL,
@@ -164,6 +205,7 @@ tccq_call <- function(
 ) {
   .tccq_check_character_scalar(name, "name")
   .tccq_check_character_scalar(origin, "origin")
+  .tccq_check_character_or_empty(id, "id")
   if (is.null(kind)) {
     kind <- .tccq_infer_call_kind(name)
   }
@@ -201,12 +243,165 @@ tccq_call <- function(
   .tccq_check_list(attrs, "attrs")
 
   TccqCall(
+    id = id,
     name = name,
     expr = expr,
     origin = origin,
     kind = kind,
     arity = arity,
     argument_names = argument_names,
+    attrs = attrs
+  )
+}
+
+#' Construct call evaluator facts
+#'
+#' @param call Observed call.
+#' @param env Environment used to resolve ordinary function names.
+#' @param evaluator_kind Optional evaluator kind override.
+#' @param forcing_policy Optional forcing-policy override.
+#' @param dispatch_kind Optional dispatch-kind override.
+#' @param lexical_scope Optional lexical-scope override.
+#' @param replacement Optional replacement flag override.
+#' @param control Optional control flag override.
+#' @param attrs Structured semantic attributes.
+#' @export
+tccq_call_semantics <- function(
+  call,
+  env = baseenv(),
+  evaluator_kind = NULL,
+  forcing_policy = NULL,
+  dispatch_kind = NULL,
+  lexical_scope = NULL,
+  replacement = NULL,
+  control = NULL,
+  attrs = list()
+) {
+  .tccq_check_s7(call, TccqCall, "TccqCall", "call")
+  if (!is.environment(env)) {
+    tccq_abort(
+      "schema.invalid_environment",
+      "`env` must be an environment.",
+      phase = "schema",
+      path = "call_semantics.env",
+      data = list(actual = typeof(env))
+    )
+  }
+  facts <- .tccq_infer_call_semantics(call, env)
+  evaluator_kind <- evaluator_kind %||% facts$evaluator_kind
+  forcing_policy <- forcing_policy %||% facts$forcing_policy
+  dispatch_kind <- dispatch_kind %||% facts$dispatch_kind
+  lexical_scope <- lexical_scope %||% facts$lexical_scope
+  replacement <- replacement %||% facts$replacement
+  control <- control %||% facts$control
+
+  .tccq_check_character_scalar(evaluator_kind, "evaluator_kind")
+  .tccq_check_character_scalar(forcing_policy, "forcing_policy")
+  .tccq_check_character_scalar(dispatch_kind, "dispatch_kind")
+  if (!evaluator_kind %in% TCCQ_EVALUATOR_KINDS) {
+    tccq_abort(
+      "schema.invalid_evaluator_kind",
+      "`evaluator_kind` is not supported.",
+      phase = "schema",
+      path = "call_semantics.evaluator_kind",
+      data = list(value = evaluator_kind, supported = TCCQ_EVALUATOR_KINDS)
+    )
+  }
+  if (!forcing_policy %in% TCCQ_FORCING_POLICIES) {
+    tccq_abort(
+      "schema.invalid_forcing_policy",
+      "`forcing_policy` is not supported.",
+      phase = "schema",
+      path = "call_semantics.forcing_policy",
+      data = list(value = forcing_policy, supported = TCCQ_FORCING_POLICIES)
+    )
+  }
+  if (!dispatch_kind %in% TCCQ_DISPATCH_KINDS) {
+    tccq_abort(
+      "schema.invalid_dispatch_kind",
+      "`dispatch_kind` is not supported.",
+      phase = "schema",
+      path = "call_semantics.dispatch_kind",
+      data = list(value = dispatch_kind, supported = TCCQ_DISPATCH_KINDS)
+    )
+  }
+  .tccq_check_logical_scalar(lexical_scope, "lexical_scope")
+  .tccq_check_logical_scalar(replacement, "replacement")
+  .tccq_check_logical_scalar(control, "control")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqCallSemantics(
+    call = call,
+    evaluator_kind = evaluator_kind,
+    forcing_policy = forcing_policy,
+    dispatch_kind = dispatch_kind,
+    lexical_scope = lexical_scope,
+    replacement = replacement,
+    control = control,
+    attrs = c(facts$attrs, attrs)
+  )
+}
+
+#' Collect evaluator facts for calls
+#'
+#' @param calls List of `TccqCall` objects.
+#' @param env Environment used to resolve ordinary function names.
+#' @export
+tccq_collect_call_semantics <- function(calls, env = baseenv()) {
+  .tccq_check_list_of(calls, TccqCall, "TccqCall", "calls")
+  if (!is.environment(env)) {
+    tccq_abort(
+      "schema.invalid_environment",
+      "`env` must be an environment.",
+      phase = "schema",
+      path = "call_semantics.env",
+      data = list(actual = typeof(env))
+    )
+  }
+  lapply(calls, tccq_call_semantics, env = env)
+}
+
+#' Construct a typed call index
+#'
+#' @param calls List of observed calls.
+#' @param semantics Optional list of call evaluator facts. If omitted, inferred.
+#' @param env Environment used when inferring missing semantics.
+#' @param attrs Structured index attributes.
+#' @export
+tccq_call_index <- function(
+  calls,
+  semantics = NULL,
+  env = baseenv(),
+  attrs = list()
+) {
+  .tccq_check_list_of(calls, TccqCall, "TccqCall", "calls")
+  calls <- .tccq_ensure_call_ids(calls)
+  if (is.null(semantics)) {
+    semantics <- tccq_collect_call_semantics(calls, env = env)
+  }
+  .tccq_check_list_of(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  .tccq_check_call_index_alignment(calls, semantics)
+  .tccq_check_list(attrs, "attrs")
+
+  TccqCallIndex(calls = calls, semantics = semantics, attrs = attrs)
+}
+
+#' Collect a typed call index from an R expression
+#'
+#' @param expr R expression to inspect.
+#' @param global_calls Additional function names found by `codetools`.
+#' @param env Environment used to resolve ordinary function names.
+#' @param attrs Structured index attributes.
+#' @export
+tccq_collect_call_index <- function(
+  expr,
+  global_calls = character(),
+  env = baseenv(),
+  attrs = list()
+) {
+  tccq_call_index(
+    tccq_collect_calls(expr, global_calls = global_calls),
+    env = env,
     attrs = attrs
   )
 }
@@ -404,11 +599,21 @@ tccq_op_registry_add <- function(registry, implementations) {
 #' @export
 tccq_collect_calls <- function(expr, global_calls = character()) {
   calls <- list()
+  next_id <- 0L
+  make_id <- function() {
+    next_id <<- next_id + 1L
+    sprintf("call_%04d", next_id)
+  }
   walk <- function(node) {
     if (!is.call(node)) {
       return(NULL)
     }
-    calls[[length(calls) + 1L]] <<- tccq_call(tccq_call_name(node), node, "ast")
+    calls[[length(calls) + 1L]] <<- tccq_call(
+      tccq_call_name(node),
+      node,
+      "ast",
+      id = make_id()
+    )
     for (child in as.list(node)[-1L]) {
       walk(child)
     }
@@ -416,7 +621,7 @@ tccq_collect_calls <- function(expr, global_calls = character()) {
   }
   walk(expr)
   for (name in global_calls) {
-    calls[[length(calls) + 1L]] <- tccq_call(name, origin = "codetools")
+    calls[[length(calls) + 1L]] <- tccq_call(name, origin = "codetools", id = make_id())
   }
   calls
 }
@@ -460,8 +665,11 @@ tccq_registry_supports <- function(registry, call, context = tccq_op_context()) 
 
   for (impl in registry@implementations) {
     s7contract::assert_trait(impl, TccqOpImplementation, arg = "impl")
-    ok <- with(TccqOpImplementation, tccq_op_supports(impl, call, context))
-    if (isTRUE(ok)) {
+    implementation_supports_call <- with(
+      TccqOpImplementation,
+      tccq_op_supports(impl, call, context)
+    )
+    if (isTRUE(implementation_supports_call)) {
       return(TRUE)
     }
   }
@@ -505,6 +713,53 @@ tccq_call_name <- function(call) {
   names
 }
 
+.tccq_ensure_call_ids <- function(calls) {
+  ids <- vapply(calls, function(call) call@id, character(1))
+  if (all(nzchar(ids)) && !anyDuplicated(ids)) {
+    return(calls)
+  }
+  lapply(seq_along(calls), function(i) {
+    .tccq_call_with_id(calls[[i]], sprintf("call_%04d", i))
+  })
+}
+
+.tccq_call_with_id <- function(call, id) {
+  tccq_call(
+    call@name,
+    expr = call@expr,
+    origin = call@origin,
+    id = id,
+    kind = call@kind,
+    arity = call@arity,
+    argument_names = call@argument_names,
+    attrs = call@attrs
+  )
+}
+
+.tccq_check_call_index_alignment <- function(calls, semantics) {
+  call_ids <- vapply(calls, function(call) call@id, character(1))
+  if (any(!nzchar(call_ids)) || anyDuplicated(call_ids)) {
+    tccq_abort(
+      "schema.invalid_call_index_ids",
+      "Call index ids must be non-empty and unique.",
+      phase = "schema",
+      path = "call_index.calls",
+      data = list(ids = call_ids)
+    )
+  }
+  semantic_ids <- vapply(semantics, function(x) x@call@id, character(1))
+  if (!identical(call_ids, semantic_ids)) {
+    tccq_abort(
+      "schema.call_index_mismatch",
+      "Call semantics must align one-to-one with calls by id.",
+      phase = "schema",
+      path = "call_index.semantics",
+      data = list(calls = call_ids, semantics = semantic_ids)
+    )
+  }
+  invisible(TRUE)
+}
+
 .tccq_infer_call_kind <- function(name) {
   if (identical(name, "{")) {
     return("block")
@@ -542,6 +797,127 @@ tccq_call_name <- function(call) {
     ":", ">", ">=", "<", "<=", "==", "!=", "!", "&", "&&", "|", "||", "~",
     "<-", "<<-", "->", "->>", "="
   )
+}
+
+.tccq_infer_call_semantics <- function(call, env) {
+  fn <- .tccq_resolve_call_function(call@name, env)
+  evaluator_kind <- .tccq_infer_evaluator_kind(call, fn)
+  forcing_policy <- .tccq_infer_forcing_policy(call, evaluator_kind)
+  dispatch_kind <- .tccq_infer_dispatch_kind(call, fn, evaluator_kind)
+  list(
+    evaluator_kind = evaluator_kind,
+    forcing_policy = forcing_policy,
+    dispatch_kind = dispatch_kind,
+    lexical_scope = identical(evaluator_kind, "closure") ||
+      identical(call@kind, "function_definition"),
+    replacement = identical(call@kind, "replacement"),
+    control = identical(call@kind, "control"),
+    attrs = list(
+      resolved = !is.null(fn),
+      primitive = is.function(fn) && is.primitive(fn)
+    )
+  )
+}
+
+.tccq_resolve_call_function <- function(name, env) {
+  if (name %in% c("declare", "type")) {
+    return(NULL)
+  }
+  get0(name, envir = env, mode = "function", inherits = TRUE)
+}
+
+.tccq_infer_evaluator_kind <- function(call, fn) {
+  if (call@name %in% c("declare", "type")) {
+    return("compiler_directive")
+  }
+  if (is.function(fn)) {
+    kind <- typeof(fn)
+    if (kind %in% c("special", "builtin", "closure")) {
+      return(kind)
+    }
+  }
+  "unknown"
+}
+
+.tccq_infer_forcing_policy <- function(call, evaluator_kind) {
+  if (identical(call@kind, "replacement")) {
+    return("replacement")
+  }
+  switch(
+    evaluator_kind,
+    compiler_directive = "compiler",
+    special = "special",
+    builtin = "eager",
+    closure = "lazy",
+    unknown = "unknown",
+    "unknown"
+  )
+}
+
+.tccq_infer_dispatch_kind <- function(call, fn, evaluator_kind) {
+  if (identical(call@kind, "replacement")) {
+    return("replacement")
+  }
+  if (call@name %in% c("UseMethod", "NextMethod")) {
+    return("s3")
+  }
+  if (call@name %in% c(.tccq_ops_group(), .tccq_math_group(), .tccq_summary_group())) {
+    return("group_generic")
+  }
+  if (call@name %in% .tccq_s3_primitive_generics()) {
+    return("s3_primitive")
+  }
+  if (identical(evaluator_kind, "closure") && .tccq_body_uses_call(body(fn), "UseMethod")) {
+    return("s3")
+  }
+  if (identical(evaluator_kind, "unknown")) {
+    return("unknown")
+  }
+  "none"
+}
+
+.tccq_body_uses_call <- function(expr, name) {
+  found <- FALSE
+  walk <- function(node) {
+    if (found || !is.call(node)) {
+      return(NULL)
+    }
+    if (identical(tccq_call_name(node), name)) {
+      found <<- TRUE
+      return(NULL)
+    }
+    for (child in as.list(node)[-1L]) {
+      walk(child)
+    }
+    NULL
+  }
+  walk(expr)
+  found
+}
+
+.tccq_s3_primitive_generics <- function() {
+  get(".S3PrimitiveGenerics", envir = baseenv(), inherits = FALSE)
+}
+
+.tccq_ops_group <- function() {
+  c(
+    "+", "-", "*", "/", "^", "%%", "%/%", "&", "|", "!", "==", "!=", "<",
+    "<=", ">=", ">"
+  )
+}
+
+.tccq_math_group <- function() {
+  c(
+    "abs", "sign", "sqrt", "floor", "ceiling", "trunc", "round", "signif",
+    "exp", "log", "expm1", "log1p", "cos", "sin", "tan", "cospi", "sinpi",
+    "tanpi", "acos", "asin", "atan", "cosh", "sinh", "tanh", "acosh",
+    "asinh", "atanh", "lgamma", "gamma", "digamma", "trigamma", "cumsum",
+    "cumprod", "cummax", "cummin"
+  )
+}
+
+.tccq_summary_group <- function() {
+  c("all", "any", "sum", "prod", "min", "max", "range")
 }
 
 .tccq_op_impl_supports <- function(impl, call, context) {

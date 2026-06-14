@@ -8,6 +8,7 @@ tccq_call(
   name,
   expr = NULL,
   origin = "ast",
+  id = "",
   kind = NULL,
   arity = NULL,
   argument_names = NULL,
@@ -20,6 +21,8 @@ tccq_call(
 \item{expr}{Original R call expression.}
 
 \item{origin}{Source of the call observation.}
+
+\item{id}{Stable call id.}
 
 \item{kind}{Structural call kind.}
 

@@ -13,7 +13,17 @@ TccqPassSpec <- S7::new_class(
   properties = list(
     name = S7::class_character,
     run = S7::class_function
-  )
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (!is.function(self@run)) {
+      problems <- c(problems, "@run must be a function")
+    }
+    if (length(problems) > 0L) problems
+  }
 )
 
 #' Run a compiler pass

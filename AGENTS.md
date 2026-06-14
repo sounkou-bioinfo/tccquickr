@@ -154,6 +154,14 @@ For the reset core, keep these rules explicit:
   attributes so later passes can attach promise semantics, lexical environment
   requirements, dispatch rules, effects, domains, implementations, and backend
   feasibility.
+- `TccqCallSemantics` is the next abstraction boundary after `TccqCall`. Use it
+  for evaluator facts such as special vs builtin vs closure, eager vs lazy vs
+  special promise forcing, group-generic/S3/replacement dispatch, lexical-scope
+  dependence, and control/replacement flags. Do not rediscover those facts in
+  backend code or operation predicates.
+- `TccqCallIndex` is the current analysis handoff: stable call ids plus
+  one-to-one `TccqCall` and `TccqCallSemantics` lists. `TccqProgram@call_index`
+  should be consumed by later lowering passes before adding new AST walkers.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.

@@ -10,6 +10,10 @@
   }
 }
 
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}
+
 .tccq_check_logical_scalar <- function(x, arg) {
   if (!is.logical(x) || length(x) != 1L || is.na(x)) {
     tccq_abort(

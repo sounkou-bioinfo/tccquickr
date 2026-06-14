@@ -13,6 +13,12 @@ expect_true(S7::S7_inherits(pass, TccqPassSpec))
 expect_true(S7::S7_inherits(out, TccqProgram))
 expect_equal(out@name, "identity")
 
+bad_pass_shape <- tryCatch(
+  TccqPassSpec(name = "", run = function(program) program),
+  error = identity
+)
+expect_true(inherits(bad_pass_shape, "error"))
+
 bad <- tccq_pass("bad", function(program) "not a program")
 err <- tryCatch(
   tccq_run_pipeline(program, list(bad)),

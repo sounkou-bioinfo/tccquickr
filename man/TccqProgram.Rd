@@ -10,7 +10,10 @@ TccqProgram(
   values = list(),
   regions = list(),
   result = NULL,
-  diagnostics = list()
+  diagnostics = list(),
+  call_index = NULL,
+  storage_plan = NULL,
+  attrs = list()
 )
 }
 \arguments{
@@ -25,6 +28,12 @@ TccqProgram(
 \item{result}{Result value id or object.}
 
 \item{diagnostics}{List of diagnostics attached to the program.}
+
+\item{call_index}{Typed frontend call handoff.}
+
+\item{storage_plan}{Optional middle-end storage plan.}
+
+\item{attrs}{Structured program attributes.}
 }
 \description{
 Program schema

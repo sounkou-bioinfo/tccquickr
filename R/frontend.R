@@ -1,8 +1,9 @@
 #' Analyze a declared R function into the fresh program schema
 #'
 #' This is intentionally narrow. It parses `declare(type(...))` declarations,
-#' records a program schema, and reports calls without implementations as
-#' classed diagnostics. It does not lower or compile yet.
+#' records a program schema, reports calls without implementations as classed
+#' diagnostics, and runs the first backend-neutral expression lowering pass when
+#' frontend facts are clean.
 #'
 #' @param fn Function to analyze.
 #' @param strict If `TRUE`, throw the first diagnostic as a classed condition.
@@ -27,19 +28,19 @@ tccq_analyze <- function(
     if (isTRUE(strict)) {
       tccq_abort_diagnostic(diagnostic)
     }
-    return(tccq_result(FALSE, diagnostics = list(diagnostic)))
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
   }
 
-  diagnostics <- list()
+  frontend_diagnostics <- list()
   declarations <- .tccq_extract_declarations(fn)
-  diagnostics <- c(diagnostics, declarations$diagnostics)
+  frontend_diagnostics <- c(frontend_diagnostics, declarations$diagnostics)
   global_calls <- codetools::findGlobals(fn, merge = FALSE)$functions
 
   formal_names <- names(formals(fn))
   declared_names <- names(declarations$bindings)
   missing <- setdiff(formal_names, declared_names)
   if (length(missing) > 0L) {
-    diagnostics <- c(diagnostics, lapply(missing, function(name) {
+    frontend_diagnostics <- c(frontend_diagnostics, lapply(missing, function(name) {
       tccq_diagnostic(
         "frontend.missing_declaration",
         sprintf("Formal `%s` has no declared type.", name),
@@ -50,9 +51,14 @@ tccq_analyze <- function(
     }))
   }
 
-  calls <- tccq_collect_calls(body(fn), global_calls)
+  call_index <- tccq_collect_call_index(
+    body(fn),
+    global_calls = global_calls,
+    env = environment(fn)
+  )
+  calls <- call_index@calls
   unimplemented <- tccq_unimplemented_calls(calls, registry, context)
-  diagnostics <- c(diagnostics, lapply(unimplemented, function(call_name) {
+  frontend_diagnostics <- c(frontend_diagnostics, lapply(unimplemented, function(call_name) {
     tccq_diagnostic(
       "frontend.unimplemented_call",
       sprintf("Call `%s` has no implementation in the current registry/context.", call_name),
@@ -62,17 +68,39 @@ tccq_analyze <- function(
     )
   }))
 
+  lowering <- NULL
+  lowering_diagnostics <- list()
+  if (length(frontend_diagnostics) == 0L) {
+    lowering <- tccq_lower_function(
+      fn,
+      declarations$bindings,
+      registry = registry,
+      context = context
+    )
+    lowering_diagnostics <- lowering@diagnostics
+  }
+  program_diagnostics <- c(frontend_diagnostics, lowering_diagnostics)
+
   program <- tccq_program(
     name = .tccq_function_name(fn),
     formals = declarations$bindings,
-    diagnostics = diagnostics
+    values = if (is.null(lowering)) list() else lowering@values,
+    regions = if (is.null(lowering)) list() else lowering@regions,
+    result = if (is.null(lowering)) NULL else lowering@result,
+    diagnostics = program_diagnostics,
+    call_index = call_index,
+    storage_plan = if (is.null(lowering)) NULL else lowering@storage_plan,
+    attrs = list(
+      lowered = !is.null(lowering) && !is.null(lowering@result),
+      lowering = if (is.null(lowering)) NULL else lowering@attrs
+    )
   )
 
-  ok <- length(diagnostics) == 0L
-  if (!ok && isTRUE(strict)) {
-    tccq_abort_diagnostic(diagnostics[[1L]])
+  analysis_succeeded <- length(frontend_diagnostics) == 0L
+  if (!analysis_succeeded && isTRUE(strict)) {
+    tccq_abort_diagnostic(frontend_diagnostics[[1L]])
   }
-  tccq_result(ok, value = program, diagnostics = diagnostics)
+  tccq_result(success = analysis_succeeded, value = program, diagnostics = frontend_diagnostics)
 }
 
 #' Compile a declared R function
@@ -94,7 +122,7 @@ tccq_compile <- function(
   strict = TRUE
 ) {
   analysis <- tccq_analyze(fn, strict = FALSE)
-  if (!analysis@ok) {
+  if (!analysis@success) {
     if (isTRUE(strict)) {
       tccq_abort_diagnostic(analysis@diagnostics[[1L]])
     }
@@ -102,7 +130,7 @@ tccq_compile <- function(
   }
 
   plan <- tccq_plan_backends(analysis@value, backends = backends, context = context)
-  if (!plan@ok && isTRUE(strict)) {
+  if (!plan@success && isTRUE(strict)) {
     tccq_abort_diagnostic(plan@diagnostics[[1L]])
   }
   plan

@@ -24,6 +24,18 @@ expect_equal(backend@target, "c")
 expect_true("jit" %in% backend@modes)
 expect_true("buffer_bridge" %in% backend@capabilities)
 
+bad_runtime <- tryCatch(
+  TccqRuntimePolicy(
+    mode = "interactive",
+    allow_interrupts = TRUE,
+    check_interval = 1024L,
+    emit_debug_sites = FALSE,
+    attrs = list()
+  ),
+  error = identity
+)
+expect_true(inherits(bad_runtime, "error"))
+
 fortran_backend <- tccq_fortran_backend()
 graph_backend <- tccq_anvil_graph_backend()
 object_backend <- tccq_r_object_backend()
@@ -51,6 +63,19 @@ expect_true(S7::S7_inherits(site, TccqDebugSite))
 expect_true(S7::S7_inherits(safepoint, TccqSafepoint))
 expect_equal(site@source@file, "README.Rmd")
 expect_false(safepoint@requires_rapi)
+
+bad_source_span <- tryCatch(
+  TccqSourceSpan(
+    file = "",
+    line = 10L,
+    column = 1L,
+    end_line = 9L,
+    end_column = 1L,
+    label = ""
+  ),
+  error = identity
+)
+expect_true(inherits(bad_source_span, "error"))
 
 double_n <- tccq_type("double", tccq_shape("n"))
 buffer_n <- tccq_type("buffer", tccq_shape("n"))
@@ -100,8 +125,47 @@ expect_equal(length(plan@bridges), 1L)
 expect_equal(length(plan@safepoints), 1L)
 expect_equal(length(plan@debug_sites), 1L)
 
+bad_backend_plan <- tryCatch(
+  TccqBackendPlan(
+    id = "bad.plan",
+    backend_id = backend@id,
+    family = "c",
+    mode = "jit",
+    target = "c",
+    capabilities = "jit",
+    regions = list(region),
+    bridges = list("not a bridge plan"),
+    safepoints = list(safepoint),
+    debug_sites = list(site),
+    diagnostics = list(),
+    attrs = list()
+  ),
+  error = identity
+)
+expect_true(inherits(bad_backend_plan, "error"))
+
+bad_backend_spec <- tryCatch(
+  TccqBackendSpec(
+    id = "bad",
+    family = "c",
+    target = "c",
+    driver = "bad-driver",
+    modes = "jit",
+    region_kinds = "kernel",
+    memory_spaces = "host",
+    capabilities = "imaginary_capability",
+    uses_rapi = FALSE,
+    attrs = list(),
+    prepare = function(backend, program, context) {
+      tccq_result(success = FALSE)
+    }
+  ),
+  error = identity
+)
+expect_true(inherits(bad_backend_spec, "error"))
+
 planned <- tccq_plan_backend(program, backend, context)
-expect_false(planned@ok)
+expect_false(planned@success)
 expect_true(S7::S7_inherits(planned@value, TccqBackendPlan))
 expect_equal(planned@value@backend_id, "rtinycc")
 expect_equal(planned@value@family, "c")
@@ -121,7 +185,7 @@ missing_capability <- tccq_plan_backend(
     required_capabilities = "device_memory"
   )
 )
-expect_false(missing_capability@ok)
+expect_false(missing_capability@success)
 expect_true(any(vapply(
   missing_capability@diagnostics,
   function(x) identical(x@code, "backend.missing_capability"),
@@ -133,7 +197,7 @@ unsupported_mode <- tccq_plan_backend(
   backend,
   tccq_backend_context(mode = "shared_library", target = "c")
 )
-expect_false(unsupported_mode@ok)
+expect_false(unsupported_mode@success)
 expect_true(any(vapply(
   unsupported_mode@diagnostics,
   function(x) identical(x@code, "backend.unsupported_mode"),
@@ -151,7 +215,7 @@ compile_probe <- function(x) {
   sqrt(x)
 }
 compiled <- tccq_compile(compile_probe, strict = FALSE)
-expect_false(compiled@ok)
+expect_false(compiled@success)
 expect_true(S7::S7_inherits(compiled@value, TccqBackendPlanSet))
 expect_true(length(compiled@value@plans) >= 4L)
 expect_true(any(vapply(
@@ -159,3 +223,46 @@ expect_true(any(vapply(
   function(x) identical(x@code, "backend.lowering_absent"),
   logical(1)
 )))
+
+vector_add <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  x + y
+}
+
+vector_program <- tccq_analyze(vector_add)
+expect_true(vector_program@success)
+expect_true(vector_program@value@attrs$lowered)
+
+c_source_plan <- tccq_plan_backend(
+  vector_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(c_source_plan@success)
+expect_equal(c_source_plan@value@attrs$source_language, "c")
+expect_true(grepl("double \\*", c_source_plan@value@attrs$source))
+expect_true(grepl("input_0001", c_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(S7::S7_inherits(c_source_plan@value@attrs$storage_plan, TccqStoragePlan))
+expect_equal(length(c_source_plan@value@bridges), 3L)
+
+fortran_source_plan <- tccq_plan_backend(
+  vector_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(fortran_source_plan@success)
+expect_equal(fortran_source_plan@value@attrs$source_language, "fortran")
+expect_true(grepl("subroutine", fortran_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("iso_c_binding", fortran_source_plan@value@attrs$source, fixed = TRUE))
+expect_equal(length(fortran_source_plan@value@bridges), 3L)
+
+if (requireNamespace("Rtinycc", quietly = TRUE)) {
+  jit_plan <- tccq_plan_backend(
+    vector_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(jit_plan@success)
+  expect_equal(jit_plan@diagnostics, list())
+  expect_equal(jit_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
+}

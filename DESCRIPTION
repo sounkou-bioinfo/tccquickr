@@ -12,8 +12,8 @@ Authors@R: c(
 Description: A hard-reset experimental compiler core for a declared subset of R.
     The package now starts from typed schemas, classed diagnostics, explicit
     compiler contracts, shape-aware intermediate representations, and generic
-    backend planning. Code emission is intentionally absent until the semantic
-    core is strong enough to lower.
+    backend planning. Initial source printers consume a backend-neutral lowered
+    program rather than owning compiler semantics.
 License: GPL (>= 3)
 Depends: R (>= 4.4.0)
 Imports:
@@ -21,6 +21,7 @@ Imports:
     S7,
     s7contract
 Suggests:
+    Rtinycc,
     tinytest
 Additional_repositories: https://sounkou-bioinfo.r-universe.dev
 Encoding: UTF-8

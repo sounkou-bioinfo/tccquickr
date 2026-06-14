@@ -4,10 +4,10 @@
 \alias{tccq_result}
 \title{Create a compiler result}
 \usage{
-tccq_result(ok, value = NULL, diagnostics = list())
+tccq_result(success, value = NULL, diagnostics = list())
 }
 \arguments{
-\item{ok}{Whether compilation can continue.}
+\item{success}{Whether the phase completed without diagnostics.}
 
 \item{value}{Result value for the phase.}
 

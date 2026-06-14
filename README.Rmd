@@ -10,9 +10,12 @@ The new root is declared R programs, not source editing. Compiler values are S7
 objects, compiler protocols are expressed with `s7contract` interfaces and
 traits, and failures are classed diagnostics rather than string checks. Shape,
 layout, effects, regions, operation implementations, and fusion candidates are
-modeled before C emission exists. Backend planning is now a typed layer too:
-Rtinycc is represented as one backend descriptor for a C/TinyCC path, not as the
-compiler architecture. Fake backward compatibility is not part of the reset.
+modeled before a backend printer decides syntax. Backend planning is now a
+typed layer too: Rtinycc is represented as one backend descriptor for a
+C/TinyCC path, not as the compiler architecture. Minimal C, Fortran, and
+Rtinycc paths now consume a lowered program for a tiny elementwise subset, but
+the semantic contract remains the R-level typed program. Fake backward
+compatibility is not part of the reset.
 
 ## Core model
 
@@ -57,6 +60,20 @@ rules, effects, domains, implementations, and backend feasibility. An opaque
 call is still an operation candidate; it is not automatically R call evaluation
 and it is not illegal merely because we do not yet know how to lower it.
 
+The next layer is `TccqCallSemantics`. It records facts the evaluator would care
+about before any backend exists: whether the call resolves to a special form,
+builtin, closure, compiler directive, or unknown function; whether arguments are
+forced eagerly, lazily, specially, through replacement evaluation, or by the
+compiler; whether dispatch is ordinary, S3, primitive S3, group-generic, or
+replacement dispatch; and whether lexical scope is part of the call contract.
+Frontend analysis stores both observed calls and these semantics in a
+`TccqCallIndex`, then attaches that typed index to `TccqProgram@call_index` so
+lowering has checked facts available rather than digging through untyped
+attributes. The current expression lowerer still reconstructs value
+dependencies from the function body for a very small subset; moving operation
+resolution fully onto typed call and implementation records is one of the next
+tightening passes.
+
 ## Operations
 
 Function/operator support is contextual. The frontend does not own a fixed
@@ -74,6 +91,28 @@ The operation registry answers implementation questions, not grammar questions.
 If a call has no implementation in the current registry and context, analysis
 returns a classed `frontend.unimplemented_call` diagnostic. That diagnostic says
 what is missing from the compiler model; it does not mean the call is not R.
+
+## Current lowering boundary
+
+The first lowering pass is deliberately small. It handles scalar and rank-one
+elementwise expressions over declared `integer` and `double` values for `+`,
+`-`, `*`, `/`, unary negation, `sqrt`, and `exp`. It returns a
+`TccqLoweringPlan`, then embeds the plan into `TccqProgram` as values, regions,
+fusion groups, and storage facts. This is not a general legality pass and it is
+not the place where new language coverage should sprawl.
+
+The important constraint is that lowering failure is not frontend failure. A
+registered opaque operation can be a valid analyzed operation even when the
+current lowerer cannot emit it. Backend planning then reports that no lowered
+program is available for the requested backend. This preserves the difference
+between "R operation not modeled", "operation modeled but not lowerable here",
+and "operation lowerable but unsupported by this backend".
+
+The minimal storage plan marks formals, literals, temporaries, and the output
+explicitly so printers can consume a typed plan. The reuse group is intentionally
+conservative scaffolding for the elementwise subset; real storage reuse needs a
+liveness, aliasing, mutation, materialization, and layout pass before it can
+become aggressive.
 
 ## Control flow
 
@@ -122,10 +161,12 @@ contains assigned regions, bridges, safepoints, debug sites, diagnostics,
 capabilities, and backend attributes.
 
 Rtinycc comes for free only in the sense that it is one current driver for C
-source and TinyCC JIT modes. It should not decide the IR. The core backend suite
-also includes a generic C descriptor, a quickr-style Fortran descriptor, an
-anvil-style graph/StableHLO/XLA descriptor, and an R call-evaluation descriptor.
-Those different families pressure the same typed representation from different
+source and TinyCC JIT modes. It should not decide the IR. The generic C
+descriptor, the Rtinycc descriptor, and the quickr-style Fortran descriptor now
+print source from the same lowered elementwise program. The anvil-style
+graph/StableHLO/XLA descriptor and the R call-evaluation descriptor still report
+typed planning diagnostics until their corresponding lowerings exist. Those
+different families pressure the same typed representation from different
 directions, reducing the chance that the IR is secretly reward-hacked for one
 concrete backend.
 

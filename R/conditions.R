@@ -18,12 +18,28 @@ TccqDiagnostic <- S7::new_class(
     phase = S7::class_character,
     path = S7::class_character,
     data = S7::class_list
-  )
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@code) != 1L || is.na(self@code) || !nzchar(self@code)) {
+      problems <- c(problems, "@code must be a single non-empty string")
+    }
+    if (length(self@message) != 1L || is.na(self@message) || !nzchar(self@message)) {
+      problems <- c(problems, "@message must be a single non-empty string")
+    }
+    if (length(self@phase) != 1L || is.na(self@phase) || !nzchar(self@phase)) {
+      problems <- c(problems, "@phase must be a single non-empty string")
+    }
+    if (length(self@path) != 1L || is.na(self@path)) {
+      problems <- c(problems, "@path must be a single string")
+    }
+    if (length(problems) > 0L) problems
+  }
 )
 
 #' Compiler result value
 #'
-#' @param ok Whether compilation can continue.
+#' @param success Whether the phase completed without diagnostics.
 #' @param value Result value for the phase.
 #' @param diagnostics List of `TccqDiagnostic` values.
 #' @export
@@ -31,10 +47,26 @@ TccqResult <- S7::new_class(
   "TccqResult",
   package = "tccquickr",
   properties = list(
-    ok = S7::class_logical,
+    success = S7::class_logical,
     value = S7::class_any,
     diagnostics = S7::class_list
-  )
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@success) != 1L || is.na(self@success)) {
+      problems <- c(problems, "@success must be a single TRUE/FALSE value")
+    }
+    diagnostics_are_tccq_diagnostics <- vapply(
+      self@diagnostics,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqDiagnostic
+    )
+    if (!all(diagnostics_are_tccq_diagnostics)) {
+      problems <- c(problems, "@diagnostics must contain only <TccqDiagnostic> values")
+    }
+    if (length(problems) > 0L) problems
+  }
 )
 
 #' Create a compiler diagnostic
@@ -76,14 +108,14 @@ tccq_diagnostic <- function(
 
 #' Create a compiler result
 #'
-#' @param ok Whether compilation can continue.
+#' @param success Whether the phase completed without diagnostics.
 #' @param value Result value for the phase.
 #' @param diagnostics List of `TccqDiagnostic` values.
 #' @export
-tccq_result <- function(ok, value = NULL, diagnostics = list()) {
-  .tccq_check_logical_scalar(ok, "ok")
+tccq_result <- function(success, value = NULL, diagnostics = list()) {
+  .tccq_check_logical_scalar(success, "success")
   .tccq_check_list_of(diagnostics, TccqDiagnostic, "TccqDiagnostic", "diagnostics")
-  TccqResult(ok = ok, value = value, diagnostics = diagnostics)
+  TccqResult(success = success, value = value, diagnostics = diagnostics)
 }
 
 tccq_abort <- function(
