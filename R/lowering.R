@@ -114,6 +114,9 @@ tccq_lower_function <- function(
     if (call_name %in% c("sqrt", "exp") && length(expr) == 2L) {
       return(lower_call(call_name, as.list(expr)[-1L], expr, state))
     }
+    if (identical(call_name, "sum")) {
+      return(lower_reduction(call_name, as.list(expr)[-1L], expr, state))
+    }
 
     diagnostic_value(
       "lowering.unsupported_call",
@@ -223,6 +226,85 @@ tccq_lower_function <- function(
     list(value_id = value_id, type = result_type, diagnostics = list())
   }
 
+  lower_reduction <- function(reducer, args, expr, state) {
+    if (length(args) != 1L) {
+      return(diagnostic_value(
+        "lowering.unsupported_reducer_arity",
+        sprintf("Reducer `%s` currently accepts exactly one expression argument.", reducer),
+        expr,
+        data = list(reducer = reducer, arity = length(args))
+      ))
+    }
+
+    call <- tccq_call(reducer, expr = expr)
+    resolution <- tccq_resolve_call(registry, call, context)
+    if (!resolution@success) {
+      return(diagnostic_value(
+        "lowering.unimplemented_operation",
+        sprintf("Reducer `%s` has no lowerable implementation in this context.", reducer),
+        expr,
+        data = list(op = reducer, diagnostics = resolution@diagnostics)
+      ))
+    }
+    resolved_operation <- resolution@value
+    if (!isTRUE(resolved_operation@pure) || isTRUE(resolved_operation@boundary)) {
+      return(diagnostic_value(
+        "lowering.effectful_operation",
+        sprintf("Reducer `%s` is modeled but is not legal in a fused reduction region.", reducer),
+        expr,
+        data = list(
+          op = reducer,
+          target = resolved_operation@target,
+          boundary = resolved_operation@boundary,
+          pure = resolved_operation@pure
+        )
+      ))
+    }
+
+    lowered_arg <- lower_expression(args[[1L]], state)
+    if (length(lowered_arg$diagnostics) > 0L) {
+      return(lowered_arg)
+    }
+    if (lowered_arg$type@shape@rank != 1L) {
+      return(diagnostic_value(
+        "lowering.unsupported_reducer_rank",
+        "The current reducer lowerer supports only rank-one inputs.",
+        expr,
+        data = list(reducer = reducer, rank = lowered_arg$type@shape@rank)
+      ))
+    }
+    if (!lowered_arg$type@base %in% c("integer", "double")) {
+      return(diagnostic_value(
+        "lowering.unsupported_type",
+        "The current reducer lowerer only supports integer and double values.",
+        expr,
+        data = list(base = lowered_arg$type@base)
+      ))
+    }
+
+    result_type <- tccq_type(lowered_arg$type@base)
+    identity_value <- if (identical(result_type@base, "integer")) 0L else 0
+    identity <- tccq_literal_finite(identity_value, type = result_type)
+    value_id <- next_value_id(state)
+    add_value(
+      state,
+      tccq_value(
+        id = value_id,
+        op = reducer,
+        inputs = list(lowered_arg$value_id),
+        type = result_type,
+        effect = resolved_operation@effect,
+        attrs = list(
+          lowering = "reduction",
+          reducer = reducer,
+          identity = identity,
+          resolved_op = resolved_operation
+        )
+      )
+    )
+    list(value_id = value_id, type = result_type, diagnostics = list())
+  }
+
   infer_result_type <- function(op, input_types) {
     unsupported_bases <- setdiff(
       unique(vapply(input_types, function(type) type@base, character(1))),
@@ -282,8 +364,13 @@ tccq_lower_function <- function(
 
   plan_regions <- function(values, result_id) {
     result_value <- values[[result_id]]
-    result_shape <- result_value@type@shape
-    domain <- tccq_domain("domain_main", result_shape)
+    result_is_reduction <- identical(result_value@attrs$lowering, "reduction")
+    domain_shape <- if (isTRUE(result_is_reduction)) {
+      values[[result_value@inputs[[1L]]]]@type@shape
+    } else {
+      result_value@type@shape
+    }
+    domain <- tccq_domain("domain_main", domain_shape)
     lowered_values <- unname(values)
     operation_values <- Filter(
       function(value) !value@op %in% c("formal", "literal"),
@@ -297,16 +384,26 @@ tccq_lower_function <- function(
       access_kind <- if (value@type@shape@rank == 0L) "scalar" else "identity"
       tccq_access(value@id, domain, kind = access_kind)
     })
-    region_kind <- if (result_shape@rank > 0L) "kernel" else "host"
+    region_kind <- if (domain_shape@rank > 0L) "kernel" else "host"
     region_target <- common_region_field(
       resolved_operations,
       function(resolved_operation) resolved_operation@target,
       default = "any"
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
+    fusion_kind <- if (isTRUE(result_is_reduction)) "map_reduce" else "map"
+    fusion_attrs <- if (isTRUE(result_is_reduction)) {
+      list(
+        storage = "fused-map-reduce",
+        reducer = result_value@attrs$reducer,
+        identity = result_value@attrs$identity
+      )
+    } else {
+      list(storage = "fused-elementwise")
+    }
     fusion <- tccq_fusion_group(
       "fusion_main",
-      "map",
+      fusion_kind,
       domain = domain,
       values = operation_values,
       outputs = result_id,
@@ -314,7 +411,7 @@ tccq_lower_function <- function(
       region_kind = region_kind,
       target = region_target,
       effect = region_effect,
-      attrs = list(storage = "fused-elementwise")
+      attrs = fusion_attrs
     )
     list(tccq_region(
       "region_main",
@@ -324,7 +421,7 @@ tccq_lower_function <- function(
       effect = region_effect,
       memory_space = "host",
       touches_rapi = FALSE,
-      attrs = list(result = result_id)
+      attrs = list(result = result_id, lowering = result_value@attrs$lowering)
     ))
   }
 
@@ -379,7 +476,11 @@ tccq_lower_function <- function(
     tccq_storage_plan(
       slots = slots,
       reuse_groups = reuse_groups,
-      attrs = list(strategy = "fused-elementwise")
+      attrs = list(strategy = if (identical(values[[result_id]]@attrs$lowering, "reduction")) {
+        "fused-map-reduce"
+      } else {
+        "fused-elementwise"
+      })
     )
   }
 
@@ -441,6 +542,10 @@ tccq_lower_function <- function(
     regions = regions,
     result = result$value_id,
     storage_plan = storage_plan,
-    attrs = list(strategy = "elementwise-expression")
+    attrs = list(strategy = if (identical(state$values[[result$value_id]]@attrs$lowering, "reduction")) {
+      "map-reduce-expression"
+    } else {
+      "elementwise-expression"
+    })
   )
 }

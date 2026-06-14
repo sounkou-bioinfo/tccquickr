@@ -1033,6 +1033,7 @@ tccq_default_op_registry <- function() {
     "declare", "type", TCCQ_BASE_TYPES
   )
   scalar_ops <- c("+", "-", "*", "/", "^", "sqrt", "exp")
+  reducer_ops <- c("sum")
   tccq_op_registry(c(
     lapply(language_ops, function(op) {
       tccq_op_impl(op, target = "r_language", pure = FALSE)
@@ -1043,6 +1044,14 @@ tccq_default_op_registry <- function() {
         target = "pure_c",
         region_kind = "kernel",
         render = scalar_renderers[[op]]
+      )
+    }),
+    lapply(reducer_ops, function(op) {
+      tccq_op_impl(
+        op,
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE)
       )
     })
   ))

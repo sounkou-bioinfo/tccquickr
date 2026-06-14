@@ -84,6 +84,22 @@ fortran_power <- tccq_op_render(
 expect_true(fortran_power@success)
 expect_equal(fortran_power@value, "(left ** right)")
 
+resolved_sum <- tccq_resolve_call(default_registry, tccq_call("sum"), tccq_op_context())
+expect_true(resolved_sum@success)
+expect_equal(resolved_sum@value@target, "pure_c")
+expect_equal(resolved_sum@value@region_kind, "kernel")
+unrendered_sum <- tccq_op_render(
+  resolved_sum@value@implementation,
+  "input_0001",
+  render_context
+)
+expect_false(unrendered_sum@success)
+expect_true(any(vapply(
+  unrendered_sum@diagnostics,
+  function(x) identical(x@code, "ops.unrenderable_operation"),
+  logical(1)
+)))
+
 if_semantics <- tccq_call_semantics(tccq_call("if"))
 expect_equal(if_semantics@evaluator_kind, "special")
 expect_equal(if_semantics@forcing_policy, "special")

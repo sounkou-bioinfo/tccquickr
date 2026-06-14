@@ -90,6 +90,30 @@ expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@kind, "map")
 expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@region_kind, "kernel")
 expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@target, "pure_c")
 
+map_reduce <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  sum(exp(x) * y)
+}
+
+map_reduce_result <- tccq_analyze(map_reduce)
+expect_true(map_reduce_result@success)
+expect_true(map_reduce_result@value@attrs$lowered)
+expect_equal(map_reduce_result@value@attrs$lowering$strategy, "map-reduce-expression")
+
+reduction_value <- map_reduce_result@value@values[[map_reduce_result@value@result]]
+expect_equal(reduction_value@op, "sum")
+expect_equal(reduction_value@type@shape@rank, 0L)
+expect_equal(reduction_value@attrs$lowering, "reduction")
+expect_equal(reduction_value@attrs$reducer, "sum")
+expect_true(S7::S7_inherits(reduction_value@attrs$identity, TccqLiteral))
+
+reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
+expect_equal(reduction_fusion@kind, "map_reduce")
+expect_equal(reduction_fusion@region_kind, "kernel")
+expect_equal(reduction_fusion@domain@shape@rank, 1L)
+expect_equal(reduction_fusion@attrs$reducer, "sum")
+expect_equal(map_reduce_result@value@storage_plan@attrs$strategy, "fused-map-reduce")
+
 call_program <- function(x) {
   declare(type(x = double(n)))
   if (length(x) > 0L) {

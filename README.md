@@ -243,14 +243,17 @@ is obvious.
 
 The current targets are not hidden package functions. They are explicit
 apotheosis examples: small probes that exercise one compiler idea at a
-time, and larger programs that force those ideas to compose. They cannot
-compile today. Making these programs pass through a typed IR is the
-first serious milestone.
+time, and larger programs that force those ideas to compose. The first
+rank-one map and map-reduce probes now pass through typed IR and source
+planning, while the remaining probes are still expected to fail with
+structured diagnostics. Making each failure move deeper through the same
+typed IR is the first serious milestone.
 
 ## Minimal probes
 
-These examples are intentionally small. Each should move from structured
-failure to typed IR before we add more surface area.
+These examples are intentionally small. Each unsupported probe should
+move from structured failure to typed IR before we add more surface
+area.
 
 ``` r
 map_chain <- function(x, y) {

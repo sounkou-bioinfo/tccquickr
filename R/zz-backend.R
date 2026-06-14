@@ -1438,6 +1438,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       NULL
     }
 
+    expression_is_reduction <- function(expression) {
+      identical(expression@kind, "operation") &&
+        identical(expression@attrs$lowering, "reduction") &&
+        length(expression@inputs) == 1L
+    }
+
+    source_needs_length_argument <- function(source_expression, result) {
+      result@type@shape@rank == 1L || expression_is_reduction(source_expression)
+    }
+
     expression_text <- function(expression, parameter_by_value_id, index_name, language) {
       if (identical(expression@kind, "reference")) {
         parameter_name <- parameter_by_value_id[[expression@value_id]]
@@ -1495,6 +1505,44 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           vector_parameter(parameter_name)
         }
       }, formals, parameter_names)
+      if (expression_is_reduction(source_expression)) {
+        if (!identical(source_expression@attrs$reducer, "sum")) {
+          tccq_abort(
+            "backend.unsupported_reducer",
+            "The source printer does not support this reducer yet.",
+            phase = "backend",
+            path = sprintf("backend.%s.reducer", backend@id),
+            data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
+          )
+        }
+        length_name <- "length_0001"
+        index_name <- "index_0001"
+        accumulator_name <- "accumulator_0001"
+        reduced_expression <- expression_text(
+          source_expression@inputs[[1L]],
+          parameter_by_value_id,
+          index_name,
+          "c"
+        )
+        signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
+        return(paste(c(
+          "#include <math.h>",
+          "#include <stddef.h>",
+          "",
+          sprintf(
+            "double %s(%s) {",
+            symbol,
+            paste(signature_declarations, collapse = ", ")
+          ),
+          sprintf("  double %s = 0.0;", accumulator_name),
+          sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, length_name, index_name),
+          sprintf("    %s += %s;", accumulator_name, reduced_expression),
+          "  }",
+          sprintf("  return %s;", accumulator_name),
+          "}"
+        ), collapse = "\n"))
+      }
+
       if (result@type@shape@rank == 0L) {
         expression <- expression_text(source_expression, parameter_by_value_id, NULL, "c")
         return(paste(c(
@@ -1541,6 +1589,53 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         parameter_names,
         vapply(formals, function(value) value@id, character(1))
       ))
+
+      if (expression_is_reduction(source_expression)) {
+        if (!identical(source_expression@attrs$reducer, "sum")) {
+          tccq_abort(
+            "backend.unsupported_reducer",
+            "The source printer does not support this reducer yet.",
+            phase = "backend",
+            path = sprintf("backend.%s.reducer", backend@id),
+            data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
+          )
+        }
+        length_name <- "length_0001"
+        index_name <- "index_0001"
+        declarations <- Map(function(value, parameter_name) {
+          if (value@type@shape@rank == 0L) {
+            sprintf("  real(c_double), value :: %s", parameter_name)
+          } else {
+            sprintf("  real(c_double), intent(in) :: %s(%s)", parameter_name, length_name)
+          }
+        }, formals, parameter_names)
+        reduced_expression <- expression_text(
+          source_expression@inputs[[1L]],
+          parameter_by_value_id,
+          index_name,
+          "fortran"
+        )
+        return(paste(c(
+          sprintf(
+            "function %s(%s) bind(c, name = \"%s\") result(output)",
+            symbol,
+            paste(c(parameter_names, length_name), collapse = ", "),
+            symbol
+          ),
+          "  use iso_c_binding, only: c_double, c_int",
+          "  implicit none",
+          sprintf("  integer(c_int), value :: %s", length_name),
+          unlist(declarations),
+          "  real(c_double) :: output",
+          sprintf("  integer(c_int) :: %s", index_name),
+          "  output = 0.0_c_double",
+          sprintf("  do %s = 1, %s", index_name, length_name),
+          sprintf("    output = output + %s", reduced_expression),
+          "  end do",
+          sprintf("end function %s", symbol)
+        ), collapse = "\n"))
+      }
+
       if (result@type@shape@rank == 0L) {
         declarations <- Map(function(value, parameter_name) {
           sprintf("  real(c_double), value :: %s", parameter_name)
@@ -1588,7 +1683,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ), collapse = "\n")
     }
 
-    compile_with_rtinycc <- function(plan, symbol, result, formals) {
+    compile_with_rtinycc <- function(plan, symbol, source_expression, result, formals) {
       if (!requireNamespace("Rtinycc", quietly = TRUE)) {
         diagnostic <- tccq_diagnostic(
           "backend.rtinycc_unavailable",
@@ -1604,10 +1699,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ffi_arg_types <- lapply(formals, function(value) {
         if (value@type@shape@rank == 0L) "f64" else "numeric_array"
       })
+      needs_length_argument <- source_needs_length_argument(source_expression, result)
       if (result@type@shape@rank == 1L) {
         ffi_arg_types <- c(ffi_arg_types, list("i32"))
         ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
       } else {
+        if (needs_length_argument) {
+          ffi_arg_types <- c(ffi_arg_types, list("i32"))
+        }
         ffi_return <- "f64"
       }
 
@@ -1664,7 +1763,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           element_count <- vector_lengths[[1L]]
         }
         call_arguments <- arguments
-        if (result@type@shape@rank == 1L) {
+        if (needs_length_argument) {
           call_arguments <- c(call_arguments, list(as.integer(element_count)))
         }
         do.call(compiled[[symbol]], call_arguments)
@@ -1760,7 +1859,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     )
 
     if (isTRUE(execute_with_rtinycc) && identical(context@mode, "jit")) {
-      return(compile_with_rtinycc(plan, symbol, result, formals))
+      return(compile_with_rtinycc(plan, symbol, source_expression, result, formals))
     }
     tccq_result(success = TRUE, value = plan, diagnostics = list())
   }

@@ -262,7 +262,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       inputs = input_expressions,
       type = value@type,
       resolved_op = resolved_operation,
-      attrs = list(effect = value@effect)
+      attrs = c(list(effect = value@effect), value@attrs)
     )
   }
 
