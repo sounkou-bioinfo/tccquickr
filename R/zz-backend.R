@@ -44,6 +44,7 @@ TCCQ_SAFEPOINT_KINDS <- c(
   "debug_break"
 )
 TCCQ_DEBUG_SITE_KINDS <- c("value", "region", "bridge", "safepoint", "control", "call")
+TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "map", "reduction")
 
 #' Runtime instrumentation policy
 #'
@@ -313,6 +314,108 @@ TccqBridgePlan <- S7::new_class(
         !self@to_space %in% TCCQ_MEMORY_SPACES
     ) {
       problems <- c(problems, "@to_space must be one supported memory space")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Backend function interface
+#'
+#' A backend function interface is the source-level callable boundary consumed
+#' by C, Rtinycc, Fortran, and later source printers. It records the generated
+#' symbol, formal parameter mapping, length/index variables, and reduction
+#' accumulator name before any concrete syntax is emitted.
+#'
+#' @param symbol Generated function symbol.
+#' @param source_language Source language consumed by the printer.
+#' @param kind Function shape: scalar, map, or reduction.
+#' @param parameter_names Generated parameter names.
+#' @param parameter_value_ids Lowered value ids corresponding to parameters.
+#' @param result_value_id Lowered result value id.
+#' @param needs_length Whether the callable receives a length parameter.
+#' @param length_name Generated length parameter name, or empty string.
+#' @param index_name Generated loop index name, or empty string.
+#' @param accumulator_name Generated reduction accumulator name, or empty string.
+#' @param attrs Structured interface metadata.
+#' @export
+TccqBackendFunctionInterface <- S7::new_class(
+  "TccqBackendFunctionInterface",
+  package = "tccquickr",
+  properties = list(
+    symbol = S7::class_character,
+    source_language = S7::class_character,
+    kind = S7::class_character,
+    parameter_names = S7::class_character,
+    parameter_value_ids = S7::class_character,
+    result_value_id = S7::class_character,
+    needs_length = S7::class_logical,
+    length_name = S7::class_character,
+    index_name = S7::class_character,
+    accumulator_name = S7::class_character,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    scalar_strings <- list(
+      symbol = self@symbol,
+      source_language = self@source_language,
+      kind = self@kind,
+      result_value_id = self@result_value_id,
+      length_name = self@length_name,
+      index_name = self@index_name,
+      accumulator_name = self@accumulator_name
+    )
+    for (field_name in names(scalar_strings)) {
+      field_value <- scalar_strings[[field_name]]
+      if (length(field_value) != 1L || is.na(field_value)) {
+        problems <- c(problems, sprintf("@%s must be a single string", field_name))
+      }
+    }
+    if (length(self@symbol) == 1L && !is.na(self@symbol) && !nzchar(self@symbol)) {
+      problems <- c(problems, "@symbol must be non-empty")
+    }
+    if (
+      length(self@source_language) == 1L &&
+        !is.na(self@source_language) &&
+        !self@source_language %in% TCCQ_OP_RENDER_LANGUAGES
+    ) {
+      problems <- c(problems, "@source_language must be one supported source language")
+    }
+    if (
+      length(self@kind) == 1L &&
+        !is.na(self@kind) &&
+        !self@kind %in% TCCQ_BACKEND_FUNCTION_KINDS
+    ) {
+      problems <- c(problems, "@kind must be one supported backend function kind")
+    }
+    if (length(self@needs_length) != 1L || is.na(self@needs_length)) {
+      problems <- c(problems, "@needs_length must be a single TRUE/FALSE value")
+    }
+    if (length(self@parameter_names) != length(self@parameter_value_ids)) {
+      problems <- c(problems, "@parameter_names and @parameter_value_ids must have the same length")
+    }
+    if (anyNA(self@parameter_names) || any(!nzchar(self@parameter_names))) {
+      problems <- c(problems, "@parameter_names must contain non-empty strings")
+    }
+    if (anyNA(self@parameter_value_ids) || any(!nzchar(self@parameter_value_ids))) {
+      problems <- c(problems, "@parameter_value_ids must contain non-empty value ids")
+    }
+    if (isTRUE(self@needs_length) && !nzchar(self@length_name)) {
+      problems <- c(problems, "@length_name must be non-empty when @needs_length is TRUE")
+    }
+    if (
+      length(self@kind) == 1L &&
+        !is.na(self@kind) &&
+        self@kind %in% c("map", "reduction") &&
+        !nzchar(self@index_name)
+    ) {
+      problems <- c(problems, "map and reduction interfaces must have an index name")
+    }
+    if (identical(self@kind, "reduction") && !nzchar(self@accumulator_name)) {
+      problems <- c(problems, "reduction interfaces must have an accumulator name")
+    }
+    if (identical(self@kind, "scalar") && isTRUE(self@needs_length)) {
+      problems <- c(problems, "scalar interfaces must not require a length parameter")
     }
     if (length(problems) > 0L) problems
   }
@@ -897,6 +1000,104 @@ tccq_bridge_plan <- function(
   )
 }
 
+#' Construct a backend function interface
+#'
+#' @param symbol Generated function symbol.
+#' @param source_language Source language consumed by the printer.
+#' @param kind Function shape: scalar, map, or reduction.
+#' @param parameter_names Generated parameter names.
+#' @param parameter_value_ids Lowered value ids corresponding to parameters.
+#' @param result_value_id Lowered result value id.
+#' @param needs_length Whether the callable receives a length parameter.
+#' @param length_name Generated length parameter name, or empty string.
+#' @param index_name Generated loop index name, or empty string.
+#' @param accumulator_name Generated reduction accumulator name, or empty string.
+#' @param attrs Structured interface metadata.
+#' @export
+tccq_backend_function_interface <- function(
+  symbol,
+  source_language,
+  kind,
+  parameter_names = character(),
+  parameter_value_ids = character(),
+  result_value_id,
+  needs_length = FALSE,
+  length_name = "",
+  index_name = "",
+  accumulator_name = "",
+  attrs = list()
+) {
+  .tccq_check_character_scalar(symbol, "symbol")
+  .tccq_check_character_scalar(source_language, "source_language")
+  if (!source_language %in% TCCQ_OP_RENDER_LANGUAGES) {
+    tccq_abort(
+      "schema.invalid_backend_function_source_language",
+      "`source_language` is not supported.",
+      phase = "schema",
+      path = "backend_function.source_language",
+      data = list(source_language = source_language, supported = TCCQ_OP_RENDER_LANGUAGES)
+    )
+  }
+  .tccq_check_character_scalar(kind, "kind")
+  if (!kind %in% TCCQ_BACKEND_FUNCTION_KINDS) {
+    tccq_abort(
+      "schema.invalid_backend_function_kind",
+      "`kind` is not a supported backend function kind.",
+      phase = "schema",
+      path = "backend_function.kind",
+      data = list(kind = kind, supported = TCCQ_BACKEND_FUNCTION_KINDS)
+    )
+  }
+  if (!is.character(parameter_names) || anyNA(parameter_names) || any(!nzchar(parameter_names))) {
+    tccq_abort(
+      "schema.invalid_backend_function_parameters",
+      "`parameter_names` must contain non-empty strings.",
+      phase = "schema",
+      path = "backend_function.parameter_names"
+    )
+  }
+  if (
+    !is.character(parameter_value_ids) ||
+      anyNA(parameter_value_ids) ||
+      any(!nzchar(parameter_value_ids))
+  ) {
+    tccq_abort(
+      "schema.invalid_backend_function_parameters",
+      "`parameter_value_ids` must contain non-empty strings.",
+      phase = "schema",
+      path = "backend_function.parameter_value_ids"
+    )
+  }
+  if (length(parameter_names) != length(parameter_value_ids)) {
+    tccq_abort(
+      "schema.invalid_backend_function_parameters",
+      "`parameter_names` and `parameter_value_ids` must have the same length.",
+      phase = "schema",
+      path = "backend_function.parameters"
+    )
+  }
+  .tccq_check_character_scalar(result_value_id, "result_value_id")
+  .tccq_check_logical_scalar(needs_length, "needs_length")
+  .tccq_check_character_or_empty(length_name, "length_name")
+  .tccq_check_character_or_empty(index_name, "index_name")
+  .tccq_check_character_or_empty(accumulator_name, "accumulator_name")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqBackendFunctionInterface(
+    symbol = symbol,
+    source_language = source_language,
+    kind = kind,
+    parameter_names = parameter_names,
+    parameter_value_ids = parameter_value_ids,
+    result_value_id = result_value_id,
+    needs_length = needs_length,
+    length_name = length_name,
+    index_name = index_name,
+    accumulator_name = accumulator_name,
+    attrs = attrs
+  )
+}
+
 #' Construct a backend plan
 #'
 #' @param id Stable plan id.
@@ -1444,8 +1645,30 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         length(expression@inputs) == 1L
     }
 
-    source_needs_length_argument <- function(source_expression, result) {
-      result@type@shape@rank == 1L || expression_is_reduction(source_expression)
+    backend_function_interface <- function(symbol, source_expression, result, formals) {
+      parameter_names <- c_identifier("input", seq_along(formals))
+      parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
+      kind <- if (expression_is_reduction(source_expression)) {
+        "reduction"
+      } else if (result@type@shape@rank == 1L) {
+        "map"
+      } else {
+        "scalar"
+      }
+      needs_length <- kind %in% c("map", "reduction")
+      tccq_backend_function_interface(
+        symbol = symbol,
+        source_language = source_language,
+        kind = kind,
+        parameter_names = parameter_names,
+        parameter_value_ids = parameter_value_ids,
+        result_value_id = result@id,
+        needs_length = needs_length,
+        length_name = if (needs_length) "length_0001" else "",
+        index_name = if (needs_length) "index_0001" else "",
+        accumulator_name = if (identical(kind, "reduction")) "accumulator_0001" else "",
+        attrs = list(result_type = result@type)
+      )
     }
 
     expression_text <- function(expression, parameter_by_value_id, index_name, language) {
@@ -1525,11 +1748,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       combine_result@value
     }
 
-    emit_c_source <- function(symbol, source_expression, result, formals) {
-      parameter_names <- c_identifier("input", seq_along(formals))
+    emit_c_source <- function(interface, source_expression, result, formals) {
+      symbol <- interface@symbol
+      parameter_names <- interface@parameter_names
       parameter_by_value_id <- as.list(stats::setNames(
         parameter_names,
-        vapply(formals, function(value) value@id, character(1))
+        interface@parameter_value_ids
       ))
       scalar_parameter <- function(parameter_name) {
         sprintf("double %s", parameter_name)
@@ -1544,7 +1768,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           vector_parameter(parameter_name)
         }
       }, formals, parameter_names)
-      if (expression_is_reduction(source_expression)) {
+      if (identical(interface@kind, "reduction")) {
         reduction_spec <- source_expression@attrs$reduction
         if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
           tccq_abort(
@@ -1555,9 +1779,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
           )
         }
-        length_name <- "length_0001"
-        index_name <- "index_0001"
-        accumulator_name <- "accumulator_0001"
+        length_name <- interface@length_name
+        index_name <- interface@index_name
+        accumulator_name <- interface@accumulator_name
         identity <- reduction_identity_text(reduction_spec, result@type, "c")
         reduced_expression <- expression_text(
           source_expression@inputs[[1L]],
@@ -1590,7 +1814,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ), collapse = "\n"))
       }
 
-      if (result@type@shape@rank == 0L) {
+      if (identical(interface@kind, "scalar")) {
         expression <- expression_text(source_expression, parameter_by_value_id, NULL, "c")
         return(paste(c(
           "#include <math.h>",
@@ -1601,8 +1825,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ), collapse = "\n"))
       }
 
-      length_name <- "length_0001"
-      index_name <- "index_0001"
+      length_name <- interface@length_name
+      index_name <- interface@index_name
       expression <- expression_text(source_expression, parameter_by_value_id, index_name, "c")
       signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
       paste(c(
@@ -1630,14 +1854,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ), collapse = "\n")
     }
 
-    emit_fortran_source <- function(symbol, source_expression, result, formals) {
-      parameter_names <- c_identifier("input", seq_along(formals))
+    emit_fortran_source <- function(interface, source_expression, result, formals) {
+      symbol <- interface@symbol
+      parameter_names <- interface@parameter_names
       parameter_by_value_id <- as.list(stats::setNames(
         parameter_names,
-        vapply(formals, function(value) value@id, character(1))
+        interface@parameter_value_ids
       ))
 
-      if (expression_is_reduction(source_expression)) {
+      if (identical(interface@kind, "reduction")) {
         reduction_spec <- source_expression@attrs$reduction
         if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
           tccq_abort(
@@ -1648,8 +1873,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
           )
         }
-        length_name <- "length_0001"
-        index_name <- "index_0001"
+        length_name <- interface@length_name
+        index_name <- interface@index_name
         declarations <- Map(function(value, parameter_name) {
           if (value@type@shape@rank == 0L) {
             sprintf("  real(c_double), value :: %s", parameter_name)
@@ -1691,7 +1916,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ), collapse = "\n"))
       }
 
-      if (result@type@shape@rank == 0L) {
+      if (identical(interface@kind, "scalar")) {
         declarations <- Map(function(value, parameter_name) {
           sprintf("  real(c_double), value :: %s", parameter_name)
         }, formals, parameter_names)
@@ -1707,8 +1932,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ), collapse = "\n"))
       }
 
-      length_name <- "length_0001"
-      index_name <- "index_0001"
+      length_name <- interface@length_name
+      index_name <- interface@index_name
       declarations <- Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("  real(c_double), value :: %s", parameter_name)
@@ -1738,7 +1963,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ), collapse = "\n")
     }
 
-    compile_with_rtinycc <- function(plan, symbol, source_expression, result, formals) {
+    compile_with_rtinycc <- function(plan, interface, result, formals) {
+      symbol <- interface@symbol
       if (!requireNamespace("Rtinycc", quietly = TRUE)) {
         diagnostic <- tccq_diagnostic(
           "backend.rtinycc_unavailable",
@@ -1754,7 +1980,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ffi_arg_types <- lapply(formals, function(value) {
         if (value@type@shape@rank == 0L) "f64" else "numeric_array"
       })
-      needs_length_argument <- source_needs_length_argument(source_expression, result)
+      needs_length_argument <- interface@needs_length
       if (result@type@shape@rank == 1L) {
         ffi_arg_types <- c(ffi_arg_types, list("i32"))
         ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
@@ -1850,11 +2076,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     source_expression <- source_expression_result@value
 
     symbol <- source_symbol()
+    function_interface <- backend_function_interface(symbol, source_expression, result, formals)
     source_result <- tryCatch(
       switch(
         source_language,
-        c = emit_c_source(symbol, source_expression, result, formals),
-        fortran = emit_fortran_source(symbol, source_expression, result, formals),
+        c = emit_c_source(function_interface, source_expression, result, formals),
+        fortran = emit_fortran_source(function_interface, source_expression, result, formals),
         tccq_abort(
           "backend.unsupported_source_language",
           "The source printer does not support this target language.",
@@ -1907,6 +2134,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         runtime = context@runtime,
         source_language = source_language,
         symbol = symbol,
+        function_interface = function_interface,
         source = source,
         expression = source_expression,
         storage_plan = program@storage_plan
@@ -1914,7 +2142,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     )
 
     if (isTRUE(execute_with_rtinycc) && identical(context@mode, "jit")) {
-      return(compile_with_rtinycc(plan, symbol, source_expression, result, formals))
+      return(compile_with_rtinycc(plan, function_interface, result, formals))
     }
     tccq_result(success = TRUE, value = plan, diagnostics = list())
   }

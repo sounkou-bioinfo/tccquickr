@@ -187,6 +187,15 @@ the raw value graph or rediscover operation semantics themselves. When a
 printer reaches an operation node, it asks the resolved implementation
 to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
+The generated callable boundary is a second explicit plan value:
+`TccqBackendFunctionInterface`. It records the source symbol,
+scalar/map/reduction shape, parameter names, lowered parameter value
+ids, result value id, and the length/index/accumulator names needed by
+generated loops. C, Rtinycc, and Fortran consume that same interface
+before choosing whether the concrete source uses a C return value, a
+Fortran function result, a Fortran output argument, or a TinyCC FFI
+signature.
+
 ## Control flow
 
 Control flow has to become structured IR. `for`, `while`, `repeat`,
@@ -239,7 +248,8 @@ Rtinycc comes for free only in the sense that it is one current driver
 for C source and TinyCC JIT modes. It should not decide the IR. The
 generic C descriptor, the Rtinycc descriptor, and the quickr-style
 Fortran descriptor now print source from the same lowered elementwise
-program through the same `TccqExpression` handoff. The anvil-style
+program through the same `TccqExpression` and
+`TccqBackendFunctionInterface` handoffs. The anvil-style
 graph/StableHLO/XLA descriptor and the R call-evaluation descriptor
 still report typed planning diagnostics until their corresponding
 lowerings exist. Those different families pressure the same typed

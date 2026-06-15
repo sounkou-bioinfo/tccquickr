@@ -259,6 +259,10 @@ expect_true(grepl("double \\*", c_source_plan@value@attrs$source))
 expect_true(grepl("input_0001", c_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$expression, TccqExpression))
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$storage_plan, TccqStoragePlan))
+expect_true(S7::S7_inherits(c_source_plan@value@attrs$function_interface, TccqBackendFunctionInterface))
+expect_equal(c_source_plan@value@attrs$function_interface@kind, "map")
+expect_true(c_source_plan@value@attrs$function_interface@needs_length)
+expect_equal(c_source_plan@value@attrs$function_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
 expect_equal(length(c_source_plan@value@bridges), 3L)
 
 negation_program <- function(x) {
@@ -369,6 +373,9 @@ expect_equal(fortran_source_plan@value@attrs$source_language, "fortran")
 expect_true(grepl("subroutine", fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("iso_c_binding", fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$expression, TccqExpression))
+expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$function_interface, TccqBackendFunctionInterface))
+expect_equal(fortran_source_plan@value@attrs$function_interface@kind, "map")
+expect_equal(fortran_source_plan@value@attrs$function_interface@source_language, "fortran")
 expect_equal(length(fortran_source_plan@value@bridges), 3L)
 
 bound_chain <- function(x, y) {
@@ -453,6 +460,12 @@ expect_true(grepl("double accumulator_0001 = 0.0;", reduction_c_source_plan@valu
 expect_true(grepl("for (int index_0001 = 0;", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("accumulator_0001 = accumulator_0001 + ", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("int length_0001", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(S7::S7_inherits(
+  reduction_c_source_plan@value@attrs$function_interface,
+  TccqBackendFunctionInterface
+))
+expect_equal(reduction_c_source_plan@value@attrs$function_interface@kind, "reduction")
+expect_equal(reduction_c_source_plan@value@attrs$function_interface@accumulator_name, "accumulator_0001")
 expect_equal(length(reduction_c_source_plan@value@bridges), 3L)
 
 reduction_fortran_source_plan <- tccq_plan_backend(

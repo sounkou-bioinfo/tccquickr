@@ -238,6 +238,10 @@ For the reset core, keep these rules explicit:
   `TccqBridgePlan` values. Do not hide `SEXP -> buffer`, `buffer -> SEXP`,
   host/device transfer, layout conversion, tile materialization, or object-mode
   boundaries inside emitted strings.
+- Backend planning must also make generated callable shape explicit through
+  `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
+  source printers independently infer scalar/map/reduction shape, generated
+  parameter mapping, length/index variables, or reduction accumulator names.
 - Interrupt and debugger support belong in runtime policy, safepoints, and debug
   sites. Host/R-API regions may use direct R interrupt checks; pure kernel,
   parallel, and device regions need chunking, polling, or host orchestration
