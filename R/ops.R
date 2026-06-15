@@ -467,10 +467,13 @@ tccq_elementwise_spec <- function(
   attrs = list()
 ) {
   .tccq_check_character_scalar(name, "name")
-  if (!is.integer(arity)) {
-    arity <- as.integer(arity)
-  }
-  if (length(arity) == 0L || anyNA(arity) || any(arity <= 0L)) {
+  if (
+    !is.numeric(arity) ||
+      length(arity) == 0L ||
+      anyNA(arity) ||
+      any(arity <= 0L) ||
+      any(arity != as.integer(arity))
+  ) {
     tccq_abort(
       "schema.invalid_elementwise_arity",
       "`arity` must contain positive integer arities.",
@@ -479,6 +482,7 @@ tccq_elementwise_spec <- function(
       data = list(arity = arity)
     )
   }
+  arity <- as.integer(arity)
   if (!is.function(result_type)) {
     tccq_abort(
       "schema.invalid_elementwise_result_type",
@@ -755,6 +759,13 @@ tccq_register_traits <- function() {
           return(FALSE)
         }
         if (isTRUE(impl@boundary) && !isTRUE(context@allow_boundary)) {
+          return(FALSE)
+        }
+        if (
+          S7::S7_inherits(impl@elementwise, TccqElementwiseSpec) &&
+            !is.na(call@arity) &&
+            !(call@arity %in% impl@elementwise@arity)
+        ) {
           return(FALSE)
         }
         isTRUE(impl@supports(call, context))

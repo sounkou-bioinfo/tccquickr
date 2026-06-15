@@ -96,11 +96,11 @@ tccq_analyze <- function(
     )
   )
 
-  analysis_succeeded <- length(frontend_diagnostics) == 0L
+  analysis_succeeded <- length(program_diagnostics) == 0L
   if (!analysis_succeeded && isTRUE(strict)) {
-    tccq_abort_diagnostic(frontend_diagnostics[[1L]])
+    tccq_abort_diagnostic(program_diagnostics[[1L]])
   }
-  tccq_result(success = analysis_succeeded, value = program, diagnostics = frontend_diagnostics)
+  tccq_result(success = analysis_succeeded, value = program, diagnostics = program_diagnostics)
 }
 
 #' Compile a declared R function

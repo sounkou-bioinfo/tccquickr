@@ -65,6 +65,16 @@ expect_false(tccq_registry_supports(
   tccq_op_context(target = "pure_c")
 ))
 
+bad_elementwise_arity <- tryCatch(
+  tccq_elementwise_spec(
+    "bad",
+    1.5,
+    result_type = function(input_types) input_types[[1L]]
+  ),
+  error = identity
+)
+expect_true(inherits(bad_elementwise_arity, "tccq_error"))
+
 resolved_plus <- tccq_resolve_call(default_registry, tccq_call("+"), tccq_op_context())
 expect_true(resolved_plus@success)
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise, TccqElementwiseSpec))
@@ -98,6 +108,43 @@ fortran_power <- tccq_op_render(
 )
 expect_true(fortran_power@success)
 expect_equal(fortran_power@value, "(left ** right)")
+
+unary_foo <- tccq_op_impl(
+  "foo",
+  target = "pure_c",
+  region_kind = "kernel",
+  render = function(operands, context) operands[[1L]],
+  elementwise = tccq_elementwise_spec(
+    "foo_unary",
+    1L,
+    result_type = function(input_types) input_types[[1L]]
+  )
+)
+binary_foo <- tccq_op_impl(
+  "foo",
+  target = "pure_c",
+  region_kind = "kernel",
+  render = function(operands, context) sprintf("(%s + %s)", operands[[1L]], operands[[2L]]),
+  elementwise = tccq_elementwise_spec(
+    "foo_binary",
+    2L,
+    result_type = function(input_types) input_types[[1L]]
+  )
+)
+foo_registry <- tccq_op_registry(c(unary_foo, binary_foo))
+resolved_binary_foo <- tccq_resolve_call(
+  foo_registry,
+  tccq_call("foo", expr = quote(foo(x, y))),
+  tccq_op_context()
+)
+expect_true(resolved_binary_foo@success)
+expect_equal(resolved_binary_foo@value@elementwise@name, "foo_binary")
+unresolved_ternary_foo <- tccq_resolve_call(
+  foo_registry,
+  tccq_call("foo", expr = quote(foo(x, y, z))),
+  tccq_op_context()
+)
+expect_false(unresolved_ternary_foo@success)
 
 resolved_sum <- tccq_resolve_call(default_registry, tccq_call("sum"), tccq_op_context())
 expect_true(resolved_sum@success)
@@ -184,7 +231,13 @@ expect_true(any(vapply(
 )))
 
 custom_result <- tccq_analyze(custom_program, registry = registry)
-expect_true(custom_result@success)
+expect_false(custom_result@success)
+expect_false(custom_result@value@attrs$lowered)
+expect_true(any(vapply(
+  custom_result@diagnostics,
+  function(x) identical(x@code, "lowering.unsupported_call"),
+  logical(1)
+)))
 
 effectful_plus <- tccq_op_impl(
   "+",
@@ -201,10 +254,10 @@ effectful_program <- function(x, y) {
   x + y
 }
 effectful_result <- tccq_analyze(effectful_program, registry = effectful_registry)
-expect_true(effectful_result@success)
+expect_false(effectful_result@success)
 expect_false(effectful_result@value@attrs$lowered)
 expect_true(any(vapply(
-  effectful_result@value@diagnostics,
+  effectful_result@diagnostics,
   function(x) identical(x@code, "lowering.effectful_operation"),
   logical(1)
 )))

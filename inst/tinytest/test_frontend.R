@@ -141,6 +141,28 @@ expect_equal(negation_value@op, "-")
 expect_equal(length(negation_value@inputs), 1L)
 expect_true(S7::S7_inherits(negation_value@attrs$elementwise, TccqElementwiseSpec))
 
+bad_elementwise_arity <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  sqrt(x, y)
+}
+
+bad_elementwise_arity_result <- tccq_analyze(bad_elementwise_arity)
+expect_false(bad_elementwise_arity_result@success)
+expect_false(bad_elementwise_arity_result@value@attrs$lowered)
+expect_true(any(vapply(
+  bad_elementwise_arity_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "frontend.unimplemented_call") &&
+      identical(diagnostic@data$call, "sqrt")
+  },
+  logical(1)
+)))
+bad_elementwise_arity_error <- tryCatch(
+  tccq_analyze(bad_elementwise_arity, strict = TRUE),
+  error = identity
+)
+expect_true(inherits(bad_elementwise_arity_error, "tccq_error"))
+
 square <- function(x) x
 square_registry <- tccq_op_registry_add(
   tccq_default_op_registry(),
@@ -191,10 +213,10 @@ rebound_local <- function(x) {
 }
 
 rebound_result <- tccq_analyze(rebound_local)
-expect_true(rebound_result@success)
+expect_false(rebound_result@success)
 expect_false(rebound_result@value@attrs$lowered)
 expect_true(any(vapply(
-  rebound_result@value@diagnostics,
+  rebound_result@diagnostics,
   function(x) identical(x@code, "lowering.local_rebinding"),
   logical(1)
 )))
@@ -206,10 +228,10 @@ formal_rebinding <- function(x) {
 }
 
 formal_rebinding_result <- tccq_analyze(formal_rebinding)
-expect_true(formal_rebinding_result@success)
+expect_false(formal_rebinding_result@success)
 expect_false(formal_rebinding_result@value@attrs$lowered)
 expect_true(any(vapply(
-  formal_rebinding_result@value@diagnostics,
+  formal_rebinding_result@diagnostics,
   function(x) identical(x@code, "lowering.formal_assignment"),
   logical(1)
 )))
@@ -221,10 +243,10 @@ formal_mutation <- function(x) {
 }
 
 formal_mutation_result <- tccq_analyze(formal_mutation)
-expect_true(formal_mutation_result@success)
+expect_false(formal_mutation_result@success)
 expect_false(formal_mutation_result@value@attrs$lowered)
 expect_true(any(vapply(
-  formal_mutation_result@value@diagnostics,
+  formal_mutation_result@diagnostics,
   function(x) identical(x@code, "lowering.formal_mutation"),
   logical(1)
 )))
