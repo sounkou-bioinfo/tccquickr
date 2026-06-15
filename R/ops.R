@@ -110,6 +110,42 @@ TccqOpRenderContext <- S7::new_class(
   }
 )
 
+#' Elementwise implementation metadata
+#'
+#' An elementwise spec is attached to an operation implementation when calls to
+#' that implementation can lower to elementwise values over the compiler domain
+#' model. It carries arity and result-type rules so lowering does not recognize
+#' elementwise operations by spelling.
+#'
+#' @param name Human-readable elementwise operation name.
+#' @param arity Accepted argument counts.
+#' @param result_type Function from input `TccqType` list to result `TccqType`.
+#' @param attrs Structured elementwise metadata.
+#' @export
+TccqElementwiseSpec <- S7::new_class(
+  "TccqElementwiseSpec",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    arity = S7::class_integer,
+    result_type = S7::class_function,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (length(self@arity) == 0L || anyNA(self@arity) || any(self@arity <= 0L)) {
+      problems <- c(problems, "@arity must contain positive integer arities")
+    }
+    if (!is.function(self@result_type)) {
+      problems <- c(problems, "@result_type must be a function")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Reduction implementation metadata
 #'
 #' A reduction spec is attached to an operation implementation when calls to
@@ -172,6 +208,7 @@ TccqReductionSpec <- S7::new_class(
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
 #' @param render Optional source renderer receiving operand strings and a
 #'   `TccqOpRenderContext`.
+#' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @export
 TccqOpImpl <- S7::new_class(
@@ -188,6 +225,7 @@ TccqOpImpl <- S7::new_class(
     effect = TccqEffect,
     supports = S7::class_function,
     render = S7::new_union(NULL, S7::class_function),
+    elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec)
   ),
   validator = function(self) {
@@ -266,6 +304,8 @@ TccqOpRegistry <- S7::new_class(
 #' @param boundary Whether the selected implementation crosses a boundary.
 #' @param pure Whether the selected implementation is semantically pure.
 #' @param effect Effect summary supplied by the implementation.
+#' @param elementwise Optional elementwise metadata supplied by the
+#'   implementation.
 #' @param reduction Optional reduction metadata supplied by the implementation.
 #' @param attrs Structured resolution metadata.
 #' @export
@@ -282,6 +322,7 @@ TccqResolvedOp <- S7::new_class(
     boundary = S7::class_logical,
     pure = S7::class_logical,
     effect = TccqEffect,
+    elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     attrs = S7::class_list
   ),
@@ -410,6 +451,105 @@ S7::method(tccq_op_render, TccqOpImpl) <- function(impl, operands, context) {
     return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
   }
   tccq_result(success = TRUE, value = rendered_operation)
+}
+
+#' Construct elementwise implementation metadata
+#'
+#' @param name Human-readable elementwise operation name.
+#' @param arity Accepted argument counts.
+#' @param result_type Function from input `TccqType` list to result `TccqType`.
+#' @param attrs Structured elementwise metadata.
+#' @export
+tccq_elementwise_spec <- function(
+  name,
+  arity,
+  result_type,
+  attrs = list()
+) {
+  .tccq_check_character_scalar(name, "name")
+  if (!is.integer(arity)) {
+    arity <- as.integer(arity)
+  }
+  if (length(arity) == 0L || anyNA(arity) || any(arity <= 0L)) {
+    tccq_abort(
+      "schema.invalid_elementwise_arity",
+      "`arity` must contain positive integer arities.",
+      phase = "schema",
+      path = "elementwise.arity",
+      data = list(arity = arity)
+    )
+  }
+  if (!is.function(result_type)) {
+    tccq_abort(
+      "schema.invalid_elementwise_result_type",
+      "`result_type` must be a function.",
+      phase = "schema",
+      path = "elementwise.result_type"
+    )
+  }
+  .tccq_check_list(attrs, "attrs")
+
+  TccqElementwiseSpec(
+    name = name,
+    arity = unique(arity),
+    result_type = result_type,
+    attrs = attrs
+  )
+}
+
+#' Return an elementwise operation result type
+#'
+#' @param spec Elementwise metadata.
+#' @param input_types List of input `TccqType` values.
+#' @export
+tccq_elementwise_result_type <- S7::new_generic(
+  "tccq_elementwise_result_type",
+  dispatch_args = "spec",
+  function(spec, input_types) S7::S7_dispatch()
+)
+
+S7::method(tccq_elementwise_result_type, TccqElementwiseSpec) <- function(spec, input_types) {
+  .tccq_check_list_of(input_types, TccqType, "TccqType", "input_types")
+  if (!length(input_types) %in% spec@arity) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_elementwise_arity",
+      "Elementwise operation arity is not supported by this implementation.",
+      phase = "ops",
+      path = "elementwise.arity",
+      data = list(operation = spec@name, arity = length(input_types), supported = spec@arity)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+
+  result_type <- tryCatch(
+    spec@result_type(input_types),
+    tccq_error = identity,
+    error = identity
+  )
+  if (inherits(result_type, "tccq_error")) {
+    return(tccq_result(success = FALSE, diagnostics = list(tccq_condition_diagnostic(result_type))))
+  }
+  if (inherits(result_type, "error")) {
+    diagnostic <- tccq_diagnostic(
+      "ops.elementwise_result_type_failed",
+      conditionMessage(result_type),
+      phase = "ops",
+      path = "elementwise.result_type",
+      data = list(operation = spec@name)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  if (!S7::S7_inherits(result_type, TccqType)) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_elementwise_result_type",
+      "Elementwise result type functions must return a <TccqType>.",
+      phase = "ops",
+      path = "elementwise.result_type",
+      data = list(operation = spec@name, type = class(result_type))
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  tccq_result(success = TRUE, value = result_type)
 }
 
 #' Construct reduction implementation metadata
@@ -1095,6 +1235,7 @@ tccq_op_render_context <- function(language, backend_id, attrs = list()) {
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
 #' @param render Optional source renderer receiving operand strings and a
 #'   `TccqOpRenderContext`.
+#' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @export
 tccq_op_impl <- function(
@@ -1108,6 +1249,7 @@ tccq_op_impl <- function(
   effect = NULL,
   supports = function(call, context) TRUE,
   render = NULL,
+  elementwise = NULL,
   reduction = NULL
 ) {
   .tccq_check_character_scalar(op, "op")
@@ -1143,6 +1285,7 @@ tccq_op_impl <- function(
       path = "op.render"
     )
   }
+  .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
 
   TccqOpImpl(
@@ -1156,6 +1299,7 @@ tccq_op_impl <- function(
     effect = effect,
     supports = supports,
     render = render,
+    elementwise = elementwise,
     reduction = reduction
   )
 }
@@ -1206,6 +1350,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
     boundary = implementation@boundary,
     pure = implementation@pure,
     effect = implementation@effect,
+    elementwise = implementation@elementwise,
     reduction = implementation@reduction,
     attrs = attrs
   )
@@ -1238,6 +1383,72 @@ tccq_default_op_registry <- function() {
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
   )
+  shape_key <- function(type) {
+    paste(
+      vapply(type@shape@dims, function(dim) {
+        if (identical(dim@kind, "constant")) {
+          return(sprintf("constant:%d", dim@value))
+        }
+        if (identical(dim@kind, "symbol")) {
+          return(sprintf("symbol:%s", dim@label))
+        }
+        "unknown"
+      }, character(1)),
+      collapse = "/"
+    )
+  }
+  numeric_elementwise_result_type <- function(force_double = FALSE) {
+    function(input_types) {
+      unsupported_bases <- setdiff(
+        unique(vapply(input_types, function(type) type@base, character(1))),
+        c("integer", "double")
+      )
+      if (length(unsupported_bases) > 0L) {
+        tccq_abort(
+          "ops.unsupported_elementwise_type",
+          "The default elementwise implementations support integer and double values.",
+          phase = "ops",
+          path = "elementwise.type",
+          data = list(base = unsupported_bases)
+        )
+      }
+
+      non_scalar_types <- Filter(function(type) type@shape@rank > 0L, input_types)
+      shape <- tccq_shape()
+      if (length(non_scalar_types) > 0L) {
+        shape_keys <- unique(vapply(non_scalar_types, shape_key, character(1)))
+        if (length(shape_keys) != 1L) {
+          tccq_abort(
+            "ops.incompatible_elementwise_shapes",
+            "Vectorized expression inputs must have the same shape.",
+            phase = "ops",
+            path = "elementwise.shape",
+            data = list(shapes = shape_keys)
+          )
+        }
+        shape <- non_scalar_types[[1L]]@shape
+      }
+
+      result_base <- if (
+        isTRUE(force_double) ||
+          any(vapply(input_types, function(type) identical(type@base, "double"), logical(1)))
+      ) {
+        "double"
+      } else {
+        "integer"
+      }
+      tccq_type(result_base, shape)
+    }
+  }
+  elementwise_specs <- list(
+    "+" = tccq_elementwise_spec("+", 2L, numeric_elementwise_result_type()),
+    "-" = tccq_elementwise_spec("-", c(1L, 2L), numeric_elementwise_result_type()),
+    "*" = tccq_elementwise_spec("*", 2L, numeric_elementwise_result_type()),
+    "/" = tccq_elementwise_spec("/", 2L, numeric_elementwise_result_type(force_double = TRUE)),
+    "^" = tccq_elementwise_spec("^", 2L, numeric_elementwise_result_type(force_double = TRUE)),
+    sqrt = tccq_elementwise_spec("sqrt", 1L, numeric_elementwise_result_type(force_double = TRUE)),
+    exp = tccq_elementwise_spec("exp", 1L, numeric_elementwise_result_type(force_double = TRUE))
+  )
   base_sum_reduction <- tccq_reduction_spec(
     "sum",
     identity = function(type) {
@@ -1263,17 +1474,17 @@ tccq_default_op_registry <- function() {
     "[", "[[", "$", "@", "[<-", "[[<-", "$<-", "@<-",
     "declare", "type", TCCQ_BASE_TYPES
   )
-  scalar_ops <- c("+", "-", "*", "/", "^", "sqrt", "exp")
   tccq_op_registry(c(
     lapply(language_ops, function(op) {
       tccq_op_impl(op, target = "r_language", pure = FALSE)
     }),
-    lapply(scalar_ops, function(op) {
+    lapply(names(elementwise_specs), function(op) {
       tccq_op_impl(
         op,
         target = "pure_c",
         region_kind = "kernel",
-        render = scalar_renderers[[op]]
+        render = scalar_renderers[[op]],
+        elementwise = elementwise_specs[[op]]
       )
     }),
     list(

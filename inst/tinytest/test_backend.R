@@ -261,6 +261,73 @@ expect_true(S7::S7_inherits(c_source_plan@value@attrs$expression, TccqExpression
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$storage_plan, TccqStoragePlan))
 expect_equal(length(c_source_plan@value@bridges), 3L)
 
+negation_program <- function(x) {
+  declare(type(x = double(n)))
+  -x
+}
+negation_program <- tccq_analyze(negation_program)
+expect_true(negation_program@success)
+expect_true(negation_program@value@attrs$lowered)
+negation_c_plan <- tccq_plan_backend(
+  negation_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(negation_c_plan@success)
+expect_true(grepl("(-input_0001[index_0001])", negation_c_plan@value@attrs$source, fixed = TRUE))
+negation_fortran_plan <- tccq_plan_backend(
+  negation_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(negation_fortran_plan@success)
+expect_true(grepl("(-input_0001(index_0001))", negation_fortran_plan@value@attrs$source, fixed = TRUE))
+
+square <- function(x) x
+square_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "square",
+    target = "pure_c",
+    region_kind = "kernel",
+    render = function(operands, context) sprintf("(%s * %s)", operands[[1L]], operands[[1L]]),
+    elementwise = tccq_elementwise_spec(
+      "square",
+      1L,
+      result_type = function(input_types) input_types[[1L]]
+    )
+  )
+)
+custom_elementwise <- function(x) {
+  declare(type(x = double(n)))
+  square(x)
+}
+custom_elementwise_program <- tccq_analyze(custom_elementwise, registry = square_registry)
+expect_true(custom_elementwise_program@success)
+expect_true(custom_elementwise_program@value@attrs$lowered)
+custom_elementwise_c_plan <- tccq_plan_backend(
+  custom_elementwise_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(custom_elementwise_c_plan@success)
+expect_true(grepl(
+  "(input_0001[index_0001] * input_0001[index_0001])",
+  custom_elementwise_c_plan@value@attrs$source,
+  fixed = TRUE
+))
+custom_elementwise_fortran_plan <- tccq_plan_backend(
+  custom_elementwise_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(custom_elementwise_fortran_plan@success)
+expect_true(grepl(
+  "(input_0001(index_0001) * input_0001(index_0001))",
+  custom_elementwise_fortran_plan@value@attrs$source,
+  fixed = TRUE
+))
+
 unhandled_values <- vector_program@value@values
 unhandled_result <- unhandled_values[[vector_program@value@result]]
 unhandled_values[[vector_program@value@result]] <- tccq_value(
@@ -340,6 +407,25 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   expect_true(jit_plan@success)
   expect_equal(jit_plan@diagnostics, list())
   expect_equal(jit_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
+
+  negation_jit_plan <- tccq_plan_backend(
+    negation_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(negation_jit_plan@success)
+  expect_equal(negation_jit_plan@value@attrs$callable(c(2, -3, 5)), c(-2, 3, -5))
+
+  custom_elementwise_jit_plan <- tccq_plan_backend(
+    custom_elementwise_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(custom_elementwise_jit_plan@success)
+  expect_equal(
+    custom_elementwise_jit_plan@value@attrs$callable(c(2, 3, 5)),
+    c(4, 9, 25)
+  )
 }
 
 map_reduce <- function(x, y) {

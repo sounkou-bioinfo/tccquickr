@@ -175,21 +175,39 @@ tccq_lower_function <- function(
       return(lower_expression(expr[[2L]], state))
     }
 
-    if (identical(call_name, "-") && length(expr) == 2L) {
-      return(lower_call("negate", as.list(expr)[-1L], expr, state))
-    }
-    if (call_name %in% c("+", "-", "*", "/") && length(expr) == 3L) {
-      return(lower_call(call_name, as.list(expr)[-1L], expr, state))
-    }
-    if (call_name %in% c("sqrt", "exp") && length(expr) == 2L) {
-      return(lower_call(call_name, as.list(expr)[-1L], expr, state))
-    }
-    reduction_resolution <- tccq_resolve_call(registry, tccq_call(call_name, expr = expr), context)
+    resolution <- tccq_resolve_call(registry, tccq_call(call_name, expr = expr), context)
     if (
-      reduction_resolution@success &&
-        S7::S7_inherits(reduction_resolution@value@reduction, TccqReductionSpec)
+      resolution@success &&
+        S7::S7_inherits(resolution@value@elementwise, TccqElementwiseSpec)
     ) {
-      return(lower_reduction(reduction_resolution@value, as.list(expr)[-1L], expr, state))
+      return(lower_elementwise(resolution@value, as.list(expr)[-1L], expr, state))
+    }
+    if (
+      resolution@success &&
+        S7::S7_inherits(resolution@value@reduction, TccqReductionSpec)
+    ) {
+      return(lower_reduction(resolution@value, as.list(expr)[-1L], expr, state))
+    }
+    if (resolution@success && (!isTRUE(resolution@value@pure) || isTRUE(resolution@value@boundary))) {
+      return(diagnostic_value(
+        "lowering.effectful_operation",
+        sprintf("Operation `%s` is modeled but is not legal in a fused expression region.", call_name),
+        expr,
+        data = list(
+          op = call_name,
+          target = resolution@value@target,
+          boundary = resolution@value@boundary,
+          pure = resolution@value@pure
+        )
+      ))
+    }
+    if (!resolution@success) {
+      return(diagnostic_value(
+        "lowering.unimplemented_operation",
+        sprintf("Operation `%s` has no lowerable implementation in this context.", call_name),
+        expr,
+        data = list(op = call_name, diagnostics = resolution@diagnostics)
+      ))
     }
 
     diagnostic_value(
@@ -243,18 +261,17 @@ tccq_lower_function <- function(
     list(value_id = value_id, type = literal@type, diagnostics = list())
   }
 
-  lower_call <- function(op, args, expr, state) {
-    call <- tccq_call(if (identical(op, "negate")) "-" else op, expr = expr)
-    resolution <- tccq_resolve_call(registry, call, context)
-    if (!resolution@success) {
+  lower_elementwise <- function(resolved_operation, args, expr, state) {
+    op <- resolved_operation@call@name
+    elementwise_spec <- resolved_operation@elementwise
+    if (!length(args) %in% elementwise_spec@arity) {
       return(diagnostic_value(
-        "lowering.unimplemented_operation",
-        sprintf("Operation `%s` has no lowerable implementation in this context.", op),
+        "lowering.unsupported_elementwise_arity",
+        sprintf("Elementwise operation `%s` does not accept this argument count.", op),
         expr,
-        data = list(op = op, diagnostics = resolution@diagnostics)
+        data = list(op = op, arity = length(args), supported = elementwise_spec@arity)
       ))
     }
-    resolved_operation <- resolution@value
     if (!isTRUE(resolved_operation@pure) || isTRUE(resolved_operation@boundary)) {
       return(diagnostic_value(
         "lowering.effectful_operation",
@@ -277,9 +294,9 @@ tccq_lower_function <- function(
 
     input_ids <- lapply(lowered_args, `[[`, "value_id")
     input_types <- lapply(lowered_args, `[[`, "type")
-    result_type <- infer_result_type(op, input_types)
-    if (S7::S7_inherits(result_type, TccqDiagnostic)) {
-      return(list(value_id = NULL, type = NULL, diagnostics = list(result_type)))
+    result_type <- tccq_elementwise_result_type(elementwise_spec, input_types)
+    if (!result_type@success) {
+      return(list(value_id = NULL, type = NULL, diagnostics = result_type@diagnostics))
     }
 
     value_id <- next_value_id(state)
@@ -289,15 +306,16 @@ tccq_lower_function <- function(
         id = value_id,
         op = op,
         inputs = input_ids,
-        type = result_type,
+        type = result_type@value,
         effect = resolved_operation@effect,
         attrs = list(
           lowering = "elementwise",
+          elementwise = elementwise_spec,
           resolved_op = resolved_operation
         )
       )
     )
-    list(value_id = value_id, type = result_type, diagnostics = list())
+    list(value_id = value_id, type = result_type@value, diagnostics = list())
   }
 
   lower_reduction <- function(resolved_operation, args, expr, state) {
@@ -338,15 +356,6 @@ tccq_lower_function <- function(
         data = list(reducer = reducer, rank = lowered_arg$type@shape@rank)
       ))
     }
-    if (!lowered_arg$type@base %in% c("integer", "double")) {
-      return(diagnostic_value(
-        "lowering.unsupported_type",
-        "The current reducer lowerer only supports integer and double values.",
-        expr,
-        data = list(base = lowered_arg$type@base)
-      ))
-    }
-
     result_type <- tccq_type(lowered_arg$type@base)
     identity_result <- tccq_reduction_identity(reduction_spec, result_type)
     if (!identity_result@success) {
@@ -371,63 +380,6 @@ tccq_lower_function <- function(
       )
     )
     list(value_id = value_id, type = result_type, diagnostics = list())
-  }
-
-  infer_result_type <- function(op, input_types) {
-    unsupported_bases <- setdiff(
-      unique(vapply(input_types, function(type) type@base, character(1))),
-      c("integer", "double")
-    )
-    if (length(unsupported_bases) > 0L) {
-      return(tccq_diagnostic(
-        "lowering.unsupported_type",
-        "The current expression lowerer only supports integer and double values.",
-        phase = "lowering",
-        path = "expression.type",
-        data = list(base = unsupported_bases)
-      ))
-    }
-
-    non_scalar_types <- Filter(function(type) type@shape@rank > 0L, input_types)
-    shape <- tccq_shape()
-    if (length(non_scalar_types) > 0L) {
-      shape_keys <- unique(vapply(non_scalar_types, shape_key, character(1)))
-      if (length(shape_keys) != 1L) {
-        return(tccq_diagnostic(
-          "lowering.incompatible_shapes",
-          "Vectorized expression inputs must have the same shape.",
-          phase = "lowering",
-          path = "expression.shape",
-          data = list(shapes = shape_keys)
-        ))
-      }
-      shape <- non_scalar_types[[1L]]@shape
-    }
-
-    result_base <- if (
-      op %in% c("/", "sqrt", "exp") ||
-        any(vapply(input_types, function(type) identical(type@base, "double"), logical(1)))
-    ) {
-      "double"
-    } else {
-      "integer"
-    }
-    tccq_type(result_base, shape)
-  }
-
-  shape_key <- function(type) {
-    paste(
-      vapply(type@shape@dims, function(dim) {
-        if (identical(dim@kind, "constant")) {
-          return(sprintf("constant:%d", dim@value))
-        }
-        if (identical(dim@kind, "symbol")) {
-          return(sprintf("symbol:%s", dim@label))
-        }
-        "unknown"
-      }, character(1)),
-      collapse = "/"
-    )
   }
 
   plan_regions <- function(values, result_id) {

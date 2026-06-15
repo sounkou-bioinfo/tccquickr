@@ -67,6 +67,14 @@ expect_false(tccq_registry_supports(
 
 resolved_plus <- tccq_resolve_call(default_registry, tccq_call("+"), tccq_op_context())
 expect_true(resolved_plus@success)
+expect_true(S7::S7_inherits(resolved_plus@value@elementwise, TccqElementwiseSpec))
+plus_result_type <- tccq_elementwise_result_type(
+  resolved_plus@value@elementwise,
+  list(tccq_type("integer", tccq_shape(tccq_dim_symbol("n"))), tccq_type("double"))
+)
+expect_true(plus_result_type@success)
+expect_equal(plus_result_type@value@base, "double")
+expect_equal(plus_result_type@value@shape@rank, 1L)
 c_plus <- tccq_op_render(
   resolved_plus@value@implementation,
   c("left", "right"),
@@ -76,6 +84,13 @@ expect_true(c_plus@success)
 expect_equal(c_plus@value, "(left + right)")
 
 resolved_power <- tccq_resolve_call(default_registry, tccq_call("^"), tccq_op_context())
+expect_true(S7::S7_inherits(resolved_power@value@elementwise, TccqElementwiseSpec))
+power_result_type <- tccq_elementwise_result_type(
+  resolved_power@value@elementwise,
+  list(tccq_type("integer", tccq_shape(tccq_dim_symbol("n"))), tccq_type("integer"))
+)
+expect_true(power_result_type@success)
+expect_equal(power_result_type@value@base, "double")
 fortran_power <- tccq_op_render(
   resolved_power@value@implementation,
   c("left", "right"),

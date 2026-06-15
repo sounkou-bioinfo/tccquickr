@@ -115,6 +115,59 @@ expect_equal(reduction_fusion@domain@shape@rank, 1L)
 expect_equal(reduction_fusion@attrs$reducer, "sum")
 expect_equal(map_reduce_result@value@storage_plan@attrs$strategy, "fused-map-reduce")
 
+power_program <- function(x) {
+  declare(type(x = integer(n)))
+  x^2L
+}
+
+power_result <- tccq_analyze(power_program)
+expect_true(power_result@success)
+expect_true(power_result@value@attrs$lowered)
+power_value <- power_result@value@values[[power_result@value@result]]
+expect_equal(power_value@op, "^")
+expect_equal(power_value@type@base, "double")
+expect_true(S7::S7_inherits(power_value@attrs$elementwise, TccqElementwiseSpec))
+
+negation_program <- function(x) {
+  declare(type(x = double(n)))
+  -x
+}
+
+negation_result <- tccq_analyze(negation_program)
+expect_true(negation_result@success)
+expect_true(negation_result@value@attrs$lowered)
+negation_value <- negation_result@value@values[[negation_result@value@result]]
+expect_equal(negation_value@op, "-")
+expect_equal(length(negation_value@inputs), 1L)
+expect_true(S7::S7_inherits(negation_value@attrs$elementwise, TccqElementwiseSpec))
+
+square <- function(x) x
+square_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "square",
+    target = "pure_c",
+    region_kind = "kernel",
+    render = function(operands, context) sprintf("(%s * %s)", operands[[1L]], operands[[1L]]),
+    elementwise = tccq_elementwise_spec(
+      "square",
+      1L,
+      result_type = function(input_types) input_types[[1L]]
+    )
+  )
+)
+custom_elementwise <- function(x) {
+  declare(type(x = double(n)))
+  square(x)
+}
+
+custom_elementwise_result <- tccq_analyze(custom_elementwise, registry = square_registry)
+expect_true(custom_elementwise_result@success)
+expect_true(custom_elementwise_result@value@attrs$lowered)
+custom_elementwise_value <- custom_elementwise_result@value@values[[custom_elementwise_result@value@result]]
+expect_equal(custom_elementwise_value@op, "square")
+expect_true(S7::S7_inherits(custom_elementwise_value@attrs$elementwise, TccqElementwiseSpec))
+
 bound_chain <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
   shifted <- sqrt(x)

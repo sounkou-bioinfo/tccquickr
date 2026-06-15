@@ -14,6 +14,7 @@ TccqResolvedOp(
   boundary = logical(0),
   pure = logical(0),
   effect = TccqEffect(),
+  elementwise = NULL,
   reduction = NULL,
   attrs = list()
 )
@@ -36,6 +37,9 @@ TccqResolvedOp(
 \item{pure}{Whether the selected implementation is semantically pure.}
 
 \item{effect}{Effect summary supplied by the implementation.}
+
+\item{elementwise}{Optional elementwise metadata supplied by the
+implementation.}
 
 \item{reduction}{Optional reduction metadata supplied by the implementation.}
 

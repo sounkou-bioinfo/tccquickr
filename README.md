@@ -110,6 +110,14 @@ backend-local switch over operation strings. The next tightening is
 richer signatures and domain rules on implementations, not another
 source whitelist.
 
+Elementwise calls follow operation metadata too. A call lowers as
+elementwise only when the resolved operation carries a
+`TccqElementwiseSpec`, which supplies accepted arities and result-type
+rules. The default registry provides a small numeric elementwise surface
+for arithmetic, unary negation, powers, `sqrt`, and `exp`, but another
+registry can add a source-rendered call such as `square(x)` without
+changing the lowerer or printers.
+
 Reducers follow the same rule. A reducer is not recognized because the
 lowerer knows the text `sum`; a call lowers as a reduction only when the
 resolved operation carries a `TccqReductionSpec`. That spec supplies the
@@ -122,12 +130,12 @@ Fortran printers.
 ## Current lowering boundary
 
 The first lowering pass is deliberately small. It handles scalar and
-rank-one elementwise expressions over declared `integer` and `double`
-values for `+`, `-`, `*`, `/`, unary negation, `sqrt`, and `exp`. It
-returns a `TccqLoweringPlan`, then embeds the plan into `TccqProgram` as
-values, regions, fusion groups, and storage facts. Each operation value
-carries a `TccqResolvedOp`, and the generated fusion group derives its
-target and effect from those resolved operations. This is not a general
+rank-one elementwise expressions and rank-one reductions when the
+resolved operations carry the corresponding typed specs. It returns a
+`TccqLoweringPlan`, then embeds the plan into `TccqProgram` as values,
+regions, fusion groups, and storage facts. Each operation value carries
+a `TccqResolvedOp`, and the generated fusion group derives its target
+and effect from those resolved operations. This is not a general
 legality pass and it is not the place where new language coverage should
 sprawl.
 

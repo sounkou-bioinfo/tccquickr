@@ -15,6 +15,7 @@ TccqOpImpl(
   effect = TccqEffect(),
   supports = function() NULL,
   render = NULL,
+  elementwise = NULL,
   reduction = NULL
 )
 }
@@ -40,6 +41,8 @@ TccqOpImpl(
 
 \item{render}{Optional source renderer receiving operand strings and a
 \code{TccqOpRenderContext}.}
+
+\item{elementwise}{Optional elementwise metadata.}
 
 \item{reduction}{Optional reduction metadata.}
 }
