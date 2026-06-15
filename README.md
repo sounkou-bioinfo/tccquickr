@@ -143,8 +143,11 @@ and Fortran printers.
 ## Current lowering boundary
 
 The first lowering pass is deliberately small. It handles scalar and
-rank-one elementwise expressions and rank-one reductions when the
-resolved operations carry the corresponding typed specs. It returns a
+rank-N contiguous elementwise expressions, plus rank-one reductions,
+when the resolved operations carry the corresponding typed specs. Source
+backends currently linearize non-scalar elementwise domains as
+contiguous buffers while preserving rank and shape in `TccqType`,
+`TccqDomain`, bridge plans, and backend products. It returns a
 `TccqLoweringPlan`, then embeds the plan into `TccqProgram` as values,
 regions, fusion groups, and storage facts. Each operation value carries
 one `TccqLoweredOperation` payload that owns the shared
@@ -317,11 +320,11 @@ is obvious.
 
 The current targets are not hidden package functions. They are explicit
 apotheosis examples: small probes that exercise one compiler idea at a
-time, and larger programs that force those ideas to compose. The first
-rank-one map and map-reduce probes now pass through typed IR and source
-planning, while the remaining probes are still expected to fail with
-structured diagnostics. Making each failure move deeper through the same
-typed IR is the first serious milestone.
+time, and larger programs that force those ideas to compose. Rank-N
+elementwise maps and rank-one map-reduce probes now pass through typed
+IR and source planning, while the remaining probes are still expected to
+fail with structured diagnostics. Making each failure move deeper
+through the same typed IR is the first serious milestone.
 
 ## Minimal probes
 
@@ -338,6 +341,11 @@ map_chain <- function(x, y) {
 map_reduce <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
   sum(exp(x) * y)
+}
+
+matrix_map <- function(x, y) {
+  declare(type(x = double(n, p), y = double(n, p)))
+  sqrt(x) + y
 }
 
 matrix_vector <- function(x, w) {

@@ -358,6 +358,73 @@ if (can_build_shared_library("c")) {
   expect_equal(backend_callable(c_shared_plan)(c(1, 2), c(3, 4)), c(4, 6))
 }
 
+matrix_add <- function(x, y) {
+  declare(type(x = double(n, p), y = double(n, p)))
+  sqrt(x) + y
+}
+
+matrix_program <- tccq_analyze(matrix_add)
+expect_true(matrix_program@success)
+expect_true(matrix_program@value@attrs$lowered)
+matrix_result <- matrix_program@value@values[[matrix_program@value@result]]
+expect_equal(matrix_result@type@shape@rank, 2L)
+
+matrix_c_source_plan <- tccq_plan_backend(
+  matrix_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(matrix_c_source_plan@success)
+matrix_c_interface <- backend_interface(matrix_c_source_plan)
+expect_equal(matrix_c_interface@kind, "map")
+expect_equal(matrix_c_interface@attrs$result_type@shape@rank, 2L)
+expect_true(matrix_c_interface@needs_length)
+expect_true(S7::S7_inherits(backend_products(matrix_c_source_plan)@expression, TccqExpression))
+expect_equal(backend_products(matrix_c_source_plan)@expression@type@shape@rank, 2L)
+expect_equal(
+  vapply(matrix_c_source_plan@value@bridges, function(bridge) bridge@kind, character(1)),
+  c("sexp_to_buffer", "sexp_to_buffer", "buffer_to_sexp")
+)
+
+matrix_fortran_source_plan <- tccq_plan_backend(
+  matrix_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(matrix_fortran_source_plan@success)
+matrix_fortran_interface <- backend_interface(matrix_fortran_source_plan)
+expect_equal(matrix_fortran_interface@kind, "map")
+expect_equal(matrix_fortran_interface@attrs$result_type@shape@rank, 2L)
+expect_true(matrix_fortran_interface@needs_length)
+
+matrix_x <- matrix(c(1, 4, 9, 16), nrow = 2)
+matrix_y <- matrix(c(10, 20, 30, 40), nrow = 2)
+matrix_expected <- sqrt(matrix_x) + matrix_y
+
+if (can_build_shared_library("c")) {
+  matrix_c_shared_plan <- tccq_plan_backend(
+    matrix_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(matrix_c_shared_plan@success)
+  matrix_c_value <- backend_callable(matrix_c_shared_plan)(matrix_x, matrix_y)
+  expect_equal(matrix_c_value, matrix_expected)
+  expect_equal(dim(matrix_c_value), dim(matrix_x))
+}
+
+if (can_build_shared_library("fortran")) {
+  matrix_fortran_shared_plan <- tccq_plan_backend(
+    matrix_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(matrix_fortran_shared_plan@success)
+  matrix_fortran_value <- backend_callable(matrix_fortran_shared_plan)(matrix_x, matrix_y)
+  expect_equal(matrix_fortran_value, matrix_expected)
+  expect_equal(dim(matrix_fortran_value), dim(matrix_x))
+}
+
 negation_program <- function(x) {
   declare(type(x = double(n)))
   -x
@@ -561,6 +628,16 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
     backend_callable(custom_elementwise_jit_plan)(c(2, 3, 5)),
     c(4, 9, 25)
   )
+
+  matrix_jit_plan <- tccq_plan_backend(
+    matrix_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(matrix_jit_plan@success)
+  matrix_jit_value <- backend_callable(matrix_jit_plan)(matrix_x, matrix_y)
+  expect_equal(matrix_jit_value, matrix_expected)
+  expect_equal(dim(matrix_jit_value), dim(matrix_x))
 }
 
 map_reduce <- function(x, y) {

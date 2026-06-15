@@ -246,6 +246,11 @@ For the reset core, keep these rules explicit:
   source printers independently infer scalar/map/reduction shape, generated
   parameter mapping, ABI, result placement, generated result names,
   length/index variables, or reduction accumulator names.
+- Current source backends may lower contiguous rank-N elementwise maps through a
+  linear element-count/index ABI, but the semantic rank and dimensions remain
+  `TccqType`/`TccqShape` facts and R boundary wrappers must validate and
+  preserve `dim` for rank greater than one. Do not add a matrix-specific
+  backend path when shape rank is the real concept.
 - Backend planning must make concrete products explicit through
   `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
   expression trees, storage plans, generated source, shared libraries, wrappers,

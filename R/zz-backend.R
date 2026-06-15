@@ -1996,21 +1996,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           data = list(base = unsupported_bases)
         ))
       }
-      unsupported_ranks <- unique(vapply(
-        all_values,
-        function(value) value@type@shape@rank,
-        integer(1)
-      ))
-      unsupported_ranks <- setdiff(unsupported_ranks, c(0L, 1L))
-      if (length(unsupported_ranks) > 0L) {
-        return(tccq_diagnostic(
-          "backend.unsupported_rank",
-          "This initial source printer supports only scalar and rank-one values.",
-          phase = "backend",
-          path = sprintf("backend.%s.rank", backend@id),
-          data = list(rank = unsupported_ranks)
-        ))
-      }
       NULL
     }
 
@@ -2032,7 +2017,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
       kind <- if (expression_is_reduction(source_expression)) {
         "reduction"
-      } else if (result@type@shape@rank == 1L) {
+      } else if (result@type@shape@rank > 0L) {
         "map"
       } else {
         "scalar"
@@ -2391,7 +2376,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       if (identical(interface@result_placement, "output_argument")) {
         kernel_parameters <- c(kernel_parameters, sprintf("double *%s", result_name))
         prototype <- sprintf("extern void %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
-      } else if (result@type@shape@rank == 1L) {
+      } else if (result@type@shape@rank > 0L) {
         prototype <- sprintf("extern double *%s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
       } else {
         prototype <- sprintf("extern double %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
@@ -2414,46 +2399,104 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         "",
         sprintf("SEXP %s(%s) {", wrapper_symbol, paste(wrapper_parameters, collapse = ", ")),
         "  int protect_count = 0;",
-        "  R_xlen_t element_count = 1;"
+        "  R_xlen_t element_count = 1;",
+        "  SEXP output_dim = R_NilValue;"
       )
 
-      vector_parameter_names <- parameter_names[vapply(
+      non_scalar_parameter_positions <- which(vapply(
         formals,
-        function(value) value@type@shape@rank == 1L,
+        function(value) value@type@shape@rank > 0L,
         logical(1)
-      )]
-      if (length(vector_parameter_names) > 0L) {
-        first_vector_name <- vector_parameter_names[[1L]]
+      ))
+      non_scalar_parameter_names <- parameter_names[non_scalar_parameter_positions]
+      non_scalar_parameter_ranks <- vapply(
+        formals[non_scalar_parameter_positions],
+        function(value) value@type@shape@rank,
+        integer(1)
+      )
+      if (length(non_scalar_parameter_names) > 0L) {
+        first_non_scalar_name <- non_scalar_parameter_names[[1L]]
+        first_non_scalar_rank <- non_scalar_parameter_ranks[[1L]]
         lines <- c(
           lines,
           sprintf(
             "  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));",
-            first_vector_name,
-            first_vector_name
+            first_non_scalar_name,
+            first_non_scalar_name
           ),
           "  ++protect_count;",
-          sprintf("  element_count = XLENGTH(%s_real);", first_vector_name),
+          sprintf("  element_count = XLENGTH(%s_real);", first_non_scalar_name),
           "  if (element_count > INT_MAX) {",
           "    UNPROTECT(protect_count);",
           "    Rf_error(\"generated call exceeds the current int length ABI\");",
           "  }"
         )
+        if (first_non_scalar_rank > 1L) {
+          lines <- c(
+            lines,
+            sprintf(
+              "  SEXP %s_dim = PROTECT(Rf_getAttrib(%s_arg, R_DimSymbol));",
+              first_non_scalar_name,
+              first_non_scalar_name
+            ),
+            "  ++protect_count;",
+            sprintf(
+              "  if (TYPEOF(%s_dim) != INTSXP || XLENGTH(%s_dim) != %d) {",
+              first_non_scalar_name,
+              first_non_scalar_name,
+              first_non_scalar_rank
+            ),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"array arguments must have the declared rank\");",
+            "  }",
+            sprintf("  output_dim = %s_dim;", first_non_scalar_name)
+          )
+        }
       }
 
       parameter_setup <- unlist(Map(function(value, parameter_name) {
-        if (value@type@shape@rank == 1L && parameter_name %in% vector_parameter_names[[1L]]) {
+        value_rank <- value@type@shape@rank
+        first_non_scalar <- length(non_scalar_parameter_names) > 0L &&
+          identical(parameter_name, non_scalar_parameter_names[[1L]])
+        if (value_rank > 0L && isTRUE(first_non_scalar)) {
           return(c(sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)))
         }
-        if (value@type@shape@rank == 1L) {
-          return(c(
+        if (value_rank > 0L) {
+          setup <- c(
             sprintf("  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));", parameter_name, parameter_name),
             "  ++protect_count;",
             sprintf("  if (XLENGTH(%s_real) != element_count) {", parameter_name),
             "    UNPROTECT(protect_count);",
-            "    Rf_error(\"vector arguments must have the same length\");",
-            "  }",
-            sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)
-          ))
+            "    Rf_error(\"non-scalar arguments must have the same element count\");",
+            "  }"
+          )
+          if (value_rank > 1L) {
+            setup <- c(
+              setup,
+              sprintf(
+                "  SEXP %s_dim = PROTECT(Rf_getAttrib(%s_arg, R_DimSymbol));",
+                parameter_name,
+                parameter_name
+              ),
+              "  ++protect_count;",
+              sprintf(
+                "  if (TYPEOF(%s_dim) != INTSXP || XLENGTH(%s_dim) != %d) {",
+                parameter_name,
+                parameter_name,
+                value_rank
+              ),
+              "    UNPROTECT(protect_count);",
+              "    Rf_error(\"array arguments must have the declared rank\");",
+              "  }",
+              sprintf("  for (R_xlen_t dim_index = 0; dim_index < %d; ++dim_index) {", value_rank),
+              sprintf("    if (INTEGER(%s_dim)[dim_index] != INTEGER(output_dim)[dim_index]) {", parameter_name),
+              "      UNPROTECT(protect_count);",
+              "      Rf_error(\"array arguments must have the same dimensions\");",
+              "    }",
+              "  }"
+            )
+          }
+          return(c(setup, sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)))
         }
         c(
           sprintf("  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));", parameter_name, parameter_name),
@@ -2473,7 +2516,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         argument_names <- c(argument_names, length_name)
       }
 
-      if (result@type@shape@rank == 1L) {
+      if (result@type@shape@rank > 0L) {
         lines <- c(lines, "  SEXP output_sexp = PROTECT(Rf_allocVector(REALSXP, element_count));")
         lines <- c(lines, "  ++protect_count;")
         if (identical(interface@result_placement, "output_argument")) {
@@ -2494,6 +2537,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             ),
             sprintf("  free(%s);", result_name)
           )
+        }
+        if (result@type@shape@rank > 1L) {
+          lines <- c(lines, "  Rf_setAttrib(output_sexp, R_DimSymbol, output_dim);")
         }
         lines <- c(lines, "  UNPROTECT(protect_count);", "  return output_sexp;")
       } else {
@@ -2527,7 +2573,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (value@type@shape@rank == 0L) "f64" else "numeric_array"
       })
       needs_length_argument <- interface@needs_length
-      if (result@type@shape@rank == 1L) {
+      if (result@type@shape@rank > 0L) {
         ffi_arg_types <- c(ffi_arg_types, list("i32"))
         ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
       } else {
@@ -2570,30 +2616,69 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(expected = length(formals), actual = length(arguments))
           )
         }
-        vector_argument_positions <- which(vapply(
+        non_scalar_argument_positions <- which(vapply(
           formals,
-          function(value) value@type@shape@rank == 1L,
+          function(value) value@type@shape@rank > 0L,
           logical(1)
         ))
+        non_scalar_argument_ranks <- vapply(
+          formals[non_scalar_argument_positions],
+          function(value) value@type@shape@rank,
+          integer(1)
+        )
         element_count <- 1L
-        if (length(vector_argument_positions) > 0L) {
-          vector_lengths <- vapply(arguments[vector_argument_positions], length, integer(1))
-          if (length(unique(vector_lengths)) != 1L) {
+        result_dim <- NULL
+        if (length(non_scalar_argument_positions) > 0L) {
+          non_scalar_lengths <- vapply(arguments[non_scalar_argument_positions], length, integer(1))
+          if (length(unique(non_scalar_lengths)) != 1L) {
             tccq_abort(
               "runtime.incompatible_lengths",
-              "Vector arguments must have the same length.",
+              "Non-scalar arguments must have the same element count.",
               phase = "runtime",
               path = "callable.arguments",
-              data = list(lengths = vector_lengths)
+              data = list(lengths = non_scalar_lengths)
             )
           }
-          element_count <- vector_lengths[[1L]]
+          element_count <- non_scalar_lengths[[1L]]
+          for (position_index in seq_along(non_scalar_argument_positions)) {
+            argument_position <- non_scalar_argument_positions[[position_index]]
+            argument_rank <- non_scalar_argument_ranks[[position_index]]
+            if (argument_rank <= 1L) {
+              next
+            }
+            argument_dim <- dim(arguments[[argument_position]])
+            if (length(argument_dim) != argument_rank) {
+              tccq_abort(
+                "runtime.invalid_rank",
+                "Array arguments must have the declared rank.",
+                phase = "runtime",
+                path = "callable.arguments",
+                data = list(argument = argument_position, expected = argument_rank, actual = length(argument_dim))
+              )
+            }
+            argument_dim <- as.integer(argument_dim)
+            if (is.null(result_dim)) {
+              result_dim <- argument_dim
+            } else if (!identical(argument_dim, result_dim)) {
+              tccq_abort(
+                "runtime.incompatible_dimensions",
+                "Array arguments must have the same dimensions.",
+                phase = "runtime",
+                path = "callable.arguments",
+                data = list(argument = argument_position, expected = result_dim, actual = argument_dim)
+              )
+            }
+          }
         }
         call_arguments <- arguments
         if (needs_length_argument) {
           call_arguments <- c(call_arguments, list(as.integer(element_count)))
         }
-        do.call(compiled[[symbol]], call_arguments)
+        value <- do.call(compiled[[symbol]], call_arguments)
+        if (result@type@shape@rank > 1L) {
+          dim(value) <- result_dim
+        }
+        value
       }
 
       attrs <- product_attrs(plan)
