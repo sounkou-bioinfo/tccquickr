@@ -576,8 +576,11 @@ TccqFusionContract <- S7::new_class(
     ))) {
       problems <- c(problems, "map fusion contracts cannot contain reduction operations")
     }
-    if (identical(self@fusion_kind, "map_reduce") && !identical(self@result_operation@family, "reduction")) {
-      problems <- c(problems, "map-reduce fusion contracts need a reduction result operation")
+    fusion_needs_reduction_result <- length(self@fusion_kind) == 1L &&
+      !is.na(self@fusion_kind) &&
+      self@fusion_kind %in% c("map_reduce", "axis_reduce")
+    if (fusion_needs_reduction_result && !identical(self@result_operation@family, "reduction")) {
+      problems <- c(problems, "reduction fusion contracts need a reduction result operation")
     }
     if (length(problems) > 0L) problems
   }
@@ -1983,6 +1986,7 @@ tccq_fusion_contract <- function(
       fusion_kind,
       map = "fused-elementwise",
       map_reduce = "fused-map-reduce",
+      axis_reduce = "fused-axis-reduce",
       paste0("fused-", fusion_kind)
     )
   }
@@ -2112,24 +2116,81 @@ tccq_default_op_registry <- function() {
       domain_policy = elementwise_domain_policy
     )
   )
+  sum_identity <- function(type) {
+    if (!type@base %in% c("integer", "double")) {
+      tccq_abort(
+        "ops.unsupported_reduction_identity_type",
+        "The default sum identity supports integer and double results.",
+        phase = "ops",
+        path = "reduction.identity",
+        data = list(reducer = "sum", base = type@base)
+      )
+    }
+    identity_value <- if (identical(type@base, "integer")) 0L else 0
+    tccq_literal_finite(identity_value, type = type)
+  }
+  sum_combine <- function(accumulator, value, context) {
+    sprintf("%s + %s", accumulator, value)
+  }
+  numeric_axis_reduction_type <- function(input_types, result_shape) {
+    input_type <- input_types[[1L]]
+    if (!input_type@base %in% c("integer", "double")) {
+      tccq_abort(
+        "ops.unsupported_axis_reduction_type",
+        "Axis reductions currently support integer and double inputs.",
+        phase = "ops",
+        path = "axis_reduction.type",
+        data = list(base = input_type@base)
+      )
+    }
+    tccq_type("double", result_shape)
+  }
+  axis_reduction_domain_policy <- function(name, kept_axis) {
+    tccq_domain_policy(
+      name,
+      result_shape = function(input_types) {
+        input_shape <- input_types[[1L]]@shape
+        if (input_shape@rank != 2L) {
+          tccq_abort(
+            "ops.unsupported_axis_reduction_rank",
+            "The default axis reductions currently require rank-2 inputs.",
+            phase = "ops",
+            path = "axis_reduction.shape",
+            data = list(rank = input_shape@rank)
+          )
+        }
+        tccq_shape(list(input_shape@dims[[kept_axis]]))
+      }
+    )
+  }
   base_sum_reduction <- tccq_reduction_spec(
     "sum",
-    identity = function(type) {
-      if (!type@base %in% c("integer", "double")) {
-        tccq_abort(
-          "ops.unsupported_reduction_identity_type",
-          "The default sum identity supports integer and double results.",
-          phase = "ops",
-          path = "reduction.identity",
-          data = list(reducer = "sum", base = type@base)
-        )
-      }
-      identity_value <- if (identical(type@base, "integer")) 0L else 0
-      tccq_literal_finite(identity_value, type = type)
-    },
-    combine = function(accumulator, value, context) {
-      sprintf("%s + %s", accumulator, value)
-    }
+    identity = sum_identity,
+    combine = sum_combine
+  )
+  column_sum_reduction <- tccq_reduction_spec(
+    "sum",
+    identity = sum_identity,
+    combine = sum_combine,
+    signature = tccq_op_signature(
+      "colSums",
+      1L,
+      result_type = numeric_axis_reduction_type,
+      domain_policy = axis_reduction_domain_policy("axis_reduce_columns", kept_axis = 2L)
+    ),
+    attrs = list(reduction_axes = 1L, kept_axes = 2L, axis_kind = "columns")
+  )
+  row_sum_reduction <- tccq_reduction_spec(
+    "sum",
+    identity = sum_identity,
+    combine = sum_combine,
+    signature = tccq_op_signature(
+      "rowSums",
+      1L,
+      result_type = numeric_axis_reduction_type,
+      domain_policy = axis_reduction_domain_policy("axis_reduce_rows", kept_axis = 1L)
+    ),
+    attrs = list(reduction_axes = 2L, kept_axes = 1L, axis_kind = "rows")
   )
   language_ops <- c(
     "{", "(", "<-", "<<-", "->", "->>", "=",
@@ -2157,6 +2218,20 @@ tccq_default_op_registry <- function() {
         region_kind = "kernel",
         effect = tccq_effect(reads = TRUE),
         reduction = base_sum_reduction
+      ),
+      tccq_op_impl(
+        "colSums",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        reduction = column_sum_reduction
+      ),
+      tccq_op_impl(
+        "rowSums",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        reduction = row_sum_reduction
       )
     )
   ))

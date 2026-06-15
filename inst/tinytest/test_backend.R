@@ -757,6 +757,66 @@ expect_equal(matrix_reduction_fortran_interface@element_count_name, "element_cou
 
 matrix_reduction_expected <- sum(exp(matrix_x) * matrix_y)
 
+column_axis_reduce <- function(x) {
+  declare(type(x = double(n, p)))
+  colSums(exp(x))
+}
+
+row_axis_reduce <- function(x) {
+  declare(type(x = double(n, p)))
+  rowSums(exp(x))
+}
+
+column_axis_program <- tccq_analyze(column_axis_reduce)
+row_axis_program <- tccq_analyze(row_axis_reduce)
+expect_true(column_axis_program@success)
+expect_true(row_axis_program@success)
+
+column_axis_c_source_plan <- tccq_plan_backend(
+  column_axis_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(column_axis_c_source_plan@success)
+column_axis_c_source <- backend_source(column_axis_c_source_plan)
+column_axis_c_interface <- backend_interface(column_axis_c_source_plan)
+expect_equal(column_axis_c_interface@kind, "axis_reduction")
+expect_equal(column_axis_c_interface@domain@shape@rank, 2L)
+expect_equal(column_axis_c_interface@extent_names, c("extent_0001", "extent_0002"))
+expect_equal(column_axis_c_interface@result_extent_names, "extent_0002")
+expect_equal(column_axis_c_interface@result_count_name, "extent_0002")
+expect_equal(column_axis_c_interface@accumulator_name, "accumulator_0001")
+expect_true(grepl("for (int output_index_0001 = 0;", column_axis_c_source, fixed = TRUE))
+expect_true(grepl("for (int reduce_index_0001 = 0;", column_axis_c_source, fixed = TRUE))
+expect_true(grepl(
+  "int index_0001 = reduce_index_0001 + extent_0001 * output_index_0001;",
+  column_axis_c_source,
+  fixed = TRUE
+))
+
+row_axis_fortran_source_plan <- tccq_plan_backend(
+  row_axis_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(row_axis_fortran_source_plan@success)
+row_axis_fortran_source <- backend_source(row_axis_fortran_source_plan)
+row_axis_fortran_interface <- backend_interface(row_axis_fortran_source_plan)
+expect_equal(row_axis_fortran_interface@kind, "axis_reduction")
+expect_equal(row_axis_fortran_interface@result_placement, "output_argument")
+expect_equal(row_axis_fortran_interface@result_extent_names, "extent_0001")
+expect_equal(row_axis_fortran_interface@result_count_name, "extent_0001")
+expect_true(grepl("do output_index_0001 = 1, extent_0001", row_axis_fortran_source, fixed = TRUE))
+expect_true(grepl("do reduce_index_0001 = 1, extent_0002", row_axis_fortran_source, fixed = TRUE))
+expect_true(grepl(
+  "index_0001 = output_index_0001 + extent_0001 * (reduce_index_0001 - 1)",
+  row_axis_fortran_source,
+  fixed = TRUE
+))
+
+column_axis_expected <- colSums(exp(matrix_x))
+row_axis_expected <- rowSums(exp(matrix_x))
+
 if (can_build_shared_library("c")) {
   reduction_c_shared_plan <- tccq_plan_backend(
     reduction_program@value,
@@ -776,6 +836,25 @@ if (can_build_shared_library("c")) {
     backend_callable(matrix_reduction_c_shared_plan)(matrix_x, matrix_y),
     matrix_reduction_expected
   )
+
+  column_axis_c_shared_plan <- tccq_plan_backend(
+    column_axis_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  row_axis_c_shared_plan <- tccq_plan_backend(
+    row_axis_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(column_axis_c_shared_plan@success)
+  expect_true(row_axis_c_shared_plan@success)
+  column_axis_c_value <- backend_callable(column_axis_c_shared_plan)(matrix_x)
+  row_axis_c_value <- backend_callable(row_axis_c_shared_plan)(matrix_x)
+  expect_equal(column_axis_c_value, column_axis_expected)
+  expect_equal(row_axis_c_value, row_axis_expected)
+  expect_true(is.null(dim(column_axis_c_value)))
+  expect_true(is.null(dim(row_axis_c_value)))
 }
 
 if (can_build_shared_library("fortran")) {
@@ -797,6 +876,21 @@ if (can_build_shared_library("fortran")) {
     backend_callable(matrix_reduction_fortran_shared_plan)(matrix_x, matrix_y),
     matrix_reduction_expected
   )
+
+  column_axis_fortran_shared_plan <- tccq_plan_backend(
+    column_axis_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  row_axis_fortran_shared_plan <- tccq_plan_backend(
+    row_axis_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(column_axis_fortran_shared_plan@success)
+  expect_true(row_axis_fortran_shared_plan@success)
+  expect_equal(backend_callable(column_axis_fortran_shared_plan)(matrix_x), column_axis_expected)
+  expect_equal(backend_callable(row_axis_fortran_shared_plan)(matrix_x), row_axis_expected)
 }
 
 fold_add <- function(x) x
@@ -852,6 +946,20 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
     backend_callable(matrix_reduction_jit_plan)(matrix_x, matrix_y),
     matrix_reduction_expected
   )
+  column_axis_jit_plan <- tccq_plan_backend(
+    column_axis_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  row_axis_jit_plan <- tccq_plan_backend(
+    row_axis_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(column_axis_jit_plan@success)
+  expect_true(row_axis_jit_plan@success)
+  expect_equal(backend_callable(column_axis_jit_plan)(matrix_x), column_axis_expected)
+  expect_equal(backend_callable(row_axis_jit_plan)(matrix_x), row_axis_expected)
   custom_reduction_jit_plan <- tccq_plan_backend(
     custom_reduction_program@value,
     tccq_rtinycc_backend(),

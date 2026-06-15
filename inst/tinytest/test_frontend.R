@@ -177,6 +177,34 @@ expect_equal(matrix_reduction_fusion@kind, "map_reduce")
 expect_equal(matrix_reduction_fusion@domain@shape@rank, 2L)
 expect_true(S7::S7_inherits(matrix_reduction_fusion@contract, TccqFusionContract))
 
+column_axis_reduce <- function(x) {
+  declare(type(x = double(n, p)))
+  colSums(exp(x))
+}
+
+column_axis_reduce_result <- tccq_analyze(column_axis_reduce)
+expect_true(column_axis_reduce_result@success)
+expect_true(column_axis_reduce_result@value@attrs$lowered)
+expect_equal(column_axis_reduce_result@value@attrs$lowering$strategy, "axis-reduce-expression")
+column_axis_value <- column_axis_reduce_result@value@values[[column_axis_reduce_result@value@result]]
+column_axis_operation <- column_axis_value@attrs$operation
+expect_equal(column_axis_value@op, "colSums")
+expect_equal(column_axis_value@type@shape@rank, 1L)
+expect_equal(column_axis_value@type@shape@dims[[1L]]@label, "p")
+expect_true(S7::S7_inherits(column_axis_operation, TccqLoweredOperation))
+expect_equal(column_axis_operation@family, "reduction")
+expect_equal(column_axis_operation@reduction@name, "sum")
+expect_equal(column_axis_operation@attrs$reduction_kind, "axis")
+expect_equal(column_axis_operation@attrs$reduction_axes, 1L)
+expect_equal(column_axis_operation@attrs$kept_axes, 2L)
+column_axis_fusion <- column_axis_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
+expect_equal(column_axis_fusion@kind, "axis_reduce")
+expect_equal(column_axis_fusion@domain@shape@rank, 2L)
+expect_true(S7::S7_inherits(column_axis_fusion@contract, TccqFusionContract))
+expect_equal(column_axis_fusion@contract@fusion_kind, "axis_reduce")
+expect_equal(column_axis_fusion@contract@storage_strategy, "fused-axis-reduce")
+expect_equal(column_axis_reduce_result@value@storage_plan@attrs$strategy, "fused-axis-reduce")
+
 power_program <- function(x) {
   declare(type(x = integer(n)))
   x^2L

@@ -323,6 +323,7 @@ tccq_lower_function <- function(
   lower_reduction <- function(resolved_operation, args, expr, state) {
     reduction_spec <- resolved_operation@reduction
     reducer <- reduction_spec@name
+    surface_op <- resolved_operation@call@name
     signature <- reduction_spec@signature
     if (!(length(args) %in% signature@arity)) {
       return(diagnostic_value(
@@ -372,7 +373,15 @@ tccq_lower_function <- function(
       return(list(value_id = NULL, type = NULL, diagnostics = result_type_result@diagnostics))
     }
     result_type <- result_type_result@value
-    identity_result <- tccq_reduction_identity(reduction_spec, result_type)
+    reduction_axes <- reduction_spec@attrs$reduction_axes %||% seq_len(lowered_arg$type@shape@rank)
+    kept_axes <- reduction_spec@attrs$kept_axes %||% integer()
+    reduction_kind <- if (length(kept_axes) > 0L) "axis" else "full"
+    accumulator_type <- if (identical(reduction_kind, "axis")) {
+      tccq_type(result_type@base)
+    } else {
+      result_type
+    }
+    identity_result <- tccq_reduction_identity(reduction_spec, accumulator_type)
     if (!identity_result@success) {
       return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))
     }
@@ -381,17 +390,28 @@ tccq_lower_function <- function(
       "reduction",
       resolved_operation,
       reduction = reduction_spec,
-      identity = identity_result@value
+      identity = identity_result@value,
+      attrs = list(
+        reduction_kind = reduction_kind,
+        reduction_axes = as.integer(reduction_axes),
+        kept_axes = as.integer(kept_axes),
+        axis_kind = reduction_spec@attrs$axis_kind %||% ""
+      )
     )
     add_value(
       state,
       tccq_value(
         id = value_id,
-        op = reducer,
+        op = surface_op,
         inputs = list(lowered_arg$value_id),
         type = result_type,
         effect = resolved_operation@effect,
-        attrs = list(operation = operation)
+        attrs = list(
+          operation = operation,
+          reduction_kind = reduction_kind,
+          reduction_axes = as.integer(reduction_axes),
+          kept_axes = as.integer(kept_axes)
+        )
       )
     )
     list(value_id = value_id, type = result_type, diagnostics = list())
@@ -405,6 +425,13 @@ tccq_lower_function <- function(
   value_is_reduction <- function(value) {
     operation <- lowered_operation(value)
     !is.null(operation) && identical(operation@family, "reduction")
+  }
+
+  value_is_axis_reduction <- function(value) {
+    operation <- lowered_operation(value)
+    !is.null(operation) &&
+      identical(operation@family, "reduction") &&
+      identical(operation@attrs$reduction_kind, "axis")
   }
 
   plan_regions <- function(values, result_id) {
@@ -459,7 +486,13 @@ tccq_lower_function <- function(
       default = "any"
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
-    fusion_kind <- if (isTRUE(result_is_reduction)) "map_reduce" else "map"
+    fusion_kind <- if (isTRUE(value_is_axis_reduction(result_value))) {
+      "axis_reduce"
+    } else if (isTRUE(result_is_reduction)) {
+      "map_reduce"
+    } else {
+      "map"
+    }
     fusion_contract <- tccq_fusion_contract(
       fusion_kind,
       operations = lowered_operations,
@@ -537,7 +570,9 @@ tccq_lower_function <- function(
     tccq_storage_plan(
       slots = unname(slots_by_id),
       reuse_groups = reuse_groups,
-      attrs = list(strategy = if (value_is_reduction(values[[result_id]])) {
+      attrs = list(strategy = if (value_is_axis_reduction(values[[result_id]])) {
+        "fused-axis-reduce"
+      } else if (value_is_reduction(values[[result_id]])) {
         "fused-map-reduce"
       } else {
         "fused-elementwise"
@@ -685,7 +720,9 @@ tccq_lower_function <- function(
     regions = regions,
     result = result$value_id,
     storage_plan = storage_plan,
-    attrs = list(strategy = if (value_is_reduction(state$values[[result$value_id]])) {
+    attrs = list(strategy = if (value_is_axis_reduction(state$values[[result$value_id]])) {
+      "axis-reduce-expression"
+    } else if (value_is_reduction(state$values[[result$value_id]])) {
       "map-reduce-expression"
     } else {
       "elementwise-expression"

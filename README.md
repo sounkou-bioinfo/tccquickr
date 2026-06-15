@@ -143,8 +143,9 @@ and Fortran printers.
 ## Current lowering boundary
 
 The first lowering pass is deliberately small. It handles scalar and
-rank-N contiguous elementwise expressions, plus full-domain rank-N
-reductions, when the resolved operations carry the corresponding typed
+rank-N contiguous elementwise expressions, full-domain rank-N
+reductions, and rank-2 single-axis reductions such as `colSums()` and
+`rowSums()` when the resolved operations carry the corresponding typed
 specs. Source backends currently linearize non-scalar elementwise and
 reduction domains as contiguous buffers while preserving rank and shape
 in `TccqType`, `TccqDomain`, bridge plans, and backend products. It
@@ -195,14 +196,16 @@ to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
 The generated callable boundary is a second explicit plan value:
 `TccqBackendFunctionInterface`. It records the source symbol,
-scalar/map/reduction shape, ABI, parameter names, lowered parameter
-value ids, result value id, result placement, iteration domain, per-axis
-extent parameter names, total element-count name, index name, and
-reduction accumulator name needed by generated loops. C, Rtinycc, and
-Fortran consume that same interface before concrete source is emitted. A
-C map kernel can return an allocated pointer while a Fortran `bind(c)`
-map kernel can expose an output argument, but that difference is already
-explicit in the function interface before either printer runs.
+scalar/map/reduction/axis-reduction shape, ABI, parameter names, lowered
+parameter value ids, result value id, result placement, iteration
+domain, per-axis input extent parameter names, total input element-count
+name, per-axis result extent names, result element-count name, index
+name, and reduction accumulator name needed by generated loops. C,
+Rtinycc, and Fortran consume that same interface before concrete source
+is emitted. A C map or axis-reduce kernel can return an allocated
+pointer while a Fortran `bind(c)` map or axis-reduce kernel can expose
+an output argument, but that difference is already explicit in the
+function interface before either printer runs.
 
 Backend products are also explicit. `TccqBackendProducts` carries the
 typed function interface, expression tree, storage plan, and concrete
@@ -321,10 +324,11 @@ is obvious.
 The current targets are not hidden package functions. They are explicit
 apotheosis examples: small probes that exercise one compiler idea at a
 time, and larger programs that force those ideas to compose. Rank-N
-elementwise maps and full-domain rank-N map-reduce probes now pass
-through typed IR and source planning, while the remaining probes are
-still expected to fail with structured diagnostics. Making each failure
-move deeper through the same typed IR is the first serious milestone.
+elementwise maps, full-domain rank-N map-reduce probes, and rank-2
+single-axis sum probes now pass through typed IR and source planning,
+while the remaining probes are still expected to fail with structured
+diagnostics. Making each failure move deeper through the same typed IR
+is the first serious milestone.
 
 ## Minimal probes
 

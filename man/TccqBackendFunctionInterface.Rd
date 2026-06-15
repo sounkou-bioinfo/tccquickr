@@ -17,6 +17,8 @@ TccqBackendFunctionInterface(
   domain = NULL,
   extent_names = character(0),
   element_count_name = character(0),
+  result_extent_names = character(0),
+  result_count_name = character(0),
   index_name = character(0),
   accumulator_name = character(0),
   attrs = list()
@@ -46,6 +48,10 @@ TccqBackendFunctionInterface(
 \item{extent_names}{Generated per-axis extent parameter names.}
 
 \item{element_count_name}{Generated total element-count parameter name, or empty string.}
+
+\item{result_extent_names}{Generated per-axis result extent names.}
+
+\item{result_count_name}{Generated result element-count name, or empty string.}
 
 \item{index_name}{Generated loop index name, or empty string.}
 
