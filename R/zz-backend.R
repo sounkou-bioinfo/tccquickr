@@ -45,6 +45,8 @@ TCCQ_SAFEPOINT_KINDS <- c(
 )
 TCCQ_DEBUG_SITE_KINDS <- c("value", "region", "bridge", "safepoint", "control", "call")
 TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "map", "reduction")
+TCCQ_BACKEND_FUNCTION_ABIS <- c("c", "fortran_bind_c")
+TCCQ_BACKEND_RESULT_PLACEMENTS <- c("return", "output_argument")
 TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable")
 
 #' Runtime instrumentation policy
@@ -324,15 +326,19 @@ TccqBridgePlan <- S7::new_class(
 #'
 #' A backend function interface is the source-level callable boundary consumed
 #' by C, Rtinycc, Fortran, and later source printers. It records the generated
-#' symbol, formal parameter mapping, length/index variables, and reduction
-#' accumulator name before any concrete syntax is emitted.
+#' symbol, ABI, formal parameter mapping, result placement, length/index
+#' variables, and reduction accumulator name before any concrete syntax is
+#' emitted.
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
 #' @param kind Function shape: scalar, map, or reduction.
+#' @param abi Callable ABI.
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
 #' @param result_value_id Lowered result value id.
+#' @param result_placement Whether the result is returned or passed by output argument.
+#' @param result_name Generated result/output variable name, or empty string.
 #' @param needs_length Whether the callable receives a length parameter.
 #' @param length_name Generated length parameter name, or empty string.
 #' @param index_name Generated loop index name, or empty string.
@@ -346,9 +352,12 @@ TccqBackendFunctionInterface <- S7::new_class(
     symbol = S7::class_character,
     source_language = S7::class_character,
     kind = S7::class_character,
+    abi = S7::class_character,
     parameter_names = S7::class_character,
     parameter_value_ids = S7::class_character,
     result_value_id = S7::class_character,
+    result_placement = S7::class_character,
+    result_name = S7::class_character,
     needs_length = S7::class_logical,
     length_name = S7::class_character,
     index_name = S7::class_character,
@@ -361,7 +370,10 @@ TccqBackendFunctionInterface <- S7::new_class(
       symbol = self@symbol,
       source_language = self@source_language,
       kind = self@kind,
+      abi = self@abi,
       result_value_id = self@result_value_id,
+      result_placement = self@result_placement,
+      result_name = self@result_name,
       length_name = self@length_name,
       index_name = self@index_name,
       accumulator_name = self@accumulator_name
@@ -388,6 +400,20 @@ TccqBackendFunctionInterface <- S7::new_class(
         !self@kind %in% TCCQ_BACKEND_FUNCTION_KINDS
     ) {
       problems <- c(problems, "@kind must be one supported backend function kind")
+    }
+    if (
+      length(self@abi) == 1L &&
+        !is.na(self@abi) &&
+        !self@abi %in% TCCQ_BACKEND_FUNCTION_ABIS
+    ) {
+      problems <- c(problems, "@abi must be one supported backend function ABI")
+    }
+    if (
+      length(self@result_placement) == 1L &&
+        !is.na(self@result_placement) &&
+        !self@result_placement %in% TCCQ_BACKEND_RESULT_PLACEMENTS
+    ) {
+      problems <- c(problems, "@result_placement must be one supported result placement")
     }
     if (length(self@needs_length) != 1L || is.na(self@needs_length)) {
       problems <- c(problems, "@needs_length must be a single TRUE/FALSE value")
@@ -417,6 +443,15 @@ TccqBackendFunctionInterface <- S7::new_class(
     }
     if (identical(self@kind, "scalar") && isTRUE(self@needs_length)) {
       problems <- c(problems, "scalar interfaces must not require a length parameter")
+    }
+    if (identical(self@result_placement, "output_argument") && !nzchar(self@result_name)) {
+      problems <- c(problems, "output-argument results must have a result name")
+    }
+    if (identical(self@source_language, "fortran") && !identical(self@abi, "fortran_bind_c")) {
+      problems <- c(problems, "Fortran source interfaces must use the fortran_bind_c ABI")
+    }
+    if (identical(self@source_language, "c") && !identical(self@abi, "c")) {
+      problems <- c(problems, "C source interfaces must use the C ABI")
     }
     if (length(problems) > 0L) problems
   }
@@ -1095,9 +1130,12 @@ tccq_bridge_plan <- function(
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
 #' @param kind Function shape: scalar, map, or reduction.
+#' @param abi Callable ABI.
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
 #' @param result_value_id Lowered result value id.
+#' @param result_placement Whether the result is returned or passed by output argument.
+#' @param result_name Generated result/output variable name, or empty string.
 #' @param needs_length Whether the callable receives a length parameter.
 #' @param length_name Generated length parameter name, or empty string.
 #' @param index_name Generated loop index name, or empty string.
@@ -1108,9 +1146,12 @@ tccq_backend_function_interface <- function(
   symbol,
   source_language,
   kind,
+  abi = "",
   parameter_names = character(),
   parameter_value_ids = character(),
   result_value_id,
+  result_placement = "return",
+  result_name = "",
   needs_length = FALSE,
   length_name = "",
   index_name = "",
@@ -1136,6 +1177,24 @@ tccq_backend_function_interface <- function(
       phase = "schema",
       path = "backend_function.kind",
       data = list(kind = kind, supported = TCCQ_BACKEND_FUNCTION_KINDS)
+    )
+  }
+  .tccq_check_character_or_empty(abi, "abi")
+  if (!nzchar(abi)) {
+    abi <- switch(
+      source_language,
+      c = "c",
+      fortran = "fortran_bind_c",
+      ""
+    )
+  }
+  if (!abi %in% TCCQ_BACKEND_FUNCTION_ABIS) {
+    tccq_abort(
+      "schema.invalid_backend_function_abi",
+      "`abi` is not a supported backend function ABI.",
+      phase = "schema",
+      path = "backend_function.abi",
+      data = list(abi = abi, supported = TCCQ_BACKEND_FUNCTION_ABIS)
     )
   }
   if (!is.character(parameter_names) || anyNA(parameter_names) || any(!nzchar(parameter_names))) {
@@ -1167,6 +1226,20 @@ tccq_backend_function_interface <- function(
     )
   }
   .tccq_check_character_scalar(result_value_id, "result_value_id")
+  .tccq_check_character_scalar(result_placement, "result_placement")
+  if (!result_placement %in% TCCQ_BACKEND_RESULT_PLACEMENTS) {
+    tccq_abort(
+      "schema.invalid_backend_function_result_placement",
+      "`result_placement` is not supported.",
+      phase = "schema",
+      path = "backend_function.result_placement",
+      data = list(
+        result_placement = result_placement,
+        supported = TCCQ_BACKEND_RESULT_PLACEMENTS
+      )
+    )
+  }
+  .tccq_check_character_or_empty(result_name, "result_name")
   .tccq_check_logical_scalar(needs_length, "needs_length")
   .tccq_check_character_or_empty(length_name, "length_name")
   .tccq_check_character_or_empty(index_name, "index_name")
@@ -1177,9 +1250,12 @@ tccq_backend_function_interface <- function(
     symbol = symbol,
     source_language = source_language,
     kind = kind,
+    abi = abi,
     parameter_names = parameter_names,
     parameter_value_ids = parameter_value_ids,
     result_value_id = result_value_id,
+    result_placement = result_placement,
+    result_name = result_name,
     needs_length = needs_length,
     length_name = length_name,
     index_name = index_name,
@@ -1823,13 +1899,26 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         "scalar"
       }
       needs_length <- kind %in% c("map", "reduction")
+      result_placement <- if (identical(source_language, "fortran") && identical(kind, "map")) {
+        "output_argument"
+      } else {
+        "return"
+      }
+      result_name <- if (identical(source_language, "fortran") || identical(kind, "map")) {
+        "output"
+      } else {
+        ""
+      }
       tccq_backend_function_interface(
         symbol = symbol,
         source_language = source_language,
         kind = kind,
+        abi = if (identical(source_language, "fortran")) "fortran_bind_c" else "c",
         parameter_names = parameter_names,
         parameter_value_ids = parameter_value_ids,
         result_value_id = result@id,
+        result_placement = result_placement,
+        result_name = result_name,
         needs_length = needs_length,
         length_name = if (needs_length) "length_0001" else "",
         index_name = if (needs_length) "index_0001" else "",
@@ -1994,6 +2083,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
       length_name <- interface@length_name
       index_name <- interface@index_name
+      result_name <- interface@result_name
       expression <- expression_text(source_expression, parameter_by_value_id, index_name, "c")
       signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
       paste(c(
@@ -2009,14 +2099,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         sprintf("  if (%s < 0) {", length_name),
         "    return NULL;",
         "  }",
-        sprintf("  double *output = (double *)malloc(sizeof(double) * (size_t)%s);", length_name),
-        "  if (output == NULL) {",
+        sprintf("  double *%s = (double *)malloc(sizeof(double) * (size_t)%s);", result_name, length_name),
+        sprintf("  if (%s == NULL) {", result_name),
         "    return NULL;",
         "  }",
         sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, length_name, index_name),
-        sprintf("    output[%s] = %s;", index_name, expression),
+        sprintf("    %s[%s] = %s;", result_name, index_name, expression),
         "  }",
-        "  return output;",
+        sprintf("  return %s;", result_name),
         "}"
       ), collapse = "\n")
     }
@@ -2042,6 +2132,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         length_name <- interface@length_name
         index_name <- interface@index_name
+        result_name <- interface@result_name
         declarations <- Map(function(value, parameter_name) {
           if (value@type@shape@rank == 0L) {
             sprintf("  real(c_double), value :: %s", parameter_name)
@@ -2058,26 +2149,27 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         )
         combined_expression <- reduction_combine_text(
           reduction_spec,
-          "output",
+          result_name,
           reduced_expression,
           "fortran"
         )
         return(paste(c(
           sprintf(
-            "function %s(%s) bind(c, name = \"%s\") result(output)",
+            "function %s(%s) bind(c, name = \"%s\") result(%s)",
             symbol,
             paste(c(parameter_names, length_name), collapse = ", "),
-            symbol
+            symbol,
+            result_name
           ),
           "  use iso_c_binding, only: c_double, c_int",
           "  implicit none",
           sprintf("  integer(c_int), value :: %s", length_name),
           unlist(declarations),
-          "  real(c_double) :: output",
+          sprintf("  real(c_double) :: %s", result_name),
           sprintf("  integer(c_int) :: %s", index_name),
-          sprintf("  output = %s", identity),
+          sprintf("  %s = %s", result_name, identity),
           sprintf("  do %s = 1, %s", index_name, length_name),
-          sprintf("    output = %s", combined_expression),
+          sprintf("    %s = %s", result_name, combined_expression),
           "  end do",
           sprintf("end function %s", symbol)
         ), collapse = "\n"))
@@ -2087,20 +2179,28 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         declarations <- Map(function(value, parameter_name) {
           sprintf("  real(c_double), value :: %s", parameter_name)
         }, formals, parameter_names)
+        result_name <- interface@result_name
         expression <- expression_text(source_expression, parameter_by_value_id, NULL, "fortran")
         return(paste(c(
-          sprintf("function %s(%s) bind(c, name = \"%s\") result(output)", symbol, paste(parameter_names, collapse = ", "), symbol),
+          sprintf(
+            "function %s(%s) bind(c, name = \"%s\") result(%s)",
+            symbol,
+            paste(parameter_names, collapse = ", "),
+            symbol,
+            result_name
+          ),
           "  use iso_c_binding, only: c_double",
           "  implicit none",
           unlist(declarations),
-          "  real(c_double) :: output",
-          sprintf("  output = %s", expression),
+          sprintf("  real(c_double) :: %s", result_name),
+          sprintf("  %s = %s", result_name, expression),
           sprintf("end function %s", symbol)
         ), collapse = "\n"))
       }
 
       length_name <- interface@length_name
       index_name <- interface@index_name
+      result_name <- interface@result_name
       declarations <- Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("  real(c_double), value :: %s", parameter_name)
@@ -2111,20 +2211,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       expression <- expression_text(source_expression, parameter_by_value_id, index_name, "fortran")
       paste(c(
         sprintf(
-          "subroutine %s(%s, %s, output) bind(c, name = \"%s\")",
+          "subroutine %s(%s, %s, %s) bind(c, name = \"%s\")",
           symbol,
           paste(parameter_names, collapse = ", "),
           length_name,
+          result_name,
           symbol
         ),
         "  use iso_c_binding, only: c_double, c_int",
         "  implicit none",
         sprintf("  integer(c_int), value :: %s", length_name),
         unlist(declarations),
-        sprintf("  real(c_double), intent(out) :: output(%s)", length_name),
+        sprintf("  real(c_double), intent(out) :: %s(%s)", result_name, length_name),
         sprintf("  integer(c_int) :: %s", index_name),
         sprintf("  do %s = 1, %s", index_name, length_name),
-        sprintf("    output(%s) = %s", index_name, expression),
+        sprintf("    %s(%s) = %s", result_name, index_name, expression),
         "  end do",
         sprintf("end subroutine %s", symbol)
       ), collapse = "\n")

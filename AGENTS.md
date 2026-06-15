@@ -241,7 +241,8 @@ For the reset core, keep these rules explicit:
 - Backend planning must also make generated callable shape explicit through
   `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
   source printers independently infer scalar/map/reduction shape, generated
-  parameter mapping, length/index variables, or reduction accumulator names.
+  parameter mapping, ABI, result placement, generated result names,
+  length/index variables, or reduction accumulator names.
 - Backend planning must make concrete products explicit through
   `TccqBackendArtifact`. A backend must not claim `source`, `shared_library`,
   `jit`, or later device/object products unless the plan either carries the

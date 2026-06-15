@@ -8,9 +8,12 @@ TccqBackendFunctionInterface(
   symbol = character(0),
   source_language = character(0),
   kind = character(0),
+  abi = character(0),
   parameter_names = character(0),
   parameter_value_ids = character(0),
   result_value_id = character(0),
+  result_placement = character(0),
+  result_name = character(0),
   needs_length = logical(0),
   length_name = character(0),
   index_name = character(0),
@@ -25,11 +28,17 @@ TccqBackendFunctionInterface(
 
 \item{kind}{Function shape: scalar, map, or reduction.}
 
+\item{abi}{Callable ABI.}
+
 \item{parameter_names}{Generated parameter names.}
 
 \item{parameter_value_ids}{Lowered value ids corresponding to parameters.}
 
 \item{result_value_id}{Lowered result value id.}
+
+\item{result_placement}{Whether the result is returned or passed by output argument.}
+
+\item{result_name}{Generated result/output variable name, or empty string.}
 
 \item{needs_length}{Whether the callable receives a length parameter.}
 
@@ -44,6 +53,7 @@ TccqBackendFunctionInterface(
 \description{
 A backend function interface is the source-level callable boundary consumed
 by C, Rtinycc, Fortran, and later source printers. It records the generated
-symbol, formal parameter mapping, length/index variables, and reduction
-accumulator name before any concrete syntax is emitted.
+symbol, ABI, formal parameter mapping, result placement, length/index
+variables, and reduction accumulator name before any concrete syntax is
+emitted.
 }

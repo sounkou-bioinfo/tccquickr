@@ -8,9 +8,12 @@ tccq_backend_function_interface(
   symbol,
   source_language,
   kind,
+  abi = "",
   parameter_names = character(),
   parameter_value_ids = character(),
   result_value_id,
+  result_placement = "return",
+  result_name = "",
   needs_length = FALSE,
   length_name = "",
   index_name = "",
@@ -25,11 +28,17 @@ tccq_backend_function_interface(
 
 \item{kind}{Function shape: scalar, map, or reduction.}
 
+\item{abi}{Callable ABI.}
+
 \item{parameter_names}{Generated parameter names.}
 
 \item{parameter_value_ids}{Lowered value ids corresponding to parameters.}
 
 \item{result_value_id}{Lowered result value id.}
+
+\item{result_placement}{Whether the result is returned or passed by output argument.}
+
+\item{result_name}{Generated result/output variable name, or empty string.}
 
 \item{needs_length}{Whether the callable receives a length parameter.}
 

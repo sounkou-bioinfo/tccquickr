@@ -306,6 +306,9 @@ expect_true(S7::S7_inherits(c_source_plan@value@attrs$artifacts$source, TccqBack
 expect_equal(c_source_plan@value@attrs$artifacts$source@kind, "source")
 expect_equal(c_source_plan@value@attrs$artifacts$source@attrs$text, c_source_plan@value@attrs$source)
 expect_equal(c_source_plan@value@attrs$function_interface@kind, "map")
+expect_equal(c_source_plan@value@attrs$function_interface@abi, "c")
+expect_equal(c_source_plan@value@attrs$function_interface@result_placement, "return")
+expect_equal(c_source_plan@value@attrs$function_interface@result_name, "output")
 expect_true(c_source_plan@value@attrs$function_interface@needs_length)
 expect_equal(c_source_plan@value@attrs$function_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
 expect_equal(length(c_source_plan@value@bridges), 3L)
@@ -443,6 +446,9 @@ expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$function_interface, 
 expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$artifacts$source, TccqBackendArtifact))
 expect_equal(fortran_source_plan@value@attrs$function_interface@kind, "map")
 expect_equal(fortran_source_plan@value@attrs$function_interface@source_language, "fortran")
+expect_equal(fortran_source_plan@value@attrs$function_interface@abi, "fortran_bind_c")
+expect_equal(fortran_source_plan@value@attrs$function_interface@result_placement, "output_argument")
+expect_equal(fortran_source_plan@value@attrs$function_interface@result_name, "output")
 expect_equal(length(fortran_source_plan@value@bridges), 3L)
 
 if (can_build_shared_library("fortran")) {
@@ -551,6 +557,7 @@ expect_true(S7::S7_inherits(
   TccqBackendFunctionInterface
 ))
 expect_equal(reduction_c_source_plan@value@attrs$function_interface@kind, "reduction")
+expect_equal(reduction_c_source_plan@value@attrs$function_interface@result_placement, "return")
 expect_equal(reduction_c_source_plan@value@attrs$function_interface@accumulator_name, "accumulator_0001")
 expect_equal(length(reduction_c_source_plan@value@bridges), 3L)
 
@@ -566,6 +573,9 @@ expect_true(grepl("integer(c_int), value :: length_0001", reduction_fortran_sour
 expect_true(grepl("output = 0.0_c_double", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("do index_0001 = 1, length_0001", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(grepl("output = output + ", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
+expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@abi, "fortran_bind_c")
+expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@result_placement, "return")
+expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@result_name, "output")
 expect_equal(length(reduction_fortran_source_plan@value@bridges), 3L)
 
 fold_add <- function(x) x
