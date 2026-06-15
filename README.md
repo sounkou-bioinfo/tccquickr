@@ -196,13 +196,13 @@ to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 The generated callable boundary is a second explicit plan value:
 `TccqBackendFunctionInterface`. It records the source symbol,
 scalar/map/reduction shape, ABI, parameter names, lowered parameter
-value ids, result value id, result placement, and the
-length/index/accumulator names needed by generated loops. C, Rtinycc,
-and Fortran consume that same interface before concrete source is
-emitted. A C map kernel can return an allocated pointer while a Fortran
-`bind(c)` map kernel can expose an output argument, but that difference
-is already explicit in the function interface before either printer
-runs.
+value ids, result value id, result placement, iteration domain, per-axis
+extent parameter names, total element-count name, index name, and
+reduction accumulator name needed by generated loops. C, Rtinycc, and
+Fortran consume that same interface before concrete source is emitted. A
+C map kernel can return an allocated pointer while a Fortran `bind(c)`
+map kernel can expose an output argument, but that difference is already
+explicit in the function interface before either printer runs.
 
 Backend products are also explicit. `TccqBackendProducts` carries the
 typed function interface, expression tree, storage plan, and concrete

@@ -14,8 +14,9 @@ tccq_backend_function_interface(
   result_value_id,
   result_placement = "return",
   result_name = "",
-  needs_length = FALSE,
-  length_name = "",
+  domain = NULL,
+  extent_names = character(),
+  element_count_name = "",
   index_name = "",
   accumulator_name = "",
   attrs = list()
@@ -40,9 +41,11 @@ tccq_backend_function_interface(
 
 \item{result_name}{Generated result/output variable name, or empty string.}
 
-\item{needs_length}{Whether the callable receives a length parameter.}
+\item{domain}{Iteration domain consumed by the callable, or \code{NULL}.}
 
-\item{length_name}{Generated length parameter name, or empty string.}
+\item{extent_names}{Generated per-axis extent parameter names.}
+
+\item{element_count_name}{Generated total element-count parameter name, or empty string.}
 
 \item{index_name}{Generated loop index name, or empty string.}
 

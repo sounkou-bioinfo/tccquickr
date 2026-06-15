@@ -244,8 +244,9 @@ For the reset core, keep these rules explicit:
 - Backend planning must also make generated callable shape explicit through
   `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
   source printers independently infer scalar/map/reduction shape, generated
-  parameter mapping, ABI, result placement, generated result names,
-  length/index variables, or reduction accumulator names.
+  parameter mapping, ABI, result placement, generated result names, iteration
+  domain, per-axis extent parameters, total element-count parameter, index
+  variable, or reduction accumulator names.
 - Current source backends may lower contiguous rank-N elementwise maps and
   full-domain rank-N reductions through a linear element-count/index ABI, but
   the semantic rank and dimensions remain `TccqType`/`TccqShape` facts and R

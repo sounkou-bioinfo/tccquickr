@@ -14,8 +14,9 @@ TccqBackendFunctionInterface(
   result_value_id = character(0),
   result_placement = character(0),
   result_name = character(0),
-  needs_length = logical(0),
-  length_name = character(0),
+  domain = NULL,
+  extent_names = character(0),
+  element_count_name = character(0),
   index_name = character(0),
   accumulator_name = character(0),
   attrs = list()
@@ -40,9 +41,11 @@ TccqBackendFunctionInterface(
 
 \item{result_name}{Generated result/output variable name, or empty string.}
 
-\item{needs_length}{Whether the callable receives a length parameter.}
+\item{domain}{Iteration domain consumed by the callable, or \code{NULL}.}
 
-\item{length_name}{Generated length parameter name, or empty string.}
+\item{extent_names}{Generated per-axis extent parameter names.}
+
+\item{element_count_name}{Generated total element-count parameter name, or empty string.}
 
 \item{index_name}{Generated loop index name, or empty string.}
 
@@ -53,7 +56,7 @@ TccqBackendFunctionInterface(
 \description{
 A backend function interface is the source-level callable boundary consumed
 by C, Rtinycc, Fortran, and later source printers. It records the generated
-symbol, ABI, formal parameter mapping, result placement, length/index
-variables, and reduction accumulator name before any concrete syntax is
-emitted.
+symbol, ABI, formal parameter mapping, result placement, iteration domain,
+generated extent/count/index variables, and reduction accumulator name before
+any concrete syntax is emitted.
 }

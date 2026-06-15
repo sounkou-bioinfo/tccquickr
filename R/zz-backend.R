@@ -328,9 +328,9 @@ TccqBridgePlan <- S7::new_class(
 #'
 #' A backend function interface is the source-level callable boundary consumed
 #' by C, Rtinycc, Fortran, and later source printers. It records the generated
-#' symbol, ABI, formal parameter mapping, result placement, length/index
-#' variables, and reduction accumulator name before any concrete syntax is
-#' emitted.
+#' symbol, ABI, formal parameter mapping, result placement, iteration domain,
+#' generated extent/count/index variables, and reduction accumulator name before
+#' any concrete syntax is emitted.
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
@@ -341,8 +341,9 @@ TccqBridgePlan <- S7::new_class(
 #' @param result_value_id Lowered result value id.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
-#' @param needs_length Whether the callable receives a length parameter.
-#' @param length_name Generated length parameter name, or empty string.
+#' @param domain Iteration domain consumed by the callable, or `NULL`.
+#' @param extent_names Generated per-axis extent parameter names.
+#' @param element_count_name Generated total element-count parameter name, or empty string.
 #' @param index_name Generated loop index name, or empty string.
 #' @param accumulator_name Generated reduction accumulator name, or empty string.
 #' @param attrs Structured interface metadata.
@@ -360,8 +361,9 @@ TccqBackendFunctionInterface <- S7::new_class(
     result_value_id = S7::class_character,
     result_placement = S7::class_character,
     result_name = S7::class_character,
-    needs_length = S7::class_logical,
-    length_name = S7::class_character,
+    domain = S7::new_union(NULL, TccqDomain),
+    extent_names = S7::class_character,
+    element_count_name = S7::class_character,
     index_name = S7::class_character,
     accumulator_name = S7::class_character,
     attrs = S7::class_list
@@ -376,7 +378,7 @@ TccqBackendFunctionInterface <- S7::new_class(
       result_value_id = self@result_value_id,
       result_placement = self@result_placement,
       result_name = self@result_name,
-      length_name = self@length_name,
+      element_count_name = self@element_count_name,
       index_name = self@index_name,
       accumulator_name = self@accumulator_name
     )
@@ -417,9 +419,6 @@ TccqBackendFunctionInterface <- S7::new_class(
     ) {
       problems <- c(problems, "@result_placement must be one supported result placement")
     }
-    if (length(self@needs_length) != 1L || is.na(self@needs_length)) {
-      problems <- c(problems, "@needs_length must be a single TRUE/FALSE value")
-    }
     if (length(self@parameter_names) != length(self@parameter_value_ids)) {
       problems <- c(problems, "@parameter_names and @parameter_value_ids must have the same length")
     }
@@ -429,8 +428,31 @@ TccqBackendFunctionInterface <- S7::new_class(
     if (anyNA(self@parameter_value_ids) || any(!nzchar(self@parameter_value_ids))) {
       problems <- c(problems, "@parameter_value_ids must contain non-empty value ids")
     }
-    if (isTRUE(self@needs_length) && !nzchar(self@length_name)) {
-      problems <- c(problems, "@length_name must be non-empty when @needs_length is TRUE")
+    if (!is.null(self@domain)) {
+      if (length(self@extent_names) != self@domain@shape@rank) {
+        problems <- c(problems, "@extent_names must match @domain rank")
+      }
+      if (anyNA(self@extent_names) || any(!nzchar(self@extent_names))) {
+        problems <- c(problems, "@extent_names must contain non-empty strings")
+      }
+    } else if (length(self@extent_names) != 0L) {
+      problems <- c(problems, "@extent_names must be empty when @domain is NULL")
+    }
+    kind_requires_domain <- length(self@kind) == 1L &&
+      !is.na(self@kind) &&
+      self@kind %in% c("map", "reduction")
+    if (kind_requires_domain && is.null(self@domain)) {
+      problems <- c(problems, "map and reduction interfaces must carry an iteration domain")
+    }
+    if (
+      kind_requires_domain &&
+        !is.null(self@domain) &&
+        self@domain@shape@rank <= 0L
+    ) {
+      problems <- c(problems, "map and reduction interfaces must carry a non-scalar iteration domain")
+    }
+    if (kind_requires_domain && !nzchar(self@element_count_name)) {
+      problems <- c(problems, "map and reduction interfaces must have an element-count name")
     }
     if (
       length(self@kind) == 1L &&
@@ -443,8 +465,15 @@ TccqBackendFunctionInterface <- S7::new_class(
     if (identical(self@kind, "reduction") && !nzchar(self@accumulator_name)) {
       problems <- c(problems, "reduction interfaces must have an accumulator name")
     }
-    if (identical(self@kind, "scalar") && isTRUE(self@needs_length)) {
-      problems <- c(problems, "scalar interfaces must not require a length parameter")
+    if (identical(self@kind, "scalar") && nzchar(self@element_count_name)) {
+      problems <- c(problems, "scalar interfaces must not have an element-count parameter")
+    }
+    if (
+      identical(self@kind, "scalar") &&
+        !is.null(self@domain) &&
+        self@domain@shape@rank > 0L
+    ) {
+      problems <- c(problems, "scalar interfaces must not carry a non-scalar iteration domain")
     }
     if (identical(self@result_placement, "output_argument") && !nzchar(self@result_name)) {
       problems <- c(problems, "output-argument results must have a result name")
@@ -1186,8 +1215,9 @@ tccq_bridge_plan <- function(
 #' @param result_value_id Lowered result value id.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
-#' @param needs_length Whether the callable receives a length parameter.
-#' @param length_name Generated length parameter name, or empty string.
+#' @param domain Iteration domain consumed by the callable, or `NULL`.
+#' @param extent_names Generated per-axis extent parameter names.
+#' @param element_count_name Generated total element-count parameter name, or empty string.
 #' @param index_name Generated loop index name, or empty string.
 #' @param accumulator_name Generated reduction accumulator name, or empty string.
 #' @param attrs Structured interface metadata.
@@ -1202,8 +1232,9 @@ tccq_backend_function_interface <- function(
   result_value_id,
   result_placement = "return",
   result_name = "",
-  needs_length = FALSE,
-  length_name = "",
+  domain = NULL,
+  extent_names = character(),
+  element_count_name = "",
   index_name = "",
   accumulator_name = "",
   attrs = list()
@@ -1290,8 +1321,16 @@ tccq_backend_function_interface <- function(
     )
   }
   .tccq_check_character_or_empty(result_name, "result_name")
-  .tccq_check_logical_scalar(needs_length, "needs_length")
-  .tccq_check_character_or_empty(length_name, "length_name")
+  .tccq_check_optional_s7(domain, TccqDomain, "TccqDomain", "domain")
+  if (!is.character(extent_names) || anyNA(extent_names) || any(!nzchar(extent_names))) {
+    tccq_abort(
+      "schema.invalid_backend_function_extents",
+      "`extent_names` must contain non-empty strings.",
+      phase = "schema",
+      path = "backend_function.extent_names"
+    )
+  }
+  .tccq_check_character_or_empty(element_count_name, "element_count_name")
   .tccq_check_character_or_empty(index_name, "index_name")
   .tccq_check_character_or_empty(accumulator_name, "accumulator_name")
   .tccq_check_list(attrs, "attrs")
@@ -1306,8 +1345,9 @@ tccq_backend_function_interface <- function(
     result_value_id = result_value_id,
     result_placement = result_placement,
     result_name = result_name,
-    needs_length = needs_length,
-    length_name = length_name,
+    domain = domain,
+    extent_names = extent_names,
+    element_count_name = element_count_name,
     index_name = index_name,
     accumulator_name = accumulator_name,
     attrs = attrs
@@ -2012,6 +2052,29 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         length(expression@inputs) == 1L
     }
 
+    interface_domain <- function(kind, source_expression, result) {
+      matching_fusion_groups <- unlist(lapply(program@regions, function(region) {
+        Filter(
+          function(fusion_group) {
+            result@id %in% fusion_group@outputs
+          },
+          region@fusion_groups
+        )
+      }), recursive = FALSE)
+      if (length(matching_fusion_groups) > 0L) {
+        return(matching_fusion_groups[[1L]]@domain)
+      }
+      if (identical(kind, "scalar")) {
+        return(NULL)
+      }
+      domain_shape <- if (identical(kind, "reduction")) {
+        source_expression@inputs[[1L]]@type@shape
+      } else {
+        result@type@shape
+      }
+      tccq_domain("domain_backend", domain_shape)
+    }
+
     backend_function_interface <- function(symbol, source_expression, result, formals) {
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
@@ -2022,7 +2085,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       } else {
         "scalar"
       }
-      needs_length <- kind %in% c("map", "reduction")
+      domain <- interface_domain(kind, source_expression, result)
+      domain_rank <- if (is.null(domain)) 0L else domain@shape@rank
+      extent_names <- if (domain_rank > 0L) c_identifier("extent", seq_len(domain_rank)) else character()
+      element_count_name <- if (domain_rank > 0L) "element_count_0001" else ""
       result_placement <- if (identical(source_language, "fortran") && identical(kind, "map")) {
         "output_argument"
       } else {
@@ -2043,9 +2109,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         result_value_id = result@id,
         result_placement = result_placement,
         result_name = result_name,
-        needs_length = needs_length,
-        length_name = if (needs_length) "length_0001" else "",
-        index_name = if (needs_length) "index_0001" else "",
+        domain = domain,
+        extent_names = extent_names,
+        element_count_name = element_count_name,
+        index_name = if (domain_rank > 0L) "index_0001" else "",
         accumulator_name = if (identical(kind, "reduction")) "accumulator_0001" else "",
         attrs = list(result_type = result@type)
       )
@@ -2148,6 +2215,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           vector_parameter(parameter_name)
         }
       }, formals, parameter_names)
+      domain_parameter_declarations <- c(
+        sprintf("int %s", interface@extent_names),
+        if (nzchar(interface@element_count_name)) {
+          sprintf("int %s", interface@element_count_name)
+        } else {
+          character()
+        }
+      )
       if (identical(interface@kind, "reduction")) {
         lowered_operation <- expression_operation(source_expression)
         reduction_spec <- if (!is.null(lowered_operation)) lowered_operation@reduction else NULL
@@ -2160,7 +2235,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(backend = backend@id)
           )
         }
-        length_name <- interface@length_name
+        element_count_name <- interface@element_count_name
         index_name <- interface@index_name
         accumulator_name <- interface@accumulator_name
         identity <- reduction_identity_text(reduction_spec, result@type, "c")
@@ -2176,7 +2251,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           reduced_expression,
           "c"
         )
-        signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
+        signature_declarations <- c(unlist(parameter_declarations), domain_parameter_declarations)
         return(paste(c(
           "#include <math.h>",
           "#include <stddef.h>",
@@ -2187,7 +2262,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             paste(signature_declarations, collapse = ", ")
           ),
           sprintf("  double %s = %s;", accumulator_name, identity),
-          sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, length_name, index_name),
+          sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, element_count_name, index_name),
           sprintf("    %s = %s;", accumulator_name, combined_expression),
           "  }",
           sprintf("  return %s;", accumulator_name),
@@ -2206,11 +2281,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ), collapse = "\n"))
       }
 
-      length_name <- interface@length_name
+      element_count_name <- interface@element_count_name
       index_name <- interface@index_name
       result_name <- interface@result_name
       expression <- expression_text(source_expression, parameter_by_value_id, index_name, "c")
-      signature_declarations <- c(unlist(parameter_declarations), sprintf("int %s", length_name))
+      signature_declarations <- c(unlist(parameter_declarations), domain_parameter_declarations)
       paste(c(
         "#include <math.h>",
         "#include <stddef.h>",
@@ -2221,14 +2296,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           symbol,
           paste(signature_declarations, collapse = ", ")
         ),
-        sprintf("  if (%s < 0) {", length_name),
+        sprintf("  if (%s < 0) {", element_count_name),
         "    return NULL;",
         "  }",
-        sprintf("  double *%s = (double *)malloc(sizeof(double) * (size_t)%s);", result_name, length_name),
+        sprintf("  double *%s = (double *)malloc(sizeof(double) * (size_t)%s);", result_name, element_count_name),
         sprintf("  if (%s == NULL) {", result_name),
         "    return NULL;",
         "  }",
-        sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, length_name, index_name),
+        sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, element_count_name, index_name),
         sprintf("    %s[%s] = %s;", result_name, index_name, expression),
         "  }",
         sprintf("  return %s;", result_name),
@@ -2239,6 +2314,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     emit_fortran_source <- function(interface, source_expression, result, formals) {
       symbol <- interface@symbol
       parameter_names <- interface@parameter_names
+      domain_parameter_names <- c(
+        interface@extent_names,
+        if (nzchar(interface@element_count_name)) interface@element_count_name else character()
+      )
       parameter_by_value_id <- as.list(stats::setNames(
         parameter_names,
         interface@parameter_value_ids
@@ -2256,14 +2335,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(backend = backend@id)
           )
         }
-        length_name <- interface@length_name
+        element_count_name <- interface@element_count_name
         index_name <- interface@index_name
         result_name <- interface@result_name
         declarations <- Map(function(value, parameter_name) {
           if (value@type@shape@rank == 0L) {
             sprintf("  real(c_double), value :: %s", parameter_name)
           } else {
-            sprintf("  real(c_double), intent(in) :: %s(%s)", parameter_name, length_name)
+            sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
           }
         }, formals, parameter_names)
         identity <- reduction_identity_text(reduction_spec, result@type, "fortran")
@@ -2281,20 +2360,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         )
         return(paste(c(
           sprintf(
-            "function %s(%s) bind(c, name = \"%s\") result(%s)",
+            "function %s(%s) &",
             symbol,
-            paste(c(parameter_names, length_name), collapse = ", "),
-            symbol,
-            result_name
+            paste(c(parameter_names, domain_parameter_names), collapse = ", ")
           ),
+          sprintf("  bind(c, name = \"%s\") result(%s)", symbol, result_name),
           "  use iso_c_binding, only: c_double, c_int",
           "  implicit none",
-          sprintf("  integer(c_int), value :: %s", length_name),
+          sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", ")),
           unlist(declarations),
           sprintf("  real(c_double) :: %s", result_name),
           sprintf("  integer(c_int) :: %s", index_name),
           sprintf("  %s = %s", result_name, identity),
-          sprintf("  do %s = 1, %s", index_name, length_name),
+          sprintf("  do %s = 1, %s", index_name, element_count_name),
           sprintf("    %s = %s", result_name, combined_expression),
           "  end do",
           sprintf("end function %s", symbol)
@@ -2324,33 +2402,31 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ), collapse = "\n"))
       }
 
-      length_name <- interface@length_name
+      element_count_name <- interface@element_count_name
       index_name <- interface@index_name
       result_name <- interface@result_name
       declarations <- Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("  real(c_double), value :: %s", parameter_name)
         } else {
-          sprintf("  real(c_double), intent(in) :: %s(%s)", parameter_name, length_name)
+          sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
         }
       }, formals, parameter_names)
       expression <- expression_text(source_expression, parameter_by_value_id, index_name, "fortran")
       paste(c(
         sprintf(
-          "subroutine %s(%s, %s, %s) bind(c, name = \"%s\")",
+          "subroutine %s(%s) &",
           symbol,
-          paste(parameter_names, collapse = ", "),
-          length_name,
-          result_name,
-          symbol
+          paste(c(parameter_names, domain_parameter_names, result_name), collapse = ", ")
         ),
+        sprintf("  bind(c, name = \"%s\")", symbol),
         "  use iso_c_binding, only: c_double, c_int",
         "  implicit none",
-        sprintf("  integer(c_int), value :: %s", length_name),
+        sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", ")),
         unlist(declarations),
-        sprintf("  real(c_double), intent(out) :: %s(%s)", result_name, length_name),
+        sprintf("  real(c_double), intent(out) :: %s(*)", result_name),
         sprintf("  integer(c_int) :: %s", index_name),
-        sprintf("  do %s = 1, %s", index_name, length_name),
+        sprintf("  do %s = 1, %s", index_name, element_count_name),
         sprintf("    %s(%s) = %s", result_name, index_name, expression),
         "  end do",
         sprintf("end subroutine %s", symbol)
@@ -2361,7 +2437,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       symbol <- interface@symbol
       wrapper_symbol <- paste0(symbol, "_call")
       parameter_names <- interface@parameter_names
-      length_name <- interface@length_name
+      domain_parameter_names <- c(
+        interface@extent_names,
+        if (nzchar(interface@element_count_name)) interface@element_count_name else character()
+      )
+      element_count_name <- interface@element_count_name
       result_name <- interface@result_name
 
       c_parameter_type <- function(value) {
@@ -2370,8 +2450,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       kernel_parameters <- unname(Map(function(value, parameter_name) {
         sprintf("%s %s", c_parameter_type(value), parameter_name)
       }, formals, parameter_names))
-      if (isTRUE(interface@needs_length)) {
-        kernel_parameters <- c(kernel_parameters, sprintf("int %s", length_name))
+      if (length(domain_parameter_names) > 0L) {
+        kernel_parameters <- c(kernel_parameters, sprintf("int %s", domain_parameter_names))
       }
       if (identical(interface@result_placement, "output_argument")) {
         kernel_parameters <- c(kernel_parameters, sprintf("double *%s", result_name))
@@ -2452,6 +2532,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             sprintf("  output_dim = %s_dim;", first_non_scalar_name)
           )
         }
+        if (length(interface@extent_names) > 0L) {
+          extent_lines <- if (first_non_scalar_rank > 1L) {
+            unname(vapply(seq_along(interface@extent_names), function(axis_index) {
+              sprintf(
+                "  int %s = INTEGER(%s_dim)[%d];",
+                interface@extent_names[[axis_index]],
+                first_non_scalar_name,
+                axis_index - 1L
+              )
+            }, character(1)))
+          } else {
+            sprintf("  int %s = (int)element_count;", interface@extent_names[[1L]])
+          }
+          lines <- c(lines, extent_lines)
+        }
       }
 
       parameter_setup <- unlist(Map(function(value, parameter_name) {
@@ -2511,9 +2606,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       lines <- c(lines, parameter_setup)
 
       argument_names <- parameter_names
-      if (isTRUE(interface@needs_length)) {
-        lines <- c(lines, sprintf("  int %s = (int)element_count;", length_name))
-        argument_names <- c(argument_names, length_name)
+      if (nzchar(element_count_name)) {
+        lines <- c(lines, sprintf("  int %s = (int)element_count;", element_count_name))
+        argument_names <- c(argument_names, domain_parameter_names)
       }
 
       if (result@type@shape@rank > 0L) {
@@ -2572,14 +2667,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ffi_arg_types <- lapply(formals, function(value) {
         if (value@type@shape@rank == 0L) "f64" else "numeric_array"
       })
-      needs_length_argument <- interface@needs_length
+      domain_integer_argument_count <- length(interface@extent_names) +
+        as.integer(nzchar(interface@element_count_name))
+      if (domain_integer_argument_count > 0L) {
+        ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), domain_integer_argument_count))
+      }
       if (result@type@shape@rank > 0L) {
-        ffi_arg_types <- c(ffi_arg_types, list("i32"))
         ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
       } else {
-        if (needs_length_argument) {
-          ffi_arg_types <- c(ffi_arg_types, list("i32"))
-        }
         ffi_return <- "f64"
       }
 
@@ -2671,7 +2766,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           }
         }
         call_arguments <- arguments
-        if (needs_length_argument) {
+        if (length(interface@extent_names) > 0L) {
+          domain_extents <- if (length(interface@extent_names) == 1L) {
+            as.integer(element_count)
+          } else {
+            as.integer(result_dim)
+          }
+          call_arguments <- c(call_arguments, as.list(domain_extents))
+        }
+        if (nzchar(interface@element_count_name)) {
           call_arguments <- c(call_arguments, list(as.integer(element_count)))
         }
         value <- do.call(compiled[[symbol]], call_arguments)
