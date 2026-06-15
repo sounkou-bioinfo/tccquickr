@@ -101,9 +101,11 @@ model; it does not mean the call is not R.
 `TccqResolvedOp` is the handoff from registry query to lowering. It
 records the observed call, selected `TccqOpImpl`, target, region kind,
 memory space, purity, boundary status, R C API usage, and effect.
-Lowered operation values carry that resolved operation so fusion,
-storage, and backend planning can read typed implementation facts
-instead of rediscovering semantics from `TccqValue@op`. Operation
+`TccqLoweredOperation` is the next payload: it keeps the lowered family,
+resolved operation, signature, domain policy, and optional reducer
+identity together on the operation value. Fusion, storage, and backend
+planning consume that typed payload instead of rediscovering semantics
+from `TccqValue@op` or a handful of loose attributes. Operation
 implementations may also expose a source renderer through
 `tccq_op_render()`. That renderer is an implementation capability, not a
 backend-local switch over operation strings.
@@ -145,14 +147,15 @@ rank-one elementwise expressions and rank-one reductions when the
 resolved operations carry the corresponding typed specs. It returns a
 `TccqLoweringPlan`, then embeds the plan into `TccqProgram` as values,
 regions, fusion groups, and storage facts. Each operation value carries
-a `TccqResolvedOp`, and the lowered value also carries the shared
-`TccqOpSignature` used to type the call. The generated fusion group
-preserves operation signatures and domain policies, then derives its
-target and effect from the resolved operations. Later fusion, access,
-legality, storage, and backend passes should consume those contracts
-rather than infer operation behavior from names, ranks, or emitted
-source. This is not a general legality pass and it is not the place
-where new language coverage should sprawl.
+one `TccqLoweredOperation` payload that owns the shared
+`TccqOpSignature`, result-domain policy, selected implementation, and
+optional reduction facts used to type the call. The generated fusion
+group preserves operation signatures and domain policies, then derives
+its target and effect from the resolved operations. Later fusion,
+access, legality, storage, and backend passes should consume those
+contracts rather than infer operation behavior from names, ranks, or
+emitted source. This is not a general legality pass and it is not the
+place where new language coverage should sprawl.
 
 Top-level local assignment is currently modeled as single-assignment
 binding. In `a <- expr`, the local symbol `a` becomes a name for the

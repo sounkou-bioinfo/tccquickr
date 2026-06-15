@@ -1893,9 +1893,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       NULL
     }
 
+    expression_operation <- function(expression) {
+      operation <- expression@attrs$operation
+      if (S7::S7_inherits(operation, TccqLoweredOperation)) operation else NULL
+    }
+
     expression_is_reduction <- function(expression) {
+      operation <- expression_operation(expression)
       identical(expression@kind, "operation") &&
-        identical(expression@attrs$lowering, "reduction") &&
+        !is.null(operation) &&
+        identical(operation@family, "reduction") &&
         length(expression@inputs) == 1L
     }
 
@@ -2036,14 +2043,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
       }, formals, parameter_names)
       if (identical(interface@kind, "reduction")) {
-        reduction_spec <- source_expression@attrs$reduction
+        lowered_operation <- expression_operation(source_expression)
+        reduction_spec <- if (!is.null(lowered_operation)) lowered_operation@reduction else NULL
         if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
           tccq_abort(
             "backend.invalid_reduction",
             "Reduction expressions must carry a <TccqReductionSpec>.",
             phase = "backend",
             path = sprintf("backend.%s.reducer", backend@id),
-            data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
+            data = list(backend = backend@id)
           )
         }
         length_name <- interface@length_name
@@ -2131,14 +2139,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ))
 
       if (identical(interface@kind, "reduction")) {
-        reduction_spec <- source_expression@attrs$reduction
+        lowered_operation <- expression_operation(source_expression)
+        reduction_spec <- if (!is.null(lowered_operation)) lowered_operation@reduction else NULL
         if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
           tccq_abort(
             "backend.invalid_reduction",
             "Reduction expressions must carry a <TccqReductionSpec>.",
             phase = "backend",
             path = sprintf("backend.%s.reducer", backend@id),
-            data = list(backend = backend@id, reducer = source_expression@attrs$reducer)
+            data = list(backend = backend@id)
           )
         }
         length_name <- interface@length_name

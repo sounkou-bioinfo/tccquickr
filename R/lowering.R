@@ -301,6 +301,11 @@ tccq_lower_function <- function(
     }
 
     value_id <- next_value_id(state)
+    operation <- tccq_lowered_operation(
+      "elementwise",
+      resolved_operation,
+      elementwise = elementwise_spec
+    )
     add_value(
       state,
       tccq_value(
@@ -309,12 +314,7 @@ tccq_lower_function <- function(
         inputs = input_ids,
         type = result_type@value,
         effect = resolved_operation@effect,
-        attrs = list(
-          lowering = "elementwise",
-          elementwise = elementwise_spec,
-          signature = signature,
-          resolved_op = resolved_operation
-        )
+        attrs = list(operation = operation)
       )
     )
     list(value_id = value_id, type = result_type@value, diagnostics = list())
@@ -377,6 +377,12 @@ tccq_lower_function <- function(
       return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))
     }
     value_id <- next_value_id(state)
+    operation <- tccq_lowered_operation(
+      "reduction",
+      resolved_operation,
+      reduction = reduction_spec,
+      identity = identity_result@value
+    )
     add_value(
       state,
       tccq_value(
@@ -385,22 +391,26 @@ tccq_lower_function <- function(
         inputs = list(lowered_arg$value_id),
         type = result_type,
         effect = resolved_operation@effect,
-        attrs = list(
-          lowering = "reduction",
-          reducer = reducer,
-          reduction = reduction_spec,
-          signature = signature,
-          identity = identity_result@value,
-          resolved_op = resolved_operation
-        )
+        attrs = list(operation = operation)
       )
     )
     list(value_id = value_id, type = result_type, diagnostics = list())
   }
 
+  lowered_operation <- function(value) {
+    operation <- value@attrs$operation
+    if (S7::S7_inherits(operation, TccqLoweredOperation)) operation else NULL
+  }
+
+  value_is_reduction <- function(value) {
+    operation <- lowered_operation(value)
+    !is.null(operation) && identical(operation@family, "reduction")
+  }
+
   plan_regions <- function(values, result_id) {
     result_value <- values[[result_id]]
-    result_is_reduction <- identical(result_value@attrs$lowering, "reduction")
+    result_operation <- lowered_operation(result_value)
+    result_is_reduction <- value_is_reduction(result_value)
     domain_shape <- if (isTRUE(result_is_reduction)) {
       values[[result_value@inputs[[1L]]]]@type@shape
     } else {
@@ -412,7 +422,13 @@ tccq_lower_function <- function(
       function(value) !value@op %in% c("formal", "literal"),
       lowered_values
     )
-    operation_signatures <- lapply(operation_values, function(value) value@attrs$signature)
+    lowered_operations <- lapply(operation_values, lowered_operation)
+    names(lowered_operations) <- vapply(operation_values, function(value) value@id, character(1))
+    lowered_operations <- Filter(
+      function(operation) S7::S7_inherits(operation, TccqLoweredOperation),
+      lowered_operations
+    )
+    operation_signatures <- lapply(lowered_operations, function(operation) operation@signature)
     names(operation_signatures) <- vapply(operation_values, function(value) value@id, character(1))
     operation_signatures <- Filter(
       function(signature) !is.null(signature) && S7::S7_inherits(signature, TccqOpSignature),
@@ -420,11 +436,11 @@ tccq_lower_function <- function(
     )
     domain_policies <- Filter(
       function(policy) !is.null(policy) && S7::S7_inherits(policy, TccqDomainPolicy),
-      lapply(operation_signatures, function(signature) signature@domain_policy)
+      lapply(lowered_operations, function(operation) operation@domain_policy)
     )
     resolved_operations <- Filter(
       function(resolved_operation) S7::S7_inherits(resolved_operation, TccqResolvedOp),
-      lapply(operation_values, function(value) value@attrs$resolved_op)
+      lapply(lowered_operations, function(operation) operation@resolved_op)
     )
     accesses <- lapply(lowered_values, function(value) {
       access_kind <- if (value@type@shape@rank == 0L) "scalar" else "identity"
@@ -445,12 +461,16 @@ tccq_lower_function <- function(
     fusion_attrs <- if (isTRUE(result_is_reduction)) {
       c(list(
         storage = "fused-map-reduce",
-        reducer = result_value@attrs$reducer,
-        reduction = result_value@attrs$reduction,
-        identity = result_value@attrs$identity
+        operation = result_operation,
+        reducer = result_operation@reduction@name,
+        reduction = result_operation@reduction,
+        identity = result_operation@identity
       ), operation_contract_attrs)
     } else {
-      c(list(storage = "fused-elementwise"), operation_contract_attrs)
+      c(list(
+        storage = "fused-elementwise",
+        operation = result_operation
+      ), operation_contract_attrs)
     }
     fusion <- tccq_fusion_group(
       "fusion_main",
@@ -472,7 +492,7 @@ tccq_lower_function <- function(
       effect = region_effect,
       memory_space = "host",
       touches_rapi = FALSE,
-      attrs = list(result = result_id, lowering = result_value@attrs$lowering)
+      attrs = list(result = result_id, operation = result_operation)
     ))
   }
 
@@ -524,7 +544,7 @@ tccq_lower_function <- function(
     tccq_storage_plan(
       slots = unname(slots_by_id),
       reuse_groups = reuse_groups,
-      attrs = list(strategy = if (identical(values[[result_id]]@attrs$lowering, "reduction")) {
+      attrs = list(strategy = if (value_is_reduction(values[[result_id]])) {
         "fused-map-reduce"
       } else {
         "fused-elementwise"
@@ -672,7 +692,7 @@ tccq_lower_function <- function(
     regions = regions,
     result = result$value_id,
     storage_plan = storage_plan,
-    attrs = list(strategy = if (identical(state$values[[result$value_id]]@attrs$lowering, "reduction")) {
+    attrs = list(strategy = if (value_is_reduction(state$values[[result$value_id]])) {
       "map-reduce-expression"
     } else {
       "elementwise-expression"

@@ -120,6 +120,11 @@ expect_true(resolved_plus@success)
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise, TccqElementwiseSpec))
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature, TccqOpSignature))
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature@domain_policy, TccqDomainPolicy))
+lowered_plus <- tccq_lowered_operation("elementwise", resolved_plus@value)
+expect_true(S7::S7_inherits(lowered_plus, TccqLoweredOperation))
+expect_equal(lowered_plus@family, "elementwise")
+expect_true(S7::S7_inherits(lowered_plus@signature, TccqOpSignature))
+expect_true(S7::S7_inherits(lowered_plus@domain_policy, TccqDomainPolicy))
 plus_result_type <- tccq_elementwise_result_type(
   resolved_plus@value@elementwise,
   list(tccq_type("integer", tccq_shape(tccq_dim_symbol("n"))), tccq_type("double"))
@@ -209,6 +214,20 @@ sum_identity <- tccq_reduction_identity(resolved_sum@value@reduction, tccq_type(
 expect_true(sum_identity@success)
 expect_true(S7::S7_inherits(sum_identity@value, TccqLiteral))
 expect_equal(sum_identity@value@value, 0)
+lowered_sum <- tccq_lowered_operation(
+  "reduction",
+  resolved_sum@value,
+  identity = sum_identity@value
+)
+expect_true(S7::S7_inherits(lowered_sum, TccqLoweredOperation))
+expect_equal(lowered_sum@family, "reduction")
+expect_true(S7::S7_inherits(lowered_sum@reduction, TccqReductionSpec))
+expect_true(S7::S7_inherits(lowered_sum@identity, TccqLiteral))
+bad_lowered_sum <- tryCatch(
+  tccq_lowered_operation("reduction", resolved_sum@value),
+  error = identity
+)
+expect_true(inherits(bad_lowered_sum, "tccq_error"))
 sum_combine <- tccq_reduction_combine(
   resolved_sum@value@reduction,
   "accumulator",

@@ -76,24 +76,25 @@ operation_values <- Filter(
   function(value) !value@op %in% c("formal", "literal"),
   map_result@value@values
 )
+operation_payloads <- lapply(operation_values, function(value) value@attrs$operation)
 expect_true(all(vapply(
-  operation_values,
-  function(value) S7::S7_inherits(value@attrs$resolved_op, TccqResolvedOp),
+  operation_payloads,
+  function(operation) S7::S7_inherits(operation, TccqLoweredOperation),
   logical(1)
 )))
 expect_true(all(vapply(
-  operation_values,
-  function(value) identical(value@attrs$resolved_op@target, "pure_c"),
+  operation_payloads,
+  function(operation) identical(operation@resolved_op@target, "pure_c"),
   logical(1)
 )))
 expect_true(all(vapply(
-  operation_values,
-  function(value) S7::S7_inherits(value@attrs$signature, TccqOpSignature),
+  operation_payloads,
+  function(operation) S7::S7_inherits(operation@signature, TccqOpSignature),
   logical(1)
 )))
 expect_true(all(vapply(
-  operation_values,
-  function(value) S7::S7_inherits(value@attrs$signature@domain_policy, TccqDomainPolicy),
+  operation_payloads,
+  function(operation) S7::S7_inherits(operation@domain_policy, TccqDomainPolicy),
   logical(1)
 )))
 map_fusion <- map_result@value@regions[[1L]]@fusion_groups[[1L]]
@@ -123,15 +124,16 @@ expect_true(map_reduce_result@value@attrs$lowered)
 expect_equal(map_reduce_result@value@attrs$lowering$strategy, "map-reduce-expression")
 
 reduction_value <- map_reduce_result@value@values[[map_reduce_result@value@result]]
+reduction_operation <- reduction_value@attrs$operation
 expect_equal(reduction_value@op, "sum")
 expect_equal(reduction_value@type@shape@rank, 0L)
-expect_equal(reduction_value@attrs$lowering, "reduction")
-expect_equal(reduction_value@attrs$reducer, "sum")
-expect_true(S7::S7_inherits(reduction_value@attrs$reduction, TccqReductionSpec))
-expect_true(S7::S7_inherits(reduction_value@attrs$reduction@signature, TccqOpSignature))
-expect_true(S7::S7_inherits(reduction_value@attrs$reduction@signature@domain_policy, TccqDomainPolicy))
-expect_true(S7::S7_inherits(reduction_value@attrs$signature, TccqOpSignature))
-expect_true(S7::S7_inherits(reduction_value@attrs$identity, TccqLiteral))
+expect_true(S7::S7_inherits(reduction_operation, TccqLoweredOperation))
+expect_equal(reduction_operation@family, "reduction")
+expect_equal(reduction_operation@reduction@name, "sum")
+expect_true(S7::S7_inherits(reduction_operation@reduction, TccqReductionSpec))
+expect_true(S7::S7_inherits(reduction_operation@signature, TccqOpSignature))
+expect_true(S7::S7_inherits(reduction_operation@domain_policy, TccqDomainPolicy))
+expect_true(S7::S7_inherits(reduction_operation@identity, TccqLiteral))
 
 reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
 expect_equal(reduction_fusion@kind, "map_reduce")
@@ -159,12 +161,14 @@ power_result <- tccq_analyze(power_program)
 expect_true(power_result@success)
 expect_true(power_result@value@attrs$lowered)
 power_value <- power_result@value@values[[power_result@value@result]]
+power_operation <- power_value@attrs$operation
 expect_equal(power_value@op, "^")
 expect_equal(power_value@type@base, "double")
-expect_true(S7::S7_inherits(power_value@attrs$elementwise, TccqElementwiseSpec))
-expect_true(S7::S7_inherits(power_value@attrs$elementwise@signature, TccqOpSignature))
-expect_true(S7::S7_inherits(power_value@attrs$elementwise@signature@domain_policy, TccqDomainPolicy))
-expect_true(S7::S7_inherits(power_value@attrs$signature, TccqOpSignature))
+expect_true(S7::S7_inherits(power_operation, TccqLoweredOperation))
+expect_equal(power_operation@family, "elementwise")
+expect_true(S7::S7_inherits(power_operation@elementwise, TccqElementwiseSpec))
+expect_true(S7::S7_inherits(power_operation@signature, TccqOpSignature))
+expect_true(S7::S7_inherits(power_operation@domain_policy, TccqDomainPolicy))
 
 negation_program <- function(x) {
   declare(type(x = double(n)))
@@ -177,7 +181,7 @@ expect_true(negation_result@value@attrs$lowered)
 negation_value <- negation_result@value@values[[negation_result@value@result]]
 expect_equal(negation_value@op, "-")
 expect_equal(length(negation_value@inputs), 1L)
-expect_true(S7::S7_inherits(negation_value@attrs$elementwise, TccqElementwiseSpec))
+expect_true(S7::S7_inherits(negation_value@attrs$operation@elementwise, TccqElementwiseSpec))
 
 bad_elementwise_arity <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
@@ -226,7 +230,8 @@ expect_true(custom_elementwise_result@success)
 expect_true(custom_elementwise_result@value@attrs$lowered)
 custom_elementwise_value <- custom_elementwise_result@value@values[[custom_elementwise_result@value@result]]
 expect_equal(custom_elementwise_value@op, "square")
-expect_true(S7::S7_inherits(custom_elementwise_value@attrs$elementwise, TccqElementwiseSpec))
+expect_true(S7::S7_inherits(custom_elementwise_value@attrs$operation, TccqLoweredOperation))
+expect_true(S7::S7_inherits(custom_elementwise_value@attrs$operation@elementwise, TccqElementwiseSpec))
 
 bound_chain <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
@@ -328,9 +333,11 @@ expect_true(custom_reduce_result@success)
 expect_true(custom_reduce_result@value@attrs$lowered)
 expect_equal(custom_reduce_result@value@attrs$lowering$strategy, "map-reduce-expression")
 custom_reduction_value <- custom_reduce_result@value@values[[custom_reduce_result@value@result]]
+custom_reduction_operation <- custom_reduction_value@attrs$operation
 expect_equal(custom_reduction_value@op, "fold_add")
-expect_equal(custom_reduction_value@attrs$reducer, "fold_add")
-expect_true(S7::S7_inherits(custom_reduction_value@attrs$reduction, TccqReductionSpec))
+expect_equal(custom_reduction_operation@reduction@name, "fold_add")
+expect_true(S7::S7_inherits(custom_reduction_operation, TccqLoweredOperation))
+expect_true(S7::S7_inherits(custom_reduction_operation@reduction, TccqReductionSpec))
 
 call_program <- function(x) {
   declare(type(x = double(n)))

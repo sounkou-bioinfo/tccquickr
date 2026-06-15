@@ -220,7 +220,18 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       ))
     }
 
-    resolved_operation <- value@attrs$resolved_op
+    lowered_operation <- value@attrs$operation
+    if (!S7::S7_inherits(lowered_operation, TccqLoweredOperation)) {
+      diagnostics <<- c(diagnostics, list(expression_diagnostic(
+        "expression.missing_lowered_operation",
+        "Operation lowered values must carry a <TccqLoweredOperation> payload.",
+        "expression.operation",
+        data = list(value_id = current_value_id, op = value@op)
+      )))
+      return(NULL)
+    }
+
+    resolved_operation <- lowered_operation@resolved_op
     if (!S7::S7_inherits(resolved_operation, TccqResolvedOp)) {
       diagnostics <<- c(diagnostics, list(expression_diagnostic(
         "expression.unresolved_operation",
@@ -253,6 +264,9 @@ tccq_expression_tree <- function(program, value_id = program@result) {
     if (any(vapply(input_expressions, is.null, logical(1)))) {
       return(NULL)
     }
+    value_attrs <- value@attrs
+    value_attrs$operation <- NULL
+
     tccq_expression(
       id = current_value_id,
       kind = "operation",
@@ -261,7 +275,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       inputs = input_expressions,
       type = value@type,
       resolved_op = resolved_operation,
-      attrs = c(list(effect = value@effect), value@attrs)
+      attrs = c(list(effect = value@effect, operation = lowered_operation), value_attrs)
     )
   }
 

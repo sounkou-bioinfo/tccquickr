@@ -22,6 +22,7 @@ TCCQ_MATH_GROUP_CALL_NAMES <- c(
 TCCQ_SUMMARY_GROUP_CALL_NAMES <- c("all", "any", "sum", "prod", "min", "max", "range")
 
 TCCQ_OP_RENDER_LANGUAGES <- c("c", "fortran")
+TCCQ_LOWERED_OPERATION_FAMILIES <- c("elementwise", "reduction")
 
 TCCQ_S3_PRIMITIVE_GENERIC_NAMES <- get0(
   ".S3PrimitiveGenerics",
@@ -417,6 +418,73 @@ TccqResolvedOp <- S7::new_class(
       field_value <- logical_fields[[field_name]]
       if (length(field_value) != 1L || is.na(field_value)) {
         problems <- c(problems, sprintf("@%s must be a single TRUE/FALSE value", field_name))
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Lowered operation payload
+#'
+#' `TccqLoweredOperation` is the typed payload attached to operation values
+#' after lowering. It keeps operation family, selected implementation,
+#' signature, domain policy, and optional reducer facts together so later
+#' passes do not branch on loose value attributes.
+#'
+#' @param family Lowered operation family.
+#' @param resolved_op Selected operation implementation.
+#' @param signature Shared operation signature.
+#' @param domain_policy Optional result-domain policy.
+#' @param elementwise Optional elementwise metadata.
+#' @param reduction Optional reduction metadata.
+#' @param identity Optional reduction identity literal.
+#' @param attrs Structured metadata.
+#' @export
+TccqLoweredOperation <- S7::new_class(
+  "TccqLoweredOperation",
+  package = "tccquickr",
+  properties = list(
+    family = S7::class_character,
+    resolved_op = TccqResolvedOp,
+    signature = TccqOpSignature,
+    domain_policy = S7::new_union(NULL, TccqDomainPolicy),
+    elementwise = S7::new_union(NULL, TccqElementwiseSpec),
+    reduction = S7::new_union(NULL, TccqReductionSpec),
+    identity = S7::new_union(NULL, TccqLiteral),
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@family) != 1L ||
+        is.na(self@family) ||
+        !self@family %in% TCCQ_LOWERED_OPERATION_FAMILIES
+    ) {
+      problems <- c(problems, "@family must be one supported lowered operation family")
+    }
+    if (identical(self@family, "elementwise")) {
+      if (!S7::S7_inherits(self@elementwise, TccqElementwiseSpec)) {
+        problems <- c(problems, "elementwise lowered operations must carry elementwise metadata")
+      }
+      if (!is.null(self@reduction) || !is.null(self@identity)) {
+        problems <- c(problems, "elementwise lowered operations cannot carry reducer metadata")
+      }
+      if (!S7::S7_inherits(self@resolved_op@elementwise, TccqElementwiseSpec)) {
+        problems <- c(problems, "elementwise lowered operations need an elementwise resolved op")
+      }
+    }
+    if (identical(self@family, "reduction")) {
+      if (!S7::S7_inherits(self@reduction, TccqReductionSpec)) {
+        problems <- c(problems, "reduction lowered operations must carry reduction metadata")
+      }
+      if (!S7::S7_inherits(self@identity, TccqLiteral)) {
+        problems <- c(problems, "reduction lowered operations must carry an identity literal")
+      }
+      if (!is.null(self@elementwise)) {
+        problems <- c(problems, "reduction lowered operations cannot carry elementwise metadata")
+      }
+      if (!S7::S7_inherits(self@resolved_op@reduction, TccqReductionSpec)) {
+        problems <- c(problems, "reduction lowered operations need a reduction resolved op")
       }
     }
     if (length(problems) > 0L) problems
@@ -1610,6 +1678,109 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
     effect = implementation@effect,
     elementwise = implementation@elementwise,
     reduction = implementation@reduction,
+    attrs = attrs
+  )
+}
+
+#' Construct a lowered operation payload
+#'
+#' @param family Lowered operation family.
+#' @param resolved_op Selected operation implementation.
+#' @param signature Optional operation signature. Defaults to the family spec.
+#' @param elementwise Optional elementwise metadata.
+#' @param reduction Optional reduction metadata.
+#' @param identity Optional reduction identity literal.
+#' @param attrs Structured metadata.
+#' @export
+tccq_lowered_operation <- function(
+  family,
+  resolved_op,
+  signature = NULL,
+  elementwise = NULL,
+  reduction = NULL,
+  identity = NULL,
+  attrs = list()
+) {
+  .tccq_check_character_scalar(family, "family")
+  if (!family %in% TCCQ_LOWERED_OPERATION_FAMILIES) {
+    tccq_abort(
+      "schema.invalid_lowered_operation_family",
+      "`family` is not a supported lowered operation family.",
+      phase = "schema",
+      path = "lowered_operation.family",
+      data = list(family = family, supported = TCCQ_LOWERED_OPERATION_FAMILIES)
+    )
+  }
+  .tccq_check_s7(resolved_op, TccqResolvedOp, "TccqResolvedOp", "resolved_op")
+  .tccq_check_optional_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
+  .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
+  .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
+  .tccq_check_list(attrs, "attrs")
+
+  if (identical(family, "elementwise")) {
+    elementwise <- elementwise %||% resolved_op@elementwise
+    if (!S7::S7_inherits(elementwise, TccqElementwiseSpec)) {
+      tccq_abort(
+        "schema.lowered_operation_elementwise_required",
+        "Elementwise lowered operations must carry elementwise metadata.",
+        phase = "schema",
+        path = "lowered_operation.elementwise",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    if (!is.null(reduction) || !is.null(identity)) {
+      tccq_abort(
+        "schema.invalid_lowered_operation_payload",
+        "Elementwise lowered operations cannot carry reducer metadata.",
+        phase = "schema",
+        path = "lowered_operation.reduction",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    signature <- signature %||% elementwise@signature
+  }
+
+  if (identical(family, "reduction")) {
+    reduction <- reduction %||% resolved_op@reduction
+    if (!S7::S7_inherits(reduction, TccqReductionSpec)) {
+      tccq_abort(
+        "schema.lowered_operation_reduction_required",
+        "Reduction lowered operations must carry reduction metadata.",
+        phase = "schema",
+        path = "lowered_operation.reduction",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    if (!S7::S7_inherits(identity, TccqLiteral)) {
+      tccq_abort(
+        "schema.lowered_operation_identity_required",
+        "Reduction lowered operations must carry an identity literal.",
+        phase = "schema",
+        path = "lowered_operation.identity",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    if (!is.null(elementwise)) {
+      tccq_abort(
+        "schema.invalid_lowered_operation_payload",
+        "Reduction lowered operations cannot carry elementwise metadata.",
+        phase = "schema",
+        path = "lowered_operation.elementwise",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    signature <- signature %||% reduction@signature
+  }
+
+  TccqLoweredOperation(
+    family = family,
+    resolved_op = resolved_op,
+    signature = signature,
+    domain_policy = signature@domain_policy,
+    elementwise = elementwise,
+    reduction = reduction,
+    identity = identity,
     attrs = attrs
   )
 }
