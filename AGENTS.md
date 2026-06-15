@@ -262,6 +262,9 @@ For the reset core, keep these rules explicit:
   not sideways into compatibility glue.
 - Matrix operations, reductions, domains, views, mutation, fusion, and storage
   planning must first appear as typed IR concepts.
+- Fusion-specific operation facts belong in `TccqFusionContract`: lowered
+  operations, result operation, operation signatures, domain policies, reducer
+  facts, and storage strategy must not be scattered across fusion `attrs`.
 - Storage reuse must be derived from typed planning facts such as
   `TccqStorageLifetime`, storage compatibility, aliasing, materialization,
   layout, and memory space. Do not group temporaries by role alone or hide

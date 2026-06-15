@@ -48,6 +48,7 @@ buffer_result <- tccq_analyze(buffer_program)
 expect_true(buffer_result@success)
 expect_equal(buffer_result@value@formals$bytes@type@base, "raw")
 expect_equal(buffer_result@value@formals$scratch@type@base, "buffer")
+expect_equal(length(buffer_result@value@regions[[1L]]@fusion_groups), 0L)
 
 map_chain <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
@@ -101,14 +102,17 @@ map_fusion <- map_result@value@regions[[1L]]@fusion_groups[[1L]]
 expect_equal(map_fusion@kind, "map")
 expect_equal(map_fusion@region_kind, "kernel")
 expect_equal(map_fusion@target, "pure_c")
-expect_equal(length(map_fusion@attrs$operation_signatures), length(operation_values))
+expect_true(S7::S7_inherits(map_fusion@contract, TccqFusionContract))
+expect_equal(map_fusion@contract@fusion_kind, "map")
+expect_equal(map_fusion@contract@storage_strategy, "fused-elementwise")
+expect_equal(length(map_fusion@contract@operation_signatures), length(operation_values))
 expect_true(all(vapply(
-  map_fusion@attrs$operation_signatures,
+  map_fusion@contract@operation_signatures,
   function(signature) S7::S7_inherits(signature, TccqOpSignature),
   logical(1)
 )))
 expect_true(all(vapply(
-  map_fusion@attrs$domain_policies,
+  map_fusion@contract@domain_policies,
   function(domain_policy) S7::S7_inherits(domain_policy, TccqDomainPolicy),
   logical(1)
 )))
@@ -139,14 +143,17 @@ reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
 expect_equal(reduction_fusion@kind, "map_reduce")
 expect_equal(reduction_fusion@region_kind, "kernel")
 expect_equal(reduction_fusion@domain@shape@rank, 1L)
-expect_equal(reduction_fusion@attrs$reducer, "sum")
+expect_true(S7::S7_inherits(reduction_fusion@contract, TccqFusionContract))
+expect_equal(reduction_fusion@contract@fusion_kind, "map_reduce")
+expect_equal(reduction_fusion@contract@storage_strategy, "fused-map-reduce")
+expect_equal(reduction_fusion@contract@result_operation@reduction@name, "sum")
 expect_true(all(vapply(
-  reduction_fusion@attrs$operation_signatures,
+  reduction_fusion@contract@operation_signatures,
   function(signature) S7::S7_inherits(signature, TccqOpSignature),
   logical(1)
 )))
 expect_true(all(vapply(
-  reduction_fusion@attrs$domain_policies,
+  reduction_fusion@contract@domain_policies,
   function(domain_policy) S7::S7_inherits(domain_policy, TccqDomainPolicy),
   logical(1)
 )))

@@ -422,22 +422,28 @@ tccq_lower_function <- function(
       function(value) !value@op %in% c("formal", "literal"),
       lowered_values
     )
+    operation_value_ids <- vapply(operation_values, function(value) value@id, character(1))
     lowered_operations <- lapply(operation_values, lowered_operation)
-    names(lowered_operations) <- vapply(operation_values, function(value) value@id, character(1))
-    lowered_operations <- Filter(
+    lowered_operation_is_typed <- vapply(
+      lowered_operations,
       function(operation) S7::S7_inherits(operation, TccqLoweredOperation),
-      lowered_operations
+      logical(1)
     )
-    operation_signatures <- lapply(lowered_operations, function(operation) operation@signature)
-    names(operation_signatures) <- vapply(operation_values, function(value) value@id, character(1))
-    operation_signatures <- Filter(
-      function(signature) !is.null(signature) && S7::S7_inherits(signature, TccqOpSignature),
-      operation_signatures
-    )
-    domain_policies <- Filter(
-      function(policy) !is.null(policy) && S7::S7_inherits(policy, TccqDomainPolicy),
-      lapply(lowered_operations, function(operation) operation@domain_policy)
-    )
+    lowered_operations <- lowered_operations[lowered_operation_is_typed]
+    names(lowered_operations) <- operation_value_ids[lowered_operation_is_typed]
+    if (length(lowered_operations) == 0L) {
+      region_effect <- tccq_effect()
+      return(list(tccq_region(
+        "region_main",
+        "host",
+        values = lowered_values,
+        fusion_groups = list(),
+        effect = region_effect,
+        memory_space = "host",
+        touches_rapi = FALSE,
+        attrs = list(result = result_id, operation = result_operation)
+      )))
+    }
     resolved_operations <- Filter(
       function(resolved_operation) S7::S7_inherits(resolved_operation, TccqResolvedOp),
       lapply(lowered_operations, function(operation) operation@resolved_op)
@@ -454,24 +460,11 @@ tccq_lower_function <- function(
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
     fusion_kind <- if (isTRUE(result_is_reduction)) "map_reduce" else "map"
-    operation_contract_attrs <- list(
-      operation_signatures = operation_signatures,
-      domain_policies = domain_policies
+    fusion_contract <- tccq_fusion_contract(
+      fusion_kind,
+      operations = lowered_operations,
+      result_operation = result_operation
     )
-    fusion_attrs <- if (isTRUE(result_is_reduction)) {
-      c(list(
-        storage = "fused-map-reduce",
-        operation = result_operation,
-        reducer = result_operation@reduction@name,
-        reduction = result_operation@reduction,
-        identity = result_operation@identity
-      ), operation_contract_attrs)
-    } else {
-      c(list(
-        storage = "fused-elementwise",
-        operation = result_operation
-      ), operation_contract_attrs)
-    }
     fusion <- tccq_fusion_group(
       "fusion_main",
       fusion_kind,
@@ -482,7 +475,7 @@ tccq_lower_function <- function(
       region_kind = region_kind,
       target = region_target,
       effect = region_effect,
-      attrs = fusion_attrs
+      contract = fusion_contract
     )
     list(tccq_region(
       "region_main",

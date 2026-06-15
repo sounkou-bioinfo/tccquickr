@@ -289,8 +289,10 @@ Fusion is a transformation over a typed value graph. It is not a source
 rewrite and not a backend shortcut. `TccqDomain` names the iteration
 space, `TccqAccess` describes how a value maps onto that domain, and
 `TccqFusionGroup` represents a candidate fused group over a domain,
-values, outputs, accesses, target, region kind, effects, operation
-signatures, and domain policies.
+values, outputs, accesses, target, region kind, and effects.
+`TccqFusionContract` records the lowered operation payloads, operation
+signatures, domain policies, result operation, and storage strategy for
+that group.
 
 Simple `f(g(x))` fusion is just one case: a pure single-use producer and
 pure consumer over the same domain with compatible implementations and

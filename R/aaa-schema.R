@@ -607,6 +607,7 @@ TccqAccess <- S7::new_class(
 #' @param region_kind Candidate execution region kind, or `any`.
 #' @param target Candidate implementation target, or `any`.
 #' @param effect Effect summary for the fused group.
+#' @param contract Typed fusion operation/storage contract.
 #' @param attrs Structured fusion attributes.
 #' @export
 TccqFusionGroup <- S7::new_class(
@@ -622,6 +623,7 @@ TccqFusionGroup <- S7::new_class(
     region_kind = S7::class_character,
     target = S7::class_character,
     effect = TccqEffect,
+    contract = S7::class_any,
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -657,6 +659,16 @@ TccqFusionGroup <- S7::new_class(
     }
     if (has_supported_region_kind && self@region_kind %in% c("kernel", "parallel", "device") && isTRUE(self@effect@boundary)) {
       problems <- c(problems, "kernel, parallel, and device fusion groups cannot contain boundary effects")
+    }
+    if (!is.null(self@contract) && !S7::S7_inherits(self@contract, TccqFusionContract)) {
+      problems <- c(problems, "@contract must be NULL or a <TccqFusionContract> value")
+    }
+    if (
+      !is.null(self@contract) &&
+        S7::S7_inherits(self@contract, TccqFusionContract) &&
+        !identical(self@contract@fusion_kind, self@kind)
+    ) {
+      problems <- c(problems, "@contract fusion kind must match @kind")
     }
     if (length(problems) > 0L) problems
   }
@@ -1406,6 +1418,7 @@ tccq_access <- function(
 #' @param region_kind Candidate execution region kind, or `any`.
 #' @param target Candidate implementation target, or `any`.
 #' @param effect Effect summary for the fused group.
+#' @param contract Typed fusion operation/storage contract.
 #' @param attrs Structured fusion attributes.
 #' @export
 tccq_fusion_group <- function(
@@ -1418,6 +1431,7 @@ tccq_fusion_group <- function(
   region_kind = "kernel",
   target = "any",
   effect = tccq_effect(),
+  contract = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -1446,10 +1460,20 @@ tccq_fusion_group <- function(
   .tccq_check_region_query_kind(region_kind, "region_kind")
   .tccq_check_character_scalar(target, "target")
   .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
+  .tccq_check_optional_s7(contract, TccqFusionContract, "TccqFusionContract", "contract")
   if (!is.list(attrs)) {
     tccq_abort("schema.invalid_attrs", "`attrs` must be a list.")
   }
   .tccq_check_fusion_legality(region_kind, effect)
+  if (!is.null(contract) && !identical(contract@fusion_kind, kind)) {
+    tccq_abort(
+      "schema.fusion_contract_kind_mismatch",
+      "`contract` fusion kind must match `kind`.",
+      phase = "schema",
+      path = "fusion.contract",
+      data = list(kind = kind, contract_kind = contract@fusion_kind)
+    )
+  }
 
   TccqFusionGroup(
     id = id,
@@ -1461,6 +1485,7 @@ tccq_fusion_group <- function(
     region_kind = region_kind,
     target = target,
     effect = effect,
+    contract = contract,
     attrs = attrs
   )
 }

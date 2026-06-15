@@ -14,6 +14,7 @@ TccqFusionGroup(
   region_kind = character(0),
   target = character(0),
   effect = TccqEffect(),
+  contract = NULL,
   attrs = list()
 )
 }
@@ -35,6 +36,8 @@ TccqFusionGroup(
 \item{target}{Candidate implementation target, or \code{any}.}
 
 \item{effect}{Effect summary for the fused group.}
+
+\item{contract}{Typed fusion operation/storage contract.}
 
 \item{attrs}{Structured fusion attributes.}
 }

@@ -196,6 +196,10 @@ resolved_binary_foo <- tccq_resolve_call(
 )
 expect_true(resolved_binary_foo@success)
 expect_equal(resolved_binary_foo@value@elementwise@name, "foo_binary")
+expect_true(S7::S7_inherits(
+  resolved_binary_foo@value@elementwise@signature@domain_policy,
+  TccqDomainPolicy
+))
 unresolved_ternary_foo <- tccq_resolve_call(
   foo_registry,
   tccq_call("foo", expr = quote(foo(x, y, z))),
@@ -228,6 +232,36 @@ bad_lowered_sum <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_lowered_sum, "tccq_error"))
+map_contract <- tccq_fusion_contract(
+  "map",
+  operations = list(value_plus = lowered_plus)
+)
+expect_true(S7::S7_inherits(map_contract, TccqFusionContract))
+expect_equal(map_contract@fusion_kind, "map")
+expect_equal(map_contract@storage_strategy, "fused-elementwise")
+expect_equal(names(map_contract@operations), "value_plus")
+expect_true(S7::S7_inherits(map_contract@result_operation, TccqLoweredOperation))
+expect_true(S7::S7_inherits(map_contract@operation_signatures$value_plus, TccqOpSignature))
+expect_true(S7::S7_inherits(map_contract@domain_policies$value_plus, TccqDomainPolicy))
+map_reduce_contract <- tccq_fusion_contract(
+  "map_reduce",
+  operations = list(value_plus = lowered_plus, value_sum = lowered_sum),
+  result_operation = lowered_sum
+)
+expect_true(S7::S7_inherits(map_reduce_contract, TccqFusionContract))
+expect_equal(map_reduce_contract@fusion_kind, "map_reduce")
+expect_equal(map_reduce_contract@storage_strategy, "fused-map-reduce")
+expect_equal(map_reduce_contract@result_operation@reduction@name, "sum")
+bad_contract_names <- tryCatch(
+  tccq_fusion_contract("map", operations = list(lowered_plus)),
+  error = identity
+)
+expect_true(inherits(bad_contract_names, "tccq_error"))
+bad_map_contract <- tryCatch(
+  tccq_fusion_contract("map", operations = list(value_sum = lowered_sum)),
+  error = identity
+)
+expect_true(inherits(bad_map_contract, "error"))
 sum_combine <- tccq_reduction_combine(
   resolved_sum@value@reduction,
   "accumulator",

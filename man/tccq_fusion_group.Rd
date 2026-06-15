@@ -14,6 +14,7 @@ tccq_fusion_group(
   region_kind = "kernel",
   target = "any",
   effect = tccq_effect(),
+  contract = NULL,
   attrs = list()
 )
 }
@@ -35,6 +36,8 @@ tccq_fusion_group(
 \item{target}{Candidate implementation target, or \code{any}.}
 
 \item{effect}{Effect summary for the fused group.}
+
+\item{contract}{Typed fusion operation/storage contract.}
 
 \item{attrs}{Structured fusion attributes.}
 }

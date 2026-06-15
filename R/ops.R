@@ -491,6 +491,98 @@ TccqLoweredOperation <- S7::new_class(
   }
 )
 
+#' Fusion operation contract
+#'
+#' `TccqFusionContract` is the typed payload attached to a fusion group after
+#' region planning. It keeps the lowered operation payloads, signatures, domain
+#' policies, result operation, and storage strategy together so fusion legality
+#' and later optimization passes do not inspect loose group attributes.
+#'
+#' @param fusion_kind Fusion kind owned by the contract.
+#' @param storage_strategy Storage strategy requested by the fusion plan.
+#' @param operations Named lowered operations by value id.
+#' @param result_operation Lowered operation that produces the fusion output.
+#' @param operation_signatures Named operation signatures by value id.
+#' @param domain_policies Named domain policies by value id.
+#' @param attrs Structured metadata.
+#' @export
+TccqFusionContract <- S7::new_class(
+  "TccqFusionContract",
+  package = "tccquickr",
+  properties = list(
+    fusion_kind = S7::class_character,
+    storage_strategy = S7::class_character,
+    operations = S7::class_list,
+    result_operation = TccqLoweredOperation,
+    operation_signatures = S7::class_list,
+    domain_policies = S7::class_list,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@fusion_kind) != 1L ||
+        is.na(self@fusion_kind) ||
+        !self@fusion_kind %in% TCCQ_FUSION_KINDS
+    ) {
+      problems <- c(problems, "@fusion_kind must be one supported fusion kind")
+    }
+    if (length(self@storage_strategy) != 1L || is.na(self@storage_strategy) || !nzchar(self@storage_strategy)) {
+      problems <- c(problems, "@storage_strategy must be a single non-empty string")
+    }
+    operations_are_lowered <- vapply(
+      self@operations,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqLoweredOperation
+    )
+    signatures_are_typed <- vapply(
+      self@operation_signatures,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqOpSignature
+    )
+    policies_are_typed <- vapply(
+      self@domain_policies,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqDomainPolicy
+    )
+    operation_ids <- names(self@operations)
+    signature_ids <- names(self@operation_signatures)
+    domain_policy_ids <- names(self@domain_policies)
+    if (length(self@operations) == 0L || !all(operations_are_lowered)) {
+      problems <- c(problems, "@operations must contain named <TccqLoweredOperation> values")
+    }
+    if (is.null(operation_ids) || anyNA(operation_ids) || any(!nzchar(operation_ids)) || anyDuplicated(operation_ids)) {
+      problems <- c(problems, "@operations must be named by unique non-empty value ids")
+    }
+    if (!all(signatures_are_typed)) {
+      problems <- c(problems, "@operation_signatures must contain only <TccqOpSignature> values")
+    }
+    if (!identical(signature_ids, operation_ids)) {
+      problems <- c(problems, "@operation_signatures must align with @operations by value id")
+    }
+    if (!all(policies_are_typed)) {
+      problems <- c(problems, "@domain_policies must contain only <TccqDomainPolicy> values")
+    }
+    if (!identical(domain_policy_ids, operation_ids)) {
+      problems <- c(problems, "@domain_policies must align with @operations by value id")
+    }
+    if (identical(self@fusion_kind, "map") && any(vapply(
+      self@operations,
+      function(operation) identical(operation@family, "reduction"),
+      logical(1)
+    ))) {
+      problems <- c(problems, "map fusion contracts cannot contain reduction operations")
+    }
+    if (identical(self@fusion_kind, "map_reduce") && !identical(self@result_operation@family, "reduction")) {
+      problems <- c(problems, "map-reduce fusion contracts need a reduction result operation")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Query operation implementation support
 #'
 #' @param impl Operation implementation.
@@ -658,6 +750,53 @@ S7::method(tccq_domain_policy_result_shape, TccqDomainPolicy) <- function(policy
   tccq_result(success = TRUE, value = result_shape)
 }
 
+#' Construct the standard elementwise domain policy
+#'
+#' The standard elementwise policy returns the shared non-scalar input shape,
+#' accepts scalar broadcasting, and rejects incompatible non-scalar shapes. It
+#' is the default for `tccq_elementwise_spec()`.
+#'
+#' @export
+tccq_elementwise_domain_policy <- function() {
+  tccq_domain_policy(
+    "elementwise_common_shape",
+    result_shape = function(input_types) {
+      shape_label <- function(shape) {
+        labels <- vapply(shape@dims, function(dim) {
+          if (identical(dim@kind, "constant")) {
+            return(sprintf("constant:%d", dim@value))
+          }
+          if (identical(dim@kind, "symbol")) {
+            return(sprintf("symbol:%s", dim@label))
+          }
+          "unknown"
+        }, character(1))
+        paste(labels, collapse = "/")
+      }
+
+      non_scalar_shapes <- lapply(
+        Filter(function(type) type@shape@rank > 0L, input_types),
+        function(type) type@shape
+      )
+      if (length(non_scalar_shapes) == 0L) {
+        return(tccq_shape())
+      }
+
+      labels <- vapply(non_scalar_shapes, shape_label, character(1))
+      if (length(unique(labels)) != 1L) {
+        tccq_abort(
+          "ops.incompatible_elementwise_shapes",
+          "Elementwise operation inputs must share one non-scalar shape for now.",
+          phase = "ops",
+          path = "domain_policy.result_shape",
+          data = list(shapes = labels)
+        )
+      }
+      non_scalar_shapes[[1L]]
+    }
+  )
+}
+
 #' Construct operation signature metadata
 #'
 #' @param name Human-readable operation signature name.
@@ -814,6 +953,9 @@ tccq_elementwise_spec <- function(
     )
   }
   .tccq_check_list(attrs, "attrs")
+  if (is.null(domain_policy)) {
+    domain_policy <- tccq_elementwise_domain_policy()
+  }
   .tccq_check_optional_s7(domain_policy, TccqDomainPolicy, "TccqDomainPolicy", "domain_policy")
 
   TccqElementwiseSpec(
@@ -1785,6 +1927,92 @@ tccq_lowered_operation <- function(
   )
 }
 
+#' Construct a fusion operation contract
+#'
+#' @param fusion_kind Fusion kind owned by the contract.
+#' @param operations Named lowered operations by value id.
+#' @param result_operation Optional lowered result operation. Defaults to the
+#'   final operation in `operations`.
+#' @param storage_strategy Optional storage strategy. Defaults from
+#'   `fusion_kind`.
+#' @param attrs Structured metadata.
+#' @export
+tccq_fusion_contract <- function(
+  fusion_kind,
+  operations,
+  result_operation = NULL,
+  storage_strategy = NULL,
+  attrs = list()
+) {
+  .tccq_check_character_scalar(fusion_kind, "fusion_kind")
+  if (!fusion_kind %in% TCCQ_FUSION_KINDS) {
+    tccq_abort(
+      "schema.invalid_fusion_kind",
+      "`fusion_kind` is not a supported fusion kind.",
+      phase = "schema",
+      path = "fusion_contract.fusion_kind",
+      data = list(fusion_kind = fusion_kind, supported = TCCQ_FUSION_KINDS)
+    )
+  }
+  if (S7::S7_inherits(operations, TccqLoweredOperation)) {
+    operations <- list(operations)
+  }
+  .tccq_check_list_of(operations, TccqLoweredOperation, "TccqLoweredOperation", "operations")
+  operation_ids <- names(operations)
+  if (
+    length(operations) == 0L ||
+      is.null(operation_ids) ||
+      anyNA(operation_ids) ||
+      any(!nzchar(operation_ids)) ||
+      anyDuplicated(operation_ids)
+  ) {
+    tccq_abort(
+      "schema.invalid_fusion_contract_operations",
+      "`operations` must be named by unique non-empty value ids.",
+      phase = "schema",
+      path = "fusion_contract.operations",
+      data = list(operation_ids = operation_ids)
+    )
+  }
+  if (is.null(result_operation)) {
+    result_operation <- operations[[length(operations)]]
+  }
+  .tccq_check_s7(result_operation, TccqLoweredOperation, "TccqLoweredOperation", "result_operation")
+  if (is.null(storage_strategy)) {
+    storage_strategy <- switch(
+      fusion_kind,
+      map = "fused-elementwise",
+      map_reduce = "fused-map-reduce",
+      paste0("fused-", fusion_kind)
+    )
+  }
+  .tccq_check_character_scalar(storage_strategy, "storage_strategy")
+  .tccq_check_list(attrs, "attrs")
+
+  operation_signatures <- lapply(operations, function(operation) operation@signature)
+  domain_policies <- lapply(operations, function(operation) operation@domain_policy)
+  missing_domain_policy <- vapply(domain_policies, is.null, logical(1))
+  if (any(missing_domain_policy)) {
+    tccq_abort(
+      "schema.fusion_contract_missing_domain_policy",
+      "Fusion operations must carry domain policies.",
+      phase = "schema",
+      path = "fusion_contract.domain_policies",
+      data = list(operation_ids = names(domain_policies)[missing_domain_policy])
+    )
+  }
+
+  TccqFusionContract(
+    fusion_kind = fusion_kind,
+    storage_strategy = storage_strategy,
+    operations = operations,
+    result_operation = result_operation,
+    operation_signatures = operation_signatures,
+    domain_policies = domain_policies,
+    attrs = attrs
+  )
+}
+
 #' Default operation registry for the reset frontend
 #'
 #' The default registry names the R language call forms that the frontend
@@ -1812,44 +2040,7 @@ tccq_default_op_registry <- function() {
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
   )
-  elementwise_domain_policy <- tccq_domain_policy(
-    "elementwise_common_shape",
-    result_shape = function(input_types) {
-      shape_label <- function(shape) {
-        labels <- vapply(shape@dims, function(dim) {
-          if (identical(dim@kind, "constant")) {
-            return(sprintf("constant:%d", dim@value))
-          }
-          if (identical(dim@kind, "symbol")) {
-            return(sprintf("symbol:%s", dim@label))
-          }
-          "unknown"
-        }, character(1))
-        paste(labels, collapse = "/")
-      }
-
-      non_scalar_shapes <- lapply(
-        Filter(function(type) type@shape@rank > 0L, input_types),
-        function(type) type@shape
-      )
-      if (length(non_scalar_shapes) == 0L) {
-        return(tccq_shape())
-      }
-      common_shape <- non_scalar_shapes[[1L]]
-      compatible_shapes <- vapply(non_scalar_shapes, identical, logical(1), common_shape)
-      if (!all(compatible_shapes)) {
-        shape_labels <- unique(vapply(non_scalar_shapes, shape_label, character(1)))
-        tccq_abort(
-          "ops.incompatible_elementwise_shapes",
-          "Vectorized expression inputs must have the same shape.",
-          phase = "ops",
-          path = "domain_policy.result_shape",
-          data = list(shapes = shape_labels)
-        )
-      }
-      common_shape
-    }
-  )
+  elementwise_domain_policy <- tccq_elementwise_domain_policy()
   numeric_elementwise_result_type <- function(force_double = FALSE) {
     function(input_types, result_shape) {
       unsupported_bases <- setdiff(
