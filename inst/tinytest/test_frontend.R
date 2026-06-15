@@ -242,6 +242,16 @@ expect_equal(bound_result@value@result, "value_0004")
 expect_equal(bound_result@value@attrs$lowering$local_bindings$shifted, "value_0001")
 expect_equal(bound_result@value@attrs$lowering$local_bindings$weighted, "value_0003")
 expect_equal(bound_result@value@values$value_0004@inputs, list("value_0003", "formal_0002"))
+bound_storage_slots <- bound_result@value@storage_plan@slots
+bound_storage_slots_by_value <- bound_storage_slots
+names(bound_storage_slots_by_value) <- vapply(
+  bound_storage_slots,
+  function(slot) slot@value_id,
+  character(1)
+)
+expect_equal(bound_storage_slots_by_value$value_0001@attrs$liveness, list(def = 3L, last_use = 4L))
+expect_equal(bound_storage_slots_by_value$value_0003@attrs$liveness, list(def = 5L, last_use = 6L))
+expect_equal(bound_result@value@storage_plan@reuse_groups, list(c("slot_0003", "slot_0005")))
 
 rebound_local <- function(x) {
   declare(type(x = double(n)))

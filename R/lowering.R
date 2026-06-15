@@ -500,6 +500,7 @@ tccq_lower_function <- function(
 
   plan_storage <- function(values, result_id) {
     lowered_values <- unname(values)
+    liveness <- storage_liveness(lowered_values, result_id)
     slots <- Map(function(value, slot_index) {
       role <- storage_role(value, result_id)
       materialized <- role %in% c("input", "output")
@@ -511,28 +512,93 @@ tccq_lower_function <- function(
         role = role,
         materialized = materialized,
         reusable = reusable,
-        attrs = list(op = value@op)
+        attrs = list(op = value@op, liveness = liveness[[value@id]])
       )
     }, lowered_values, seq_along(lowered_values))
-    reusable_slot_ids <- vapply(
-      Filter(function(slot) identical(slot@role, "temporary"), slots),
-      function(slot) slot@id,
-      character(1)
-    )
-    reuse_groups <- if (length(reusable_slot_ids) > 0L) {
-      list(reusable_slot_ids)
-    } else {
-      list()
-    }
+    slot_ids <- vapply(slots, function(slot) slot@id, character(1))
+    slots_by_id <- slots
+    names(slots_by_id) <- slot_ids
+    reuse_groups <- storage_reuse_groups(slots_by_id)
     tccq_storage_plan(
-      slots = slots,
+      slots = unname(slots_by_id),
       reuse_groups = reuse_groups,
       attrs = list(strategy = if (identical(values[[result_id]]@attrs$lowering, "reduction")) {
         "fused-map-reduce"
       } else {
         "fused-elementwise"
-      })
+      }, liveness = liveness)
     )
+  }
+
+  storage_liveness <- function(lowered_values, result_id) {
+    value_ids <- vapply(lowered_values, function(value) value@id, character(1))
+    def_positions <- seq_along(value_ids)
+    names(def_positions) <- value_ids
+    last_use_positions <- def_positions
+
+    for (use_position in seq_along(lowered_values)) {
+      value <- lowered_values[[use_position]]
+      for (input_id in vapply(value@inputs, as.character, character(1))) {
+        if (input_id %in% names(last_use_positions)) {
+          last_use_positions[[input_id]] <- max(last_use_positions[[input_id]], use_position)
+        }
+      }
+    }
+    if (result_id %in% names(last_use_positions)) {
+      last_use_positions[[result_id]] <- length(lowered_values) + 1L
+    }
+
+    liveness <- Map(function(def_position, last_use_position) {
+      list(def = unname(def_position), last_use = unname(last_use_position))
+    }, def_positions, last_use_positions)
+    names(liveness) <- value_ids
+    liveness
+  }
+
+  storage_reuse_groups <- function(slots_by_id) {
+    temporary_slots <- Filter(
+      function(slot) identical(slot@role, "temporary") && isTRUE(slot@reusable),
+      slots_by_id
+    )
+    ordered_slots <- temporary_slots[order(vapply(
+      temporary_slots,
+      function(slot) slot@attrs$liveness$def,
+      integer(1)
+    ))]
+    reuse_groups <- list()
+
+    for (slot in ordered_slots) {
+      added_to_group <- FALSE
+      for (group_index in seq_along(reuse_groups)) {
+        group <- reuse_groups[[group_index]]
+        can_share_group <- all(vapply(
+          group,
+          function(slot_id) storage_slots_can_share(slots_by_id[[slot_id]], slot),
+          logical(1)
+        ))
+        if (isTRUE(can_share_group)) {
+          reuse_groups[[group_index]] <- c(group, slot@id)
+          added_to_group <- TRUE
+          break
+        }
+      }
+      if (!isTRUE(added_to_group)) {
+        reuse_groups[[length(reuse_groups) + 1L]] <- slot@id
+      }
+    }
+
+    Filter(function(group) length(group) > 1L, reuse_groups)
+  }
+
+  storage_slots_can_share <- function(existing_slot, candidate_slot) {
+    storage_types_compatible(existing_slot@type, candidate_slot@type) &&
+      existing_slot@attrs$liveness$last_use < candidate_slot@attrs$liveness$def
+  }
+
+  storage_types_compatible <- function(left_type, right_type) {
+    identical(left_type@base, right_type@base) &&
+      identical(left_type@shape@rank, right_type@shape@rank) &&
+      identical(left_type@shape@dims, right_type@shape@dims)
   }
 
   storage_role <- function(value, result_id) {
