@@ -185,12 +185,13 @@ is already explicit in the function interface before either printer runs.
 
 Backend artifacts are also explicit. Source mode produces a
 `TccqBackendArtifact` carrying the generated source. Shared-library mode writes
-that same source artifact to disk, invokes `R CMD SHLIB`, and records the
-resulting shared library as another artifact. Rtinycc JIT mode keeps the same
-source and function interface, then attaches a callable artifact after TinyCC
-compilation. The old source string remains visible in backend attributes for
-inspection, but the architectural boundary is the typed expression, typed
-function interface, and typed artifact set.
+that same source artifact plus a generated C `.Call` wrapper to disk, invokes
+`R CMD SHLIB`, records the resulting shared library as another artifact, and
+attaches a native callable artifact when the wrapper symbol can be loaded.
+Rtinycc JIT mode keeps the same source and function interface, then attaches a
+callable artifact after TinyCC compilation. The old source string remains
+visible in backend attributes for inspection, but the architectural boundary is
+the typed expression, typed function interface, and typed artifact set.
 
 ## Control flow
 

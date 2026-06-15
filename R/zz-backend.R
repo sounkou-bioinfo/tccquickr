@@ -49,7 +49,7 @@ TCCQ_DEBUG_SITE_KINDS <- c("value", "region", "bridge", "safepoint", "control", 
 TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "map", "reduction")
 TCCQ_BACKEND_FUNCTION_ABIS <- c("c", "fortran_bind_c")
 TCCQ_BACKEND_RESULT_PLACEMENTS <- c("return", "output_argument")
-TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable")
+TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable", "native_callable")
 
 #' Runtime instrumentation policy
 #'
@@ -539,10 +539,10 @@ TccqBackendArtifact <- S7::new_class(
       problems <- c(problems, "shared-library artifacts must carry a filesystem path")
     }
     if (
-      identical(self@kind, "jit_callable") &&
+      self@kind %in% c("jit_callable", "native_callable") &&
         (is.null(self@attrs$callable) || !is.function(self@attrs$callable))
     ) {
-      problems <- c(problems, "JIT callable artifacts must carry a callable function")
+      problems <- c(problems, "callable artifacts must carry a callable function")
     }
     if (length(problems) > 0L) problems
   }
@@ -1842,6 +1842,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
     }
 
+    native_callable_artifact <- function(symbol, callable) {
+      tccq_backend_artifact(
+        id = sprintf("%s.native_callable", symbol),
+        kind = "native_callable",
+        source_language = source_language,
+        attrs = list(callable = callable)
+      )
+    }
+
     validate_lowered_program <- function(result, formals) {
       if (is.null(result) || length(program@regions) == 0L) {
         return(tccq_diagnostic(
@@ -2233,6 +2242,143 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ), collapse = "\n")
     }
 
+    emit_call_wrapper_source <- function(interface, result, formals) {
+      symbol <- interface@symbol
+      wrapper_symbol <- paste0(symbol, "_call")
+      parameter_names <- interface@parameter_names
+      length_name <- interface@length_name
+      result_name <- interface@result_name
+
+      c_parameter_type <- function(value) {
+        if (value@type@shape@rank == 0L) "double" else "const double *"
+      }
+      kernel_parameters <- unname(Map(function(value, parameter_name) {
+        sprintf("%s %s", c_parameter_type(value), parameter_name)
+      }, formals, parameter_names))
+      if (isTRUE(interface@needs_length)) {
+        kernel_parameters <- c(kernel_parameters, sprintf("int %s", length_name))
+      }
+      if (identical(interface@result_placement, "output_argument")) {
+        kernel_parameters <- c(kernel_parameters, sprintf("double *%s", result_name))
+        prototype <- sprintf("extern void %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
+      } else if (result@type@shape@rank == 1L) {
+        prototype <- sprintf("extern double *%s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
+      } else {
+        prototype <- sprintf("extern double %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
+      }
+
+      wrapper_parameters <- unname(vapply(
+        parameter_names,
+        function(parameter_name) sprintf("SEXP %s_arg", parameter_name),
+        character(1)
+      ))
+      lines <- c(
+        "#include <R.h>",
+        "#include <Rinternals.h>",
+        "#include <R_ext/Utils.h>",
+        "#include <limits.h>",
+        "#include <stdlib.h>",
+        "#include <string.h>",
+        "",
+        prototype,
+        "",
+        sprintf("SEXP %s(%s) {", wrapper_symbol, paste(wrapper_parameters, collapse = ", ")),
+        "  int protect_count = 0;",
+        "  R_xlen_t element_count = 1;"
+      )
+
+      vector_parameter_names <- parameter_names[vapply(
+        formals,
+        function(value) value@type@shape@rank == 1L,
+        logical(1)
+      )]
+      if (length(vector_parameter_names) > 0L) {
+        first_vector_name <- vector_parameter_names[[1L]]
+        lines <- c(
+          lines,
+          sprintf(
+            "  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));",
+            first_vector_name,
+            first_vector_name
+          ),
+          "  ++protect_count;",
+          sprintf("  element_count = XLENGTH(%s_real);", first_vector_name),
+          "  if (element_count > INT_MAX) {",
+          "    UNPROTECT(protect_count);",
+          "    Rf_error(\"generated call exceeds the current int length ABI\");",
+          "  }"
+        )
+      }
+
+      parameter_setup <- unlist(Map(function(value, parameter_name) {
+        if (value@type@shape@rank == 1L && parameter_name %in% vector_parameter_names[[1L]]) {
+          return(c(sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)))
+        }
+        if (value@type@shape@rank == 1L) {
+          return(c(
+            sprintf("  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));", parameter_name, parameter_name),
+            "  ++protect_count;",
+            sprintf("  if (XLENGTH(%s_real) != element_count) {", parameter_name),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"vector arguments must have the same length\");",
+            "  }",
+            sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)
+          ))
+        }
+        c(
+          sprintf("  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));", parameter_name, parameter_name),
+          "  ++protect_count;",
+          sprintf("  if (XLENGTH(%s_real) < 1) {", parameter_name),
+          "    UNPROTECT(protect_count);",
+          "    Rf_error(\"scalar arguments must have length at least one\");",
+          "  }",
+          sprintf("  double %s = REAL(%s_real)[0];", parameter_name, parameter_name)
+        )
+      }, formals, parameter_names))
+      lines <- c(lines, parameter_setup)
+
+      argument_names <- parameter_names
+      if (isTRUE(interface@needs_length)) {
+        lines <- c(lines, sprintf("  int %s = (int)element_count;", length_name))
+        argument_names <- c(argument_names, length_name)
+      }
+
+      if (result@type@shape@rank == 1L) {
+        lines <- c(lines, "  SEXP output_sexp = PROTECT(Rf_allocVector(REALSXP, element_count));")
+        lines <- c(lines, "  ++protect_count;")
+        if (identical(interface@result_placement, "output_argument")) {
+          call_arguments <- c(argument_names, "REAL(output_sexp)")
+          lines <- c(lines, sprintf("  %s(%s);", symbol, paste(call_arguments, collapse = ", ")))
+        } else {
+          call_arguments <- argument_names
+          lines <- c(
+            lines,
+            sprintf("  double *%s = %s(%s);", result_name, symbol, paste(call_arguments, collapse = ", ")),
+            sprintf("  if (%s == NULL) {", result_name),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"generated kernel returned NULL\");",
+            "  }",
+            sprintf(
+              "  memcpy(REAL(output_sexp), %s, sizeof(double) * (size_t)element_count);",
+              result_name
+            ),
+            sprintf("  free(%s);", result_name)
+          )
+        }
+        lines <- c(lines, "  UNPROTECT(protect_count);", "  return output_sexp;")
+      } else {
+        call_arguments <- argument_names
+        lines <- c(
+          lines,
+          sprintf("  double output_value = %s(%s);", symbol, paste(call_arguments, collapse = ", ")),
+          "  UNPROTECT(protect_count);",
+          "  return Rf_ScalarReal(output_value);"
+        )
+      }
+
+      paste(c(lines, "}"), collapse = "\n")
+    }
+
     compile_with_rtinycc <- function(plan, interface, result, formals) {
       symbol <- interface@symbol
       if (!requireNamespace("Rtinycc", quietly = TRUE)) {
@@ -2328,8 +2474,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       tccq_result(success = TRUE, value = plan, diagnostics = list())
     }
 
-    compile_shared_library <- function(plan, source, interface) {
+    compile_shared_library <- function(plan, source, interface, result, formals) {
       symbol <- interface@symbol
+      wrapper_symbol <- paste0(symbol, "_call")
+      wrapper_source <- emit_call_wrapper_source(interface, result, formals)
       source_extension <- switch(
         source_language,
         c = ".c",
@@ -2344,7 +2492,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
       build_dir <- tempfile(sprintf("tccq_%s_", source_language))
       source_filename <- paste0(symbol, source_extension)
+      wrapper_filename <- paste0(wrapper_symbol, ".c")
       source_path <- file.path(build_dir, source_filename)
+      wrapper_source_path <- file.path(build_dir, wrapper_filename)
       library_path <- file.path(
         build_dir,
         paste0(sub("\\.[^.]*$", "", source_filename), .Platform$dynlib.ext)
@@ -2353,11 +2503,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       write_result <- tryCatch({
         dir.create(build_dir, recursive = TRUE, showWarnings = FALSE)
         writeLines(source, source_path, useBytes = TRUE)
+        writeLines(wrapper_source, wrapper_source_path, useBytes = TRUE)
         NULL
       }, error = identity)
       attrs <- plan@attrs
       attrs$source_path <- source_path
+      attrs$wrapper_source <- wrapper_source
+      attrs$wrapper_source_path <- wrapper_source_path
+      attrs$wrapper_symbol <- wrapper_symbol
       attrs$artifacts$source <- source_artifact(symbol, source, path = source_path)
+      attrs$artifacts$wrapper_source <- source_artifact(wrapper_symbol, wrapper_source, path = wrapper_source_path)
       plan@attrs <- attrs
       if (inherits(write_result, "error")) {
         diagnostic <- tccq_diagnostic(
@@ -2369,7 +2524,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             backend = backend@id,
             program = program@name,
             source_language = source_language,
-            source_path = source_path
+            source_path = source_path,
+            wrapper_source_path = wrapper_source_path
           )
         )
         plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
@@ -2382,7 +2538,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       compile_output <- tryCatch(
         suppressWarnings(system2(
           file.path(R.home("bin"), "R"),
-          c("CMD", "SHLIB", basename(source_path)),
+          c("CMD", "SHLIB", basename(source_path), basename(wrapper_source_path)),
           stdout = TRUE,
           stderr = TRUE
         )),
@@ -2410,6 +2566,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             program = program@name,
             source_language = source_language,
             source_path = source_path,
+            wrapper_source_path = wrapper_source_path,
             shared_library_path = library_path,
             status = compile_status,
             output = compile_log
@@ -2423,6 +2580,64 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       attrs$shared_library_path <- library_path
       attrs$shared_library_output <- compile_log
       attrs$artifacts$shared_library <- shared_library_artifact(symbol, library_path)
+      shared_library <- tryCatch(
+        dyn.load(library_path),
+        error = identity
+      )
+      if (inherits(shared_library, "error")) {
+        diagnostic <- tccq_diagnostic(
+          "backend.shared_library_load_failed",
+          conditionMessage(shared_library),
+          phase = "backend",
+          path = sprintf("backend.%s.shared_library.load", backend@id),
+          data = list(
+            backend = backend@id,
+            program = program@name,
+            shared_library_path = library_path
+          )
+        )
+        plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
+        plan@attrs <- attrs
+        return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
+      }
+      native_symbol <- tryCatch(
+        getNativeSymbolInfo(wrapper_symbol, PACKAGE = shared_library),
+        error = identity
+      )
+      if (inherits(native_symbol, "error")) {
+        diagnostic <- tccq_diagnostic(
+          "backend.shared_library_symbol_missing",
+          conditionMessage(native_symbol),
+          phase = "backend",
+          path = sprintf("backend.%s.shared_library.symbol", backend@id),
+          data = list(
+            backend = backend@id,
+            program = program@name,
+            shared_library_path = library_path,
+            symbol = wrapper_symbol
+          )
+        )
+        plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
+        plan@attrs <- attrs
+        return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
+      }
+      callable <- function(...) {
+        arguments <- list(...)
+        if (length(arguments) != length(formals)) {
+          tccq_abort(
+            "runtime.invalid_argument_count",
+            "Callable received the wrong number of arguments.",
+            phase = "runtime",
+            path = "callable.arguments",
+            data = list(expected = length(formals), actual = length(arguments))
+          )
+        }
+        do.call(.Call, c(list(native_symbol), arguments))
+      }
+      attrs$shared_library <- shared_library
+      attrs$native_symbol <- native_symbol
+      attrs$callable <- callable
+      attrs$artifacts$native_callable <- native_callable_artifact(symbol, callable)
       plan@attrs <- attrs
       tccq_result(success = TRUE, value = plan, diagnostics = list())
     }
@@ -2522,7 +2737,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       return(compile_with_rtinycc(plan, function_interface, result, formals))
     }
     if (identical(context@mode, "shared_library")) {
-      return(compile_shared_library(plan, source, function_interface))
+      return(compile_shared_library(plan, source, function_interface, result, formals))
     }
     tccq_result(success = TRUE, value = plan, diagnostics = list())
   }

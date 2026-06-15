@@ -336,6 +336,12 @@ if (can_build_shared_library("c")) {
     TccqBackendArtifact
   ))
   expect_equal(c_shared_plan@value@attrs$artifacts$shared_library@kind, "shared_library")
+  expect_true(S7::S7_inherits(
+    c_shared_plan@value@attrs$artifacts$native_callable,
+    TccqBackendArtifact
+  ))
+  expect_equal(c_shared_plan@value@attrs$artifacts$native_callable@kind, "native_callable")
+  expect_equal(c_shared_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
 }
 
 negation_program <- function(x) {
@@ -470,6 +476,12 @@ if (can_build_shared_library("fortran")) {
     TccqBackendArtifact
   ))
   expect_equal(fortran_shared_plan@value@attrs$artifacts$shared_library@source_language, "fortran")
+  expect_true(S7::S7_inherits(
+    fortran_shared_plan@value@attrs$artifacts$native_callable,
+    TccqBackendArtifact
+  ))
+  expect_equal(fortran_shared_plan@value@attrs$artifacts$native_callable@kind, "native_callable")
+  expect_equal(fortran_shared_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
 }
 
 bound_chain <- function(x, y) {
@@ -585,6 +597,26 @@ expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@abi, "
 expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@result_placement, "return")
 expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@result_name, "output")
 expect_equal(length(reduction_fortran_source_plan@value@bridges), 3L)
+
+if (can_build_shared_library("c")) {
+  reduction_c_shared_plan <- tccq_plan_backend(
+    reduction_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(reduction_c_shared_plan@success)
+  expect_equal(reduction_c_shared_plan@value@attrs$callable(c(0, log(2)), c(5, 7)), 19)
+}
+
+if (can_build_shared_library("fortran")) {
+  reduction_fortran_shared_plan <- tccq_plan_backend(
+    reduction_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(reduction_fortran_shared_plan@success)
+  expect_equal(reduction_fortran_shared_plan@value@attrs$callable(c(0, log(2)), c(5, 7)), 19)
+}
 
 fold_add <- function(x) x
 fold_add_registry <- tccq_op_registry_add(

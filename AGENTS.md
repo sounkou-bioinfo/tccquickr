@@ -250,6 +250,9 @@ For the reset core, keep these rules explicit:
   `jit`, or later device/object products unless the plan either carries the
   corresponding typed artifact or returns a typed diagnostic explaining why it
   cannot.
+- Shared-library execution from R must cross through an explicit wrapper or
+  callable artifact. Do not make user-facing execution depend on ad hoc
+  `dyn.load()` / `.Call()` glue outside the backend plan.
 - Interrupt and debugger support belong in runtime policy, safepoints, and debug
   sites. Host/R-API regions may use direct R interrupt checks; pure kernel,
   parallel, and device regions need chunking, polling, or host orchestration
