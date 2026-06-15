@@ -14,6 +14,33 @@ context <- tccq_backend_context(
 )
 backend <- tccq_rtinycc_backend()
 
+can_build_shared_library <- function(language) {
+  config_key <- switch(language, c = "CC", fortran = "FC", "")
+  if (!nzchar(config_key)) {
+    return(FALSE)
+  }
+  r_command <- file.path(R.home("bin"), "R")
+  if (!file.exists(r_command)) {
+    return(FALSE)
+  }
+  compiler <- tryCatch(
+    suppressWarnings(system2(
+      r_command,
+      c("CMD", "config", config_key),
+      stdout = TRUE,
+      stderr = TRUE
+    )),
+    error = function(e) character()
+  )
+  status <- attr(compiler, "status")
+  if (!is.null(status) && !identical(as.integer(status), 0L)) {
+    return(FALSE)
+  }
+  compiler <- trimws(paste(compiler, collapse = " "))
+  nzchar(compiler) && !compiler %in% c("false", "no") &&
+    !grepl("not found|ERROR", compiler, ignore.case = TRUE)
+}
+
 expect_true(S7::S7_inherits(runtime, TccqRuntimePolicy))
 expect_true(S7::S7_inherits(context, TccqBackendContext))
 expect_true(S7::S7_inherits(backend, TccqBackendSpec))
@@ -63,6 +90,21 @@ expect_true(S7::S7_inherits(site, TccqDebugSite))
 expect_true(S7::S7_inherits(safepoint, TccqSafepoint))
 expect_equal(site@source@file, "README.Rmd")
 expect_false(safepoint@requires_rapi)
+
+artifact <- tccq_backend_artifact(
+  "artifact.source",
+  "source",
+  source_language = "c",
+  attrs = list(text = "double probe(void) { return 1.0; }")
+)
+expect_true(S7::S7_inherits(artifact, TccqBackendArtifact))
+expect_equal(artifact@kind, "source")
+
+bad_artifact <- tryCatch(
+  tccq_backend_artifact("artifact.bad", "shared_library", source_language = "c"),
+  error = identity
+)
+expect_true(inherits(bad_artifact, "error"))
 
 bad_source_span <- tryCatch(
   TccqSourceSpan(
@@ -260,10 +302,34 @@ expect_true(grepl("input_0001", c_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$expression, TccqExpression))
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$storage_plan, TccqStoragePlan))
 expect_true(S7::S7_inherits(c_source_plan@value@attrs$function_interface, TccqBackendFunctionInterface))
+expect_true(S7::S7_inherits(c_source_plan@value@attrs$artifacts$source, TccqBackendArtifact))
+expect_equal(c_source_plan@value@attrs$artifacts$source@kind, "source")
+expect_equal(c_source_plan@value@attrs$artifacts$source@attrs$text, c_source_plan@value@attrs$source)
 expect_equal(c_source_plan@value@attrs$function_interface@kind, "map")
 expect_true(c_source_plan@value@attrs$function_interface@needs_length)
 expect_equal(c_source_plan@value@attrs$function_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
 expect_equal(length(c_source_plan@value@bridges), 3L)
+
+if (can_build_shared_library("c")) {
+  c_shared_plan <- tccq_plan_backend(
+    vector_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(c_shared_plan@success)
+  expect_equal(c_shared_plan@value@mode, "shared_library")
+  expect_true(file.exists(c_shared_plan@value@attrs$source_path))
+  expect_true(file.exists(c_shared_plan@value@attrs$shared_library_path))
+  expect_true(S7::S7_inherits(
+    c_shared_plan@value@attrs$artifacts$source,
+    TccqBackendArtifact
+  ))
+  expect_true(S7::S7_inherits(
+    c_shared_plan@value@attrs$artifacts$shared_library,
+    TccqBackendArtifact
+  ))
+  expect_equal(c_shared_plan@value@attrs$artifacts$shared_library@kind, "shared_library")
+}
 
 negation_program <- function(x) {
   declare(type(x = double(n)))
@@ -374,9 +440,27 @@ expect_true(grepl("subroutine", fortran_source_plan@value@attrs$source, fixed = 
 expect_true(grepl("iso_c_binding", fortran_source_plan@value@attrs$source, fixed = TRUE))
 expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$expression, TccqExpression))
 expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$function_interface, TccqBackendFunctionInterface))
+expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$artifacts$source, TccqBackendArtifact))
 expect_equal(fortran_source_plan@value@attrs$function_interface@kind, "map")
 expect_equal(fortran_source_plan@value@attrs$function_interface@source_language, "fortran")
 expect_equal(length(fortran_source_plan@value@bridges), 3L)
+
+if (can_build_shared_library("fortran")) {
+  fortran_shared_plan <- tccq_plan_backend(
+    vector_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(fortran_shared_plan@success)
+  expect_equal(fortran_shared_plan@value@mode, "shared_library")
+  expect_true(file.exists(fortran_shared_plan@value@attrs$source_path))
+  expect_true(file.exists(fortran_shared_plan@value@attrs$shared_library_path))
+  expect_true(S7::S7_inherits(
+    fortran_shared_plan@value@attrs$artifacts$shared_library,
+    TccqBackendArtifact
+  ))
+  expect_equal(fortran_shared_plan@value@attrs$artifacts$shared_library@source_language, "fortran")
+}
 
 bound_chain <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
@@ -414,6 +498,8 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   expect_true(jit_plan@success)
   expect_equal(jit_plan@diagnostics, list())
   expect_equal(jit_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
+  expect_true(S7::S7_inherits(jit_plan@value@attrs$artifacts$jit_callable, TccqBackendArtifact))
+  expect_equal(jit_plan@value@attrs$artifacts$jit_callable@kind, "jit_callable")
 
   negation_jit_plan <- tccq_plan_backend(
     negation_program@value,

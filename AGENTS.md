@@ -242,6 +242,11 @@ For the reset core, keep these rules explicit:
   `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
   source printers independently infer scalar/map/reduction shape, generated
   parameter mapping, length/index variables, or reduction accumulator names.
+- Backend planning must make concrete products explicit through
+  `TccqBackendArtifact`. A backend must not claim `source`, `shared_library`,
+  `jit`, or later device/object products unless the plan either carries the
+  corresponding typed artifact or returns a typed diagnostic explaining why it
+  cannot.
 - Interrupt and debugger support belong in runtime policy, safepoints, and debug
   sites. Host/R-API regions may use direct R interrupt checks; pure kernel,
   parallel, and device regions need chunking, polling, or host orchestration

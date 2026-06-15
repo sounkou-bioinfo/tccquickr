@@ -45,6 +45,7 @@ TCCQ_SAFEPOINT_KINDS <- c(
 )
 TCCQ_DEBUG_SITE_KINDS <- c("value", "region", "bridge", "safepoint", "control", "call")
 TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "map", "reduction")
+TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable")
 
 #' Runtime instrumentation policy
 #'
@@ -416,6 +417,95 @@ TccqBackendFunctionInterface <- S7::new_class(
     }
     if (identical(self@kind, "scalar") && isTRUE(self@needs_length)) {
       problems <- c(problems, "scalar interfaces must not require a length parameter")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Backend artifact
+#'
+#' Backend artifacts are concrete products of a backend plan: generated source,
+#' a compiled shared library, or a JIT callable. They are explicit plan values
+#' so source, shared-library, and JIT modes cannot silently collapse into the
+#' same loose string attribute.
+#'
+#' @param id Stable artifact id.
+#' @param kind Artifact kind.
+#' @param source_language Source language used to produce the artifact, or empty.
+#' @param path Filesystem path for file-backed artifacts, or empty.
+#' @param attrs Structured artifact metadata.
+#' @export
+TccqBackendArtifact <- S7::new_class(
+  "TccqBackendArtifact",
+  package = "tccquickr",
+  properties = list(
+    id = S7::class_character,
+    kind = S7::class_character,
+    source_language = S7::class_character,
+    path = S7::class_character,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    scalar_strings <- list(
+      id = self@id,
+      kind = self@kind,
+      source_language = self@source_language,
+      path = self@path
+    )
+    for (field_name in names(scalar_strings)) {
+      field_value <- scalar_strings[[field_name]]
+      if (length(field_value) != 1L || is.na(field_value)) {
+        problems <- c(problems, sprintf("@%s must be a single string", field_name))
+      }
+    }
+    if (length(self@id) == 1L && !is.na(self@id) && !nzchar(self@id)) {
+      problems <- c(problems, "@id must be non-empty")
+    }
+    if (
+      length(self@kind) == 1L &&
+        !is.na(self@kind) &&
+        !self@kind %in% TCCQ_BACKEND_ARTIFACT_KINDS
+    ) {
+      problems <- c(problems, "@kind must be one supported backend artifact kind")
+    }
+    if (
+      length(self@source_language) == 1L &&
+        !is.na(self@source_language) &&
+        nzchar(self@source_language) &&
+        !self@source_language %in% TCCQ_OP_RENDER_LANGUAGES
+    ) {
+      problems <- c(problems, "@source_language must be empty or one supported source language")
+    }
+    if (
+      length(self@kind) == 1L &&
+        !is.na(self@kind) &&
+        self@kind %in% c("source", "shared_library") &&
+        !nzchar(self@source_language)
+    ) {
+      problems <- c(problems, "source-backed artifacts must record a source language")
+    }
+    if (
+      identical(self@kind, "source") &&
+        !nzchar(self@path) &&
+        (
+          is.null(self@attrs$text) ||
+            length(self@attrs$text) != 1L ||
+            is.na(self@attrs$text) ||
+            !is.character(self@attrs$text) ||
+            !nzchar(self@attrs$text)
+        )
+    ) {
+      problems <- c(problems, "source artifacts must carry inline source text or a path")
+    }
+    if (identical(self@kind, "shared_library") && !nzchar(self@path)) {
+      problems <- c(problems, "shared-library artifacts must carry a filesystem path")
+    }
+    if (
+      identical(self@kind, "jit_callable") &&
+        (is.null(self@attrs$callable) || !is.function(self@attrs$callable))
+    ) {
+      problems <- c(problems, "JIT callable artifacts must carry a callable function")
     }
     if (length(problems) > 0L) problems
   }
@@ -1098,6 +1188,54 @@ tccq_backend_function_interface <- function(
   )
 }
 
+#' Construct a backend artifact
+#'
+#' @param id Stable artifact id.
+#' @param kind Artifact kind.
+#' @param source_language Source language used to produce the artifact, or empty.
+#' @param path Filesystem path for file-backed artifacts, or empty.
+#' @param attrs Structured artifact metadata.
+#' @export
+tccq_backend_artifact <- function(
+  id,
+  kind,
+  source_language = "",
+  path = "",
+  attrs = list()
+) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_character_scalar(kind, "kind")
+  if (!kind %in% TCCQ_BACKEND_ARTIFACT_KINDS) {
+    tccq_abort(
+      "schema.invalid_backend_artifact_kind",
+      "`kind` is not a supported backend artifact kind.",
+      phase = "schema",
+      path = "backend_artifact.kind",
+      data = list(kind = kind, supported = TCCQ_BACKEND_ARTIFACT_KINDS)
+    )
+  }
+  .tccq_check_character_or_empty(source_language, "source_language")
+  if (nzchar(source_language) && !source_language %in% TCCQ_OP_RENDER_LANGUAGES) {
+    tccq_abort(
+      "schema.invalid_backend_artifact_source_language",
+      "`source_language` is not supported.",
+      phase = "schema",
+      path = "backend_artifact.source_language",
+      data = list(source_language = source_language, supported = TCCQ_OP_RENDER_LANGUAGES)
+    )
+  }
+  .tccq_check_character_or_empty(path, "path")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqBackendArtifact(
+    id = id,
+    kind = kind,
+    source_language = source_language,
+    path = path,
+    attrs = attrs
+  )
+}
+
 #' Construct a backend plan
 #'
 #' @param id Stable plan id.
@@ -1597,6 +1735,35 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
     }
 
+    source_artifact <- function(symbol, source, path = "") {
+      tccq_backend_artifact(
+        id = sprintf("%s.source", symbol),
+        kind = "source",
+        source_language = source_language,
+        path = path,
+        attrs = list(text = source)
+      )
+    }
+
+    shared_library_artifact <- function(symbol, path) {
+      tccq_backend_artifact(
+        id = sprintf("%s.shared_library", symbol),
+        kind = "shared_library",
+        source_language = source_language,
+        path = path,
+        attrs = list()
+      )
+    }
+
+    jit_callable_artifact <- function(symbol, callable) {
+      tccq_backend_artifact(
+        id = sprintf("%s.jit_callable", symbol),
+        kind = "jit_callable",
+        source_language = source_language,
+        attrs = list(callable = callable)
+      )
+    }
+
     validate_lowered_program <- function(result, formals) {
       if (is.null(result) || length(program@regions) == 0L) {
         return(tccq_diagnostic(
@@ -2053,6 +2220,106 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       attrs <- plan@attrs
       attrs$compiled <- compiled
       attrs$callable <- callable
+      attrs$artifacts$jit_callable <- jit_callable_artifact(symbol, callable)
+      plan@attrs <- attrs
+      tccq_result(success = TRUE, value = plan, diagnostics = list())
+    }
+
+    compile_shared_library <- function(plan, source, interface) {
+      symbol <- interface@symbol
+      source_extension <- switch(
+        source_language,
+        c = ".c",
+        fortran = ".f90",
+        tccq_abort(
+          "backend.unsupported_source_language",
+          "Shared-library compilation does not support this source language.",
+          phase = "backend",
+          path = sprintf("backend.%s.shared_library.source_language", backend@id),
+          data = list(backend = backend@id, source_language = source_language)
+        )
+      )
+      build_dir <- tempfile(sprintf("tccq_%s_", source_language))
+      source_filename <- paste0(symbol, source_extension)
+      source_path <- file.path(build_dir, source_filename)
+      library_path <- file.path(
+        build_dir,
+        paste0(sub("\\.[^.]*$", "", source_filename), .Platform$dynlib.ext)
+      )
+
+      write_result <- tryCatch({
+        dir.create(build_dir, recursive = TRUE, showWarnings = FALSE)
+        writeLines(source, source_path, useBytes = TRUE)
+        NULL
+      }, error = identity)
+      attrs <- plan@attrs
+      attrs$source_path <- source_path
+      attrs$artifacts$source <- source_artifact(symbol, source, path = source_path)
+      plan@attrs <- attrs
+      if (inherits(write_result, "error")) {
+        diagnostic <- tccq_diagnostic(
+          "backend.shared_library_write_failed",
+          conditionMessage(write_result),
+          phase = "backend",
+          path = sprintf("backend.%s.shared_library.write", backend@id),
+          data = list(
+            backend = backend@id,
+            program = program@name,
+            source_language = source_language,
+            source_path = source_path
+          )
+        )
+        plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
+        return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
+      }
+
+      old_working_directory <- getwd()
+      on.exit(setwd(old_working_directory), add = TRUE)
+      setwd(build_dir)
+      compile_output <- tryCatch(
+        suppressWarnings(system2(
+          file.path(R.home("bin"), "R"),
+          c("CMD", "SHLIB", basename(source_path)),
+          stdout = TRUE,
+          stderr = TRUE
+        )),
+        error = identity
+      )
+      compile_status <- if (inherits(compile_output, "error")) {
+        1L
+      } else {
+        status <- attr(compile_output, "status")
+        if (is.null(status)) 0L else as.integer(status)
+      }
+      compile_log <- if (inherits(compile_output, "error")) {
+        conditionMessage(compile_output)
+      } else {
+        paste(as.character(compile_output), collapse = "\n")
+      }
+      if (!identical(compile_status, 0L) || !file.exists(library_path)) {
+        diagnostic <- tccq_diagnostic(
+          "backend.shared_library_compile_failed",
+          "Shared-library compilation failed.",
+          phase = "backend",
+          path = sprintf("backend.%s.shared_library.compile", backend@id),
+          data = list(
+            backend = backend@id,
+            program = program@name,
+            source_language = source_language,
+            source_path = source_path,
+            shared_library_path = library_path,
+            status = compile_status,
+            output = compile_log
+          )
+        )
+        plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
+        return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
+      }
+
+      attrs <- plan@attrs
+      attrs$shared_library_path <- library_path
+      attrs$shared_library_output <- compile_log
+      attrs$artifacts$shared_library <- shared_library_artifact(symbol, library_path)
       plan@attrs <- attrs
       tccq_result(success = TRUE, value = plan, diagnostics = list())
     }
@@ -2136,6 +2403,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         symbol = symbol,
         function_interface = function_interface,
         source = source,
+        artifacts = list(source = source_artifact(symbol, source)),
         expression = source_expression,
         storage_plan = program@storage_plan
       )
@@ -2143,6 +2411,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
     if (isTRUE(execute_with_rtinycc) && identical(context@mode, "jit")) {
       return(compile_with_rtinycc(plan, function_interface, result, formals))
+    }
+    if (identical(context@mode, "shared_library")) {
+      return(compile_shared_library(plan, source, function_interface))
     }
     tccq_result(success = TRUE, value = plan, diagnostics = list())
   }

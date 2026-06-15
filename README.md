@@ -196,6 +196,16 @@ before choosing whether the concrete source uses a C return value, a
 Fortran function result, a Fortran output argument, or a TinyCC FFI
 signature.
 
+Backend artifacts are also explicit. Source mode produces a
+`TccqBackendArtifact` carrying the generated source. Shared-library mode
+writes that same source artifact to disk, invokes `R CMD SHLIB`, and
+records the resulting shared library as another artifact. Rtinycc JIT
+mode keeps the same source and function interface, then attaches a
+callable artifact after TinyCC compilation. The old source string
+remains visible in backend attributes for inspection, but the
+architectural boundary is the typed expression, typed function
+interface, and typed artifact set.
+
 ## Control flow
 
 Control flow has to become structured IR. `for`, `while`, `repeat`,
@@ -249,12 +259,13 @@ for C source and TinyCC JIT modes. It should not decide the IR. The
 generic C descriptor, the Rtinycc descriptor, and the quickr-style
 Fortran descriptor now print source from the same lowered elementwise
 program through the same `TccqExpression` and
-`TccqBackendFunctionInterface` handoffs. The anvil-style
-graph/StableHLO/XLA descriptor and the R call-evaluation descriptor
-still report typed planning diagnostics until their corresponding
-lowerings exist. Those different families pressure the same typed
-representation from different directions, reducing the chance that the
-IR is secretly reward-hacked for one concrete backend.
+`TccqBackendFunctionInterface` handoffs, and source, shared-library, and
+JIT products are recorded as `TccqBackendArtifact` values. The
+anvil-style graph/StableHLO/XLA descriptor and the R call-evaluation
+descriptor still report typed planning diagnostics until their
+corresponding lowerings exist. Those different families pressure the
+same typed representation from different directions, reducing the chance
+that the IR is secretly reward-hacked for one concrete backend.
 
 Runtime concerns are part of backend planning. `TccqRuntimePolicy` says
 whether we are in release, checked, trace, or debug mode; whether
