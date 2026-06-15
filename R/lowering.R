@@ -359,10 +359,10 @@ tccq_lower_function <- function(
     if (length(lowered_arg$diagnostics) > 0L) {
       return(lowered_arg)
     }
-    if (lowered_arg$type@shape@rank != 1L) {
+    if (lowered_arg$type@shape@rank == 0L) {
       return(diagnostic_value(
         "lowering.unsupported_reducer_rank",
-        "The current reducer lowerer supports only rank-one inputs.",
+        "The current reducer lowerer supports only non-scalar full-domain inputs.",
         expr,
         data = list(reducer = reducer, rank = lowered_arg$type@shape@rank)
       ))

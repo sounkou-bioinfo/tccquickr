@@ -159,6 +159,24 @@ expect_true(all(vapply(
 )))
 expect_equal(map_reduce_result@value@storage_plan@attrs$strategy, "fused-map-reduce")
 
+matrix_reduce <- function(x, y) {
+  declare(type(x = double(n, p), y = double(n, p)))
+  sum(exp(x) * y)
+}
+
+matrix_reduce_result <- tccq_analyze(matrix_reduce)
+expect_true(matrix_reduce_result@success)
+expect_true(matrix_reduce_result@value@attrs$lowered)
+matrix_reduction_value <- matrix_reduce_result@value@values[[matrix_reduce_result@value@result]]
+matrix_reduction_operation <- matrix_reduction_value@attrs$operation
+expect_equal(matrix_reduction_value@type@shape@rank, 0L)
+expect_true(S7::S7_inherits(matrix_reduction_operation, TccqLoweredOperation))
+expect_equal(matrix_reduction_operation@family, "reduction")
+matrix_reduction_fusion <- matrix_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
+expect_equal(matrix_reduction_fusion@kind, "map_reduce")
+expect_equal(matrix_reduction_fusion@domain@shape@rank, 2L)
+expect_true(S7::S7_inherits(matrix_reduction_fusion@contract, TccqFusionContract))
+
 power_program <- function(x) {
   declare(type(x = integer(n)))
   x^2L

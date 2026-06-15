@@ -700,6 +700,43 @@ expect_equal(reduction_fortran_interface@result_placement, "return")
 expect_equal(reduction_fortran_interface@result_name, "output")
 expect_equal(length(reduction_fortran_source_plan@value@bridges), 3L)
 
+matrix_reduce <- function(x, y) {
+  declare(type(x = double(n, p), y = double(n, p)))
+  sum(exp(x) * y)
+}
+
+matrix_reduction_program <- tccq_analyze(matrix_reduce)
+expect_true(matrix_reduction_program@success)
+expect_true(matrix_reduction_program@value@attrs$lowered)
+matrix_reduction_result <- matrix_reduction_program@value@values[[matrix_reduction_program@value@result]]
+expect_equal(matrix_reduction_result@type@shape@rank, 0L)
+matrix_reduction_domain <- matrix_reduction_program@value@regions[[1L]]@fusion_groups[[1L]]@domain
+expect_equal(matrix_reduction_domain@shape@rank, 2L)
+
+matrix_reduction_c_source_plan <- tccq_plan_backend(
+  matrix_reduction_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(matrix_reduction_c_source_plan@success)
+matrix_reduction_c_interface <- backend_interface(matrix_reduction_c_source_plan)
+expect_equal(matrix_reduction_c_interface@kind, "reduction")
+expect_equal(matrix_reduction_c_interface@attrs$result_type@shape@rank, 0L)
+expect_true(matrix_reduction_c_interface@needs_length)
+
+matrix_reduction_fortran_source_plan <- tccq_plan_backend(
+  matrix_reduction_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(matrix_reduction_fortran_source_plan@success)
+matrix_reduction_fortran_interface <- backend_interface(matrix_reduction_fortran_source_plan)
+expect_equal(matrix_reduction_fortran_interface@kind, "reduction")
+expect_equal(matrix_reduction_fortran_interface@attrs$result_type@shape@rank, 0L)
+expect_true(matrix_reduction_fortran_interface@needs_length)
+
+matrix_reduction_expected <- sum(exp(matrix_x) * matrix_y)
+
 if (can_build_shared_library("c")) {
   reduction_c_shared_plan <- tccq_plan_backend(
     reduction_program@value,
@@ -708,6 +745,17 @@ if (can_build_shared_library("c")) {
   )
   expect_true(reduction_c_shared_plan@success)
   expect_equal(backend_callable(reduction_c_shared_plan)(c(0, log(2)), c(5, 7)), 19)
+
+  matrix_reduction_c_shared_plan <- tccq_plan_backend(
+    matrix_reduction_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(matrix_reduction_c_shared_plan@success)
+  expect_equal(
+    backend_callable(matrix_reduction_c_shared_plan)(matrix_x, matrix_y),
+    matrix_reduction_expected
+  )
 }
 
 if (can_build_shared_library("fortran")) {
@@ -718,6 +766,17 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(reduction_fortran_shared_plan@success)
   expect_equal(backend_callable(reduction_fortran_shared_plan)(c(0, log(2)), c(5, 7)), 19)
+
+  matrix_reduction_fortran_shared_plan <- tccq_plan_backend(
+    matrix_reduction_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(matrix_reduction_fortran_shared_plan@success)
+  expect_equal(
+    backend_callable(matrix_reduction_fortran_shared_plan)(matrix_x, matrix_y),
+    matrix_reduction_expected
+  )
 }
 
 fold_add <- function(x) x
@@ -762,6 +821,16 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   expect_equal(
     backend_callable(reduction_jit_plan)(x, y),
     sum(exp(x) * y)
+  )
+  matrix_reduction_jit_plan <- tccq_plan_backend(
+    matrix_reduction_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(matrix_reduction_jit_plan@success)
+  expect_equal(
+    backend_callable(matrix_reduction_jit_plan)(matrix_x, matrix_y),
+    matrix_reduction_expected
   )
   custom_reduction_jit_plan <- tccq_plan_backend(
     custom_reduction_program@value,
