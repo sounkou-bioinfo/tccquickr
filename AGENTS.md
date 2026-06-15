@@ -222,6 +222,10 @@ For the reset core, keep these rules explicit:
   signatures; reductions add reducer identity and combine behavior. Do not add
   another result-type helper, shape predicate, or source-name switch when a
   signature, domain policy, or implementation trait is the actual concept.
+- Lowered operation values and fusion groups must preserve operation signatures
+  and domain policies. Later fusion, access, legality, storage, and backend
+  passes should consume those contracts instead of rediscovering behavior from
+  operation names, value ranks, or backend-local predicates.
 - Backend support is generic. Use `TccqBackendSpec`, `TccqBackend`,
   `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
   bridge/safepoint/debug metadata. `Rtinycc` is one backend descriptor for a

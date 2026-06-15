@@ -312,6 +312,7 @@ tccq_lower_function <- function(
         attrs = list(
           lowering = "elementwise",
           elementwise = elementwise_spec,
+          signature = signature,
           resolved_op = resolved_operation
         )
       )
@@ -388,6 +389,7 @@ tccq_lower_function <- function(
           lowering = "reduction",
           reducer = reducer,
           reduction = reduction_spec,
+          signature = signature,
           identity = identity_result@value,
           resolved_op = resolved_operation
         )
@@ -410,6 +412,16 @@ tccq_lower_function <- function(
       function(value) !value@op %in% c("formal", "literal"),
       lowered_values
     )
+    operation_signatures <- lapply(operation_values, function(value) value@attrs$signature)
+    names(operation_signatures) <- vapply(operation_values, function(value) value@id, character(1))
+    operation_signatures <- Filter(
+      function(signature) !is.null(signature) && S7::S7_inherits(signature, TccqOpSignature),
+      operation_signatures
+    )
+    domain_policies <- Filter(
+      function(policy) !is.null(policy) && S7::S7_inherits(policy, TccqDomainPolicy),
+      lapply(operation_signatures, function(signature) signature@domain_policy)
+    )
     resolved_operations <- Filter(
       function(resolved_operation) S7::S7_inherits(resolved_operation, TccqResolvedOp),
       lapply(operation_values, function(value) value@attrs$resolved_op)
@@ -426,15 +438,19 @@ tccq_lower_function <- function(
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
     fusion_kind <- if (isTRUE(result_is_reduction)) "map_reduce" else "map"
+    operation_contract_attrs <- list(
+      operation_signatures = operation_signatures,
+      domain_policies = domain_policies
+    )
     fusion_attrs <- if (isTRUE(result_is_reduction)) {
-      list(
+      c(list(
         storage = "fused-map-reduce",
         reducer = result_value@attrs$reducer,
         reduction = result_value@attrs$reduction,
         identity = result_value@attrs$identity
-      )
+      ), operation_contract_attrs)
     } else {
-      list(storage = "fused-elementwise")
+      c(list(storage = "fused-elementwise"), operation_contract_attrs)
     }
     fusion <- tccq_fusion_group(
       "fusion_main",

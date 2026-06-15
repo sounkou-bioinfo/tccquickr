@@ -86,9 +86,31 @@ expect_true(all(vapply(
   function(value) identical(value@attrs$resolved_op@target, "pure_c"),
   logical(1)
 )))
-expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@kind, "map")
-expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@region_kind, "kernel")
-expect_equal(map_result@value@regions[[1L]]@fusion_groups[[1L]]@target, "pure_c")
+expect_true(all(vapply(
+  operation_values,
+  function(value) S7::S7_inherits(value@attrs$signature, TccqOpSignature),
+  logical(1)
+)))
+expect_true(all(vapply(
+  operation_values,
+  function(value) S7::S7_inherits(value@attrs$signature@domain_policy, TccqDomainPolicy),
+  logical(1)
+)))
+map_fusion <- map_result@value@regions[[1L]]@fusion_groups[[1L]]
+expect_equal(map_fusion@kind, "map")
+expect_equal(map_fusion@region_kind, "kernel")
+expect_equal(map_fusion@target, "pure_c")
+expect_equal(length(map_fusion@attrs$operation_signatures), length(operation_values))
+expect_true(all(vapply(
+  map_fusion@attrs$operation_signatures,
+  function(signature) S7::S7_inherits(signature, TccqOpSignature),
+  logical(1)
+)))
+expect_true(all(vapply(
+  map_fusion@attrs$domain_policies,
+  function(domain_policy) S7::S7_inherits(domain_policy, TccqDomainPolicy),
+  logical(1)
+)))
 
 map_reduce <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
@@ -108,6 +130,7 @@ expect_equal(reduction_value@attrs$reducer, "sum")
 expect_true(S7::S7_inherits(reduction_value@attrs$reduction, TccqReductionSpec))
 expect_true(S7::S7_inherits(reduction_value@attrs$reduction@signature, TccqOpSignature))
 expect_true(S7::S7_inherits(reduction_value@attrs$reduction@signature@domain_policy, TccqDomainPolicy))
+expect_true(S7::S7_inherits(reduction_value@attrs$signature, TccqOpSignature))
 expect_true(S7::S7_inherits(reduction_value@attrs$identity, TccqLiteral))
 
 reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
@@ -115,6 +138,16 @@ expect_equal(reduction_fusion@kind, "map_reduce")
 expect_equal(reduction_fusion@region_kind, "kernel")
 expect_equal(reduction_fusion@domain@shape@rank, 1L)
 expect_equal(reduction_fusion@attrs$reducer, "sum")
+expect_true(all(vapply(
+  reduction_fusion@attrs$operation_signatures,
+  function(signature) S7::S7_inherits(signature, TccqOpSignature),
+  logical(1)
+)))
+expect_true(all(vapply(
+  reduction_fusion@attrs$domain_policies,
+  function(domain_policy) S7::S7_inherits(domain_policy, TccqDomainPolicy),
+  logical(1)
+)))
 expect_equal(map_reduce_result@value@storage_plan@attrs$strategy, "fused-map-reduce")
 
 power_program <- function(x) {
@@ -131,6 +164,7 @@ expect_equal(power_value@type@base, "double")
 expect_true(S7::S7_inherits(power_value@attrs$elementwise, TccqElementwiseSpec))
 expect_true(S7::S7_inherits(power_value@attrs$elementwise@signature, TccqOpSignature))
 expect_true(S7::S7_inherits(power_value@attrs$elementwise@signature@domain_policy, TccqDomainPolicy))
+expect_true(S7::S7_inherits(power_value@attrs$signature, TccqOpSignature))
 
 negation_program <- function(x) {
   declare(type(x = double(n)))

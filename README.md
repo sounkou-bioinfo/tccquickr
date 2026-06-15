@@ -145,10 +145,14 @@ rank-one elementwise expressions and rank-one reductions when the
 resolved operations carry the corresponding typed specs. It returns a
 `TccqLoweringPlan`, then embeds the plan into `TccqProgram` as values,
 regions, fusion groups, and storage facts. Each operation value carries
-a `TccqResolvedOp`, and the generated fusion group derives its target
-and effect from those resolved operations. This is not a general
-legality pass and it is not the place where new language coverage should
-sprawl.
+a `TccqResolvedOp`, and the lowered value also carries the shared
+`TccqOpSignature` used to type the call. The generated fusion group
+preserves operation signatures and domain policies, then derives its
+target and effect from the resolved operations. Later fusion, access,
+legality, storage, and backend passes should consume those contracts
+rather than infer operation behavior from names, ranks, or emitted
+source. This is not a general legality pass and it is not the place
+where new language coverage should sprawl.
 
 Top-level local assignment is currently modeled as single-assignment
 binding. In `a <- expr`, the local symbol `a` becomes a name for the
@@ -255,12 +259,13 @@ Fusion is a transformation over a typed value graph. It is not a source
 rewrite and not a backend shortcut. `TccqDomain` names the iteration
 space, `TccqAccess` describes how a value maps onto that domain, and
 `TccqFusionGroup` represents a candidate fused group over a domain,
-values, outputs, accesses, target, region kind, and effects.
+values, outputs, accesses, target, region kind, effects, operation
+signatures, and domain policies.
 
 Simple `f(g(x))` fusion is just one case: a pure single-use producer and
-pure consumer over the same domain with compatible implementations.
-Map-reduce, stencil, tile, and device fusion are extensions of the same
-domain/access/region model.
+pure consumer over the same domain with compatible implementations and
+domain policies. Map-reduce, stencil, tile, and device fusion are
+extensions of the same domain/access/region model.
 
 Fusion stops at explicit barriers: R C API/object-mode calls, unknown
 effects, mutation, incompatible layouts, unmodeled missing-value
