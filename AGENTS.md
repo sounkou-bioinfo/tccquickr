@@ -104,6 +104,10 @@ Rules:
 - Argument-count and result-type rules belong in `TccqOpSignature`. Elementwise,
   reduction, and future operation families should carry signatures rather than
   growing category-specific disguised type checks.
+- Result-domain and shape compatibility rules belong in `TccqDomainPolicy`
+  carried by `TccqOpSignature`. Do not bury scalar broadcast, common-domain,
+  recycling, or scalar-result behavior inside anonymous result-type closures or
+  backend printers.
 - Functions should mostly be constructors, pure transformations, generic
   methods, protocol runners, or small local helpers in service of one of those.
 - A private helper is acceptable only when it is truly local glue. It is not
@@ -213,11 +217,11 @@ For the reset core, keep these rules explicit:
   implementation, CUDA/device implementation, or explicit boundary
   implementation. The frontend asks an operation registry rather than owning
   the support policy.
-- `TccqOpSignature` is the shared operation contract for arity and result type.
-  `TccqElementwiseSpec` and `TccqReductionSpec` carry signatures; reductions add
-  reducer identity and combine behavior. Do not add another result-type helper
-  or source-name switch when a signature or implementation trait is the actual
-  concept.
+- `TccqOpSignature` is the shared operation contract for arity, result-domain
+  policy, and result type. `TccqElementwiseSpec` and `TccqReductionSpec` carry
+  signatures; reductions add reducer identity and combine behavior. Do not add
+  another result-type helper, shape predicate, or source-name switch when a
+  signature, domain policy, or implementation trait is the actual concept.
 - Backend support is generic. Use `TccqBackendSpec`, `TccqBackend`,
   `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
   bridge/safepoint/debug metadata. `Rtinycc` is one backend descriptor for a

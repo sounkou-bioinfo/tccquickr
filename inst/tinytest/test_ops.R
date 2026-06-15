@@ -29,19 +29,36 @@ expect_true(resolved_custom@value@uses_rapi)
 render_context <- tccq_op_render_context(language = "c", backend_id = "unit_backend")
 expect_true(S7::S7_inherits(render_context, TccqOpRenderContext))
 
+same_shape_policy <- tccq_domain_policy(
+  "same_shape",
+  result_shape = function(input_types) input_types[[1L]]@shape
+)
+expect_true(S7::S7_inherits(same_shape_policy, TccqDomainPolicy))
+same_shape_result <- tccq_domain_policy_result_shape(
+  same_shape_policy,
+  list(tccq_type("integer", tccq_shape("n")))
+)
+expect_true(same_shape_result@success)
+expect_equal(same_shape_result@value@rank, 1L)
+
 same_type_signature <- tccq_op_signature(
   "same_type",
   c(1L, 2L),
-  result_type = function(input_types) input_types[[1L]]
+  result_type = function(input_types, result_shape) {
+    tccq_type(input_types[[1L]]@base, result_shape)
+  },
+  domain_policy = same_shape_policy
 )
 expect_true(S7::S7_inherits(same_type_signature, TccqOpSignature))
+expect_true(S7::S7_inherits(same_type_signature@domain_policy, TccqDomainPolicy))
 expect_equal(same_type_signature@arity, c(1L, 2L))
 same_type_signature_result <- tccq_op_signature_result_type(
   same_type_signature,
-  list(tccq_type("integer"))
+  list(tccq_type("integer", tccq_shape("n")))
 )
 expect_true(same_type_signature_result@success)
 expect_equal(same_type_signature_result@value@base, "integer")
+expect_equal(same_type_signature_result@value@shape@rank, 1L)
 bad_signature_arity <- tryCatch(
   tccq_op_signature(
     "bad",
@@ -102,6 +119,7 @@ resolved_plus <- tccq_resolve_call(default_registry, tccq_call("+"), tccq_op_con
 expect_true(resolved_plus@success)
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise, TccqElementwiseSpec))
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature, TccqOpSignature))
+expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature@domain_policy, TccqDomainPolicy))
 plus_result_type <- tccq_elementwise_result_type(
   resolved_plus@value@elementwise,
   list(tccq_type("integer", tccq_shape(tccq_dim_symbol("n"))), tccq_type("double"))
@@ -116,6 +134,16 @@ c_plus <- tccq_op_render(
 )
 expect_true(c_plus@success)
 expect_equal(c_plus@value, "(left + right)")
+incompatible_plus_result_type <- tccq_elementwise_result_type(
+  resolved_plus@value@elementwise,
+  list(tccq_type("integer", tccq_shape("n")), tccq_type("integer", tccq_shape("p")))
+)
+expect_false(incompatible_plus_result_type@success)
+expect_true(any(vapply(
+  incompatible_plus_result_type@diagnostics,
+  function(x) identical(x@code, "ops.incompatible_elementwise_shapes"),
+  logical(1)
+)))
 
 resolved_power <- tccq_resolve_call(default_registry, tccq_call("^"), tccq_op_context())
 expect_true(S7::S7_inherits(resolved_power@value@elementwise, TccqElementwiseSpec))

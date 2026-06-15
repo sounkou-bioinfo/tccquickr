@@ -4,7 +4,13 @@
 \alias{tccq_elementwise_spec}
 \title{Construct elementwise implementation metadata}
 \usage{
-tccq_elementwise_spec(name, arity, result_type, attrs = list())
+tccq_elementwise_spec(
+  name,
+  arity,
+  result_type,
+  attrs = list(),
+  domain_policy = NULL
+)
 }
 \arguments{
 \item{name}{Human-readable elementwise operation name.}
@@ -14,6 +20,8 @@ tccq_elementwise_spec(name, arity, result_type, attrs = list())
 \item{result_type}{Function from input \code{TccqType} list to result \code{TccqType}.}
 
 \item{attrs}{Structured elementwise metadata.}
+
+\item{domain_policy}{Optional result-shape policy.}
 }
 \description{
 Construct elementwise implementation metadata

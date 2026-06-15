@@ -8,6 +8,7 @@ TccqOpSignature(
   name = character(0),
   arity = integer(0),
   result_type = function() NULL,
+  domain_policy = NULL,
   attrs = list()
 )
 }
@@ -18,10 +19,13 @@ TccqOpSignature(
 
 \item{result_type}{Function from input \code{TccqType} list to result \code{TccqType}.}
 
+\item{domain_policy}{Optional result-shape policy.}
+
 \item{attrs}{Structured signature metadata.}
 }
 \description{
 A signature is the shared operation contract for argument count and result
-typing. Elementwise, reduction, and future operation families should carry a
-signature instead of each inventing their own arity and type checks.
+typing. It may also carry a domain policy for result shape. Elementwise,
+reduction, and future operation families should carry a signature instead of
+each inventing their own arity, shape, and type checks.
 }

@@ -4,7 +4,13 @@
 \alias{tccq_op_signature}
 \title{Construct operation signature metadata}
 \usage{
-tccq_op_signature(name, arity, result_type, attrs = list())
+tccq_op_signature(
+  name,
+  arity,
+  result_type,
+  attrs = list(),
+  domain_policy = NULL
+)
 }
 \arguments{
 \item{name}{Human-readable operation signature name.}
@@ -14,6 +20,8 @@ tccq_op_signature(name, arity, result_type, attrs = list())
 \item{result_type}{Function from input \code{TccqType} list to result \code{TccqType}.}
 
 \item{attrs}{Structured signature metadata.}
+
+\item{domain_policy}{Optional result-shape policy.}
 }
 \description{
 Construct operation signature metadata

@@ -110,15 +110,48 @@ TccqOpRenderContext <- S7::new_class(
   }
 )
 
+#' Operation domain policy
+#'
+#' A domain policy describes how input shapes determine an operation result
+#' shape before target source generation. It is the typed home for rules such
+#' as scalar broadcast, common elementwise domains, and scalar reducer results.
+#'
+#' @param name Human-readable domain policy name.
+#' @param result_shape Function from input `TccqType` list to result
+#'   `TccqShape`.
+#' @param attrs Structured domain-policy metadata.
+#' @export
+TccqDomainPolicy <- S7::new_class(
+  "TccqDomainPolicy",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    result_shape = S7::class_function,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (!is.function(self@result_shape)) {
+      problems <- c(problems, "@result_shape must be a function")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Operation signature metadata
 #'
 #' A signature is the shared operation contract for argument count and result
-#' typing. Elementwise, reduction, and future operation families should carry a
-#' signature instead of each inventing their own arity and type checks.
+#' typing. It may also carry a domain policy for result shape. Elementwise,
+#' reduction, and future operation families should carry a signature instead of
+#' each inventing their own arity, shape, and type checks.
 #'
 #' @param name Human-readable operation signature name.
 #' @param arity Accepted argument counts.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
+#' @param domain_policy Optional result-shape policy.
 #' @param attrs Structured signature metadata.
 #' @export
 TccqOpSignature <- S7::new_class(
@@ -128,6 +161,7 @@ TccqOpSignature <- S7::new_class(
     name = S7::class_character,
     arity = S7::class_integer,
     result_type = S7::class_function,
+    domain_policy = S7::new_union(NULL, TccqDomainPolicy),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -482,18 +516,94 @@ S7::method(tccq_op_render, TccqOpImpl) <- function(impl, operands, context) {
   tccq_result(success = TRUE, value = rendered_operation)
 }
 
+#' Construct operation domain policy metadata
+#'
+#' @param name Human-readable domain policy name.
+#' @param result_shape Function from input `TccqType` list to result
+#'   `TccqShape`.
+#' @param attrs Structured domain-policy metadata.
+#' @export
+tccq_domain_policy <- function(
+  name,
+  result_shape,
+  attrs = list()
+) {
+  .tccq_check_character_scalar(name, "name")
+  if (!is.function(result_shape)) {
+    tccq_abort(
+      "schema.invalid_domain_policy_result_shape",
+      "`result_shape` must be a function.",
+      phase = "schema",
+      path = "domain_policy.result_shape"
+    )
+  }
+  .tccq_check_list(attrs, "attrs")
+
+  TccqDomainPolicy(
+    name = name,
+    result_shape = result_shape,
+    attrs = attrs
+  )
+}
+
+#' Return an operation domain-policy result shape
+#'
+#' @param policy Domain policy.
+#' @param input_types List of input `TccqType` values.
+#' @export
+tccq_domain_policy_result_shape <- S7::new_generic(
+  "tccq_domain_policy_result_shape",
+  dispatch_args = "policy",
+  function(policy, input_types) S7::S7_dispatch()
+)
+
+S7::method(tccq_domain_policy_result_shape, TccqDomainPolicy) <- function(policy, input_types) {
+  .tccq_check_list_of(input_types, TccqType, "TccqType", "input_types")
+  result_shape <- tryCatch(
+    policy@result_shape(input_types),
+    tccq_error = identity,
+    error = identity
+  )
+  if (inherits(result_shape, "tccq_error")) {
+    return(tccq_result(success = FALSE, diagnostics = list(tccq_condition_diagnostic(result_shape))))
+  }
+  if (inherits(result_shape, "error")) {
+    diagnostic <- tccq_diagnostic(
+      "ops.domain_policy_result_shape_failed",
+      conditionMessage(result_shape),
+      phase = "ops",
+      path = "domain_policy.result_shape",
+      data = list(policy = policy@name)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  if (!S7::S7_inherits(result_shape, TccqShape)) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_domain_policy_result_shape",
+      "Domain policy result-shape functions must return a <TccqShape>.",
+      phase = "ops",
+      path = "domain_policy.result_shape",
+      data = list(policy = policy@name, type = class(result_shape))
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  tccq_result(success = TRUE, value = result_shape)
+}
+
 #' Construct operation signature metadata
 #'
 #' @param name Human-readable operation signature name.
 #' @param arity Accepted argument counts.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
 #' @param attrs Structured signature metadata.
+#' @param domain_policy Optional result-shape policy.
 #' @export
 tccq_op_signature <- function(
   name,
   arity,
   result_type,
-  attrs = list()
+  attrs = list(),
+  domain_policy = NULL
 ) {
   .tccq_check_character_scalar(name, "name")
   if (
@@ -520,12 +630,14 @@ tccq_op_signature <- function(
       path = "op_signature.result_type"
     )
   }
+  .tccq_check_optional_s7(domain_policy, TccqDomainPolicy, "TccqDomainPolicy", "domain_policy")
   .tccq_check_list(attrs, "attrs")
 
   TccqOpSignature(
     name = name,
     arity = arity,
     result_type = result_type,
+    domain_policy = domain_policy,
     attrs = attrs
   )
 }
@@ -542,6 +654,14 @@ tccq_op_signature_result_type <- S7::new_generic(
 )
 
 S7::method(tccq_op_signature_result_type, TccqOpSignature) <- function(signature, input_types) {
+  result_type_accepts_shape <- function(result_type) {
+    parameters <- formals(result_type)
+    if (is.null(parameters)) {
+      return(FALSE)
+    }
+    "..." %in% names(parameters) || length(parameters) >= 2L
+  }
+
   .tccq_check_list_of(input_types, TccqType, "TccqType", "input_types")
   if (!(length(input_types) %in% signature@arity)) {
     diagnostic <- tccq_diagnostic(
@@ -557,9 +677,21 @@ S7::method(tccq_op_signature_result_type, TccqOpSignature) <- function(signature
     )
     return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
   }
+  result_shape <- NULL
+  if (!is.null(signature@domain_policy)) {
+    result_shape_result <- tccq_domain_policy_result_shape(signature@domain_policy, input_types)
+    if (!result_shape_result@success) {
+      return(tccq_result(success = FALSE, diagnostics = result_shape_result@diagnostics))
+    }
+    result_shape <- result_shape_result@value
+  }
 
   result_type <- tryCatch(
-    signature@result_type(input_types),
+    if (result_type_accepts_shape(signature@result_type)) {
+      signature@result_type(input_types, result_shape)
+    } else {
+      signature@result_type(input_types)
+    },
     tccq_error = identity,
     error = identity
   )
@@ -595,12 +727,14 @@ S7::method(tccq_op_signature_result_type, TccqOpSignature) <- function(signature
 #' @param arity Accepted argument counts.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
 #' @param attrs Structured elementwise metadata.
+#' @param domain_policy Optional result-shape policy.
 #' @export
 tccq_elementwise_spec <- function(
   name,
   arity,
   result_type,
-  attrs = list()
+  attrs = list(),
+  domain_policy = NULL
 ) {
   .tccq_check_character_scalar(name, "name")
   if (!is.function(result_type)) {
@@ -612,10 +746,16 @@ tccq_elementwise_spec <- function(
     )
   }
   .tccq_check_list(attrs, "attrs")
+  .tccq_check_optional_s7(domain_policy, TccqDomainPolicy, "TccqDomainPolicy", "domain_policy")
 
   TccqElementwiseSpec(
     name = name,
-    signature = tccq_op_signature(name, arity, result_type),
+    signature = tccq_op_signature(
+      name,
+      arity,
+      result_type,
+      domain_policy = domain_policy
+    ),
     attrs = attrs
   )
 }
@@ -680,9 +820,15 @@ tccq_reduction_spec <- function(
     signature <- tccq_op_signature(
       name,
       1L,
-      result_type = function(input_types) {
-        tccq_type(input_types[[1L]]@base)
-      }
+      result_type = function(input_types, result_shape) {
+        tccq_type(input_types[[1L]]@base, result_shape)
+      },
+      domain_policy = tccq_domain_policy(
+        sprintf("%s_scalar_result", name),
+        result_shape = function(input_types) {
+          tccq_shape()
+        }
+      )
     )
   } else {
     .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
@@ -1495,22 +1641,46 @@ tccq_default_op_registry <- function() {
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
   )
-  shape_key <- function(type) {
-    paste(
-      vapply(type@shape@dims, function(dim) {
-        if (identical(dim@kind, "constant")) {
-          return(sprintf("constant:%d", dim@value))
-        }
-        if (identical(dim@kind, "symbol")) {
-          return(sprintf("symbol:%s", dim@label))
-        }
-        "unknown"
-      }, character(1)),
-      collapse = "/"
-    )
-  }
+  elementwise_domain_policy <- tccq_domain_policy(
+    "elementwise_common_shape",
+    result_shape = function(input_types) {
+      shape_label <- function(shape) {
+        labels <- vapply(shape@dims, function(dim) {
+          if (identical(dim@kind, "constant")) {
+            return(sprintf("constant:%d", dim@value))
+          }
+          if (identical(dim@kind, "symbol")) {
+            return(sprintf("symbol:%s", dim@label))
+          }
+          "unknown"
+        }, character(1))
+        paste(labels, collapse = "/")
+      }
+
+      non_scalar_shapes <- lapply(
+        Filter(function(type) type@shape@rank > 0L, input_types),
+        function(type) type@shape
+      )
+      if (length(non_scalar_shapes) == 0L) {
+        return(tccq_shape())
+      }
+      common_shape <- non_scalar_shapes[[1L]]
+      compatible_shapes <- vapply(non_scalar_shapes, identical, logical(1), common_shape)
+      if (!all(compatible_shapes)) {
+        shape_labels <- unique(vapply(non_scalar_shapes, shape_label, character(1)))
+        tccq_abort(
+          "ops.incompatible_elementwise_shapes",
+          "Vectorized expression inputs must have the same shape.",
+          phase = "ops",
+          path = "domain_policy.result_shape",
+          data = list(shapes = shape_labels)
+        )
+      }
+      common_shape
+    }
+  )
   numeric_elementwise_result_type <- function(force_double = FALSE) {
-    function(input_types) {
+    function(input_types, result_shape) {
       unsupported_bases <- setdiff(
         unique(vapply(input_types, function(type) type@base, character(1))),
         c("integer", "double")
@@ -1525,22 +1695,6 @@ tccq_default_op_registry <- function() {
         )
       }
 
-      non_scalar_types <- Filter(function(type) type@shape@rank > 0L, input_types)
-      shape <- tccq_shape()
-      if (length(non_scalar_types) > 0L) {
-        shape_keys <- unique(vapply(non_scalar_types, shape_key, character(1)))
-        if (length(shape_keys) != 1L) {
-          tccq_abort(
-            "ops.incompatible_elementwise_shapes",
-            "Vectorized expression inputs must have the same shape.",
-            phase = "ops",
-            path = "elementwise.shape",
-            data = list(shapes = shape_keys)
-          )
-        }
-        shape <- non_scalar_types[[1L]]@shape
-      }
-
       result_base <- if (
         isTRUE(force_double) ||
           any(vapply(input_types, function(type) identical(type@base, "double"), logical(1)))
@@ -1549,17 +1703,52 @@ tccq_default_op_registry <- function() {
       } else {
         "integer"
       }
-      tccq_type(result_base, shape)
+      tccq_type(result_base, result_shape)
     }
   }
   elementwise_specs <- list(
-    "+" = tccq_elementwise_spec("+", 2L, numeric_elementwise_result_type()),
-    "-" = tccq_elementwise_spec("-", c(1L, 2L), numeric_elementwise_result_type()),
-    "*" = tccq_elementwise_spec("*", 2L, numeric_elementwise_result_type()),
-    "/" = tccq_elementwise_spec("/", 2L, numeric_elementwise_result_type(force_double = TRUE)),
-    "^" = tccq_elementwise_spec("^", 2L, numeric_elementwise_result_type(force_double = TRUE)),
-    sqrt = tccq_elementwise_spec("sqrt", 1L, numeric_elementwise_result_type(force_double = TRUE)),
-    exp = tccq_elementwise_spec("exp", 1L, numeric_elementwise_result_type(force_double = TRUE))
+    "+" = tccq_elementwise_spec(
+      "+",
+      2L,
+      numeric_elementwise_result_type(),
+      domain_policy = elementwise_domain_policy
+    ),
+    "-" = tccq_elementwise_spec(
+      "-",
+      c(1L, 2L),
+      numeric_elementwise_result_type(),
+      domain_policy = elementwise_domain_policy
+    ),
+    "*" = tccq_elementwise_spec(
+      "*",
+      2L,
+      numeric_elementwise_result_type(),
+      domain_policy = elementwise_domain_policy
+    ),
+    "/" = tccq_elementwise_spec(
+      "/",
+      2L,
+      numeric_elementwise_result_type(force_double = TRUE),
+      domain_policy = elementwise_domain_policy
+    ),
+    "^" = tccq_elementwise_spec(
+      "^",
+      2L,
+      numeric_elementwise_result_type(force_double = TRUE),
+      domain_policy = elementwise_domain_policy
+    ),
+    sqrt = tccq_elementwise_spec(
+      "sqrt",
+      1L,
+      numeric_elementwise_result_type(force_double = TRUE),
+      domain_policy = elementwise_domain_policy
+    ),
+    exp = tccq_elementwise_spec(
+      "exp",
+      1L,
+      numeric_elementwise_result_type(force_double = TRUE),
+      domain_policy = elementwise_domain_policy
+    )
   )
   base_sum_reduction <- tccq_reduction_spec(
     "sum",
