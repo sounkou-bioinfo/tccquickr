@@ -739,6 +739,39 @@ TccqRegion <- S7::new_class(
   }
 )
 
+#' Storage lifetime interval
+#'
+#' A storage lifetime records the definition and last-use positions used by
+#' storage reuse planning. It is a typed optimization fact, not source-printer
+#' metadata.
+#'
+#' @param value_id Value whose lifetime is described.
+#' @param defined_at Linear definition position in the lowered value stream.
+#' @param last_used_at Last position where the value must remain live.
+#' @export
+TccqStorageLifetime <- S7::new_class(
+  "TccqStorageLifetime",
+  package = "tccquickr",
+  properties = list(
+    value_id = S7::class_character,
+    defined_at = S7::class_integer,
+    last_used_at = S7::class_integer
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@value_id) != 1L || is.na(self@value_id) || !nzchar(self@value_id)) {
+      problems <- c(problems, "@value_id must be a single non-empty string")
+    }
+    if (length(self@defined_at) != 1L || is.na(self@defined_at) || self@defined_at < 1L) {
+      problems <- c(problems, "@defined_at must be a positive integer position")
+    }
+    if (length(self@last_used_at) != 1L || is.na(self@last_used_at) || self@last_used_at < self@defined_at) {
+      problems <- c(problems, "@last_used_at must be greater than or equal to @defined_at")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Storage slot
 #'
 #' A storage slot records whether a value is materialized, reusable, or only
@@ -751,6 +784,7 @@ TccqRegion <- S7::new_class(
 #' @param materialized Whether storage exists at runtime.
 #' @param reusable Whether later planning may reuse the slot.
 #' @param aliases Value ids known to share storage with this slot.
+#' @param lifetime Optional typed liveness interval for storage reuse.
 #' @param attrs Structured slot metadata.
 #' @export
 TccqStorageSlot <- S7::new_class(
@@ -764,6 +798,7 @@ TccqStorageSlot <- S7::new_class(
     materialized = S7::class_logical,
     reusable = S7::class_logical,
     aliases = S7::class_character,
+    lifetime = S7::new_union(NULL, TccqStorageLifetime),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -791,6 +826,12 @@ TccqStorageSlot <- S7::new_class(
     }
     if (identical(self@role, "input") && isTRUE(self@reusable)) {
       problems <- c(problems, "input storage slots must not be reusable")
+    }
+    if (isTRUE(self@reusable) && is.null(self@lifetime)) {
+      problems <- c(problems, "reusable storage slots must carry a typed lifetime")
+    }
+    if (!is.null(self@lifetime) && !identical(self@lifetime@value_id, self@value_id)) {
+      problems <- c(problems, "@lifetime value id must match @value_id")
     }
     if (length(problems) > 0L) problems
   }
@@ -1501,6 +1542,7 @@ tccq_region <- function(
 #' @param materialized Whether storage exists at runtime.
 #' @param reusable Whether later planning may reuse the slot.
 #' @param aliases Value ids known to share storage with this slot.
+#' @param lifetime Optional typed liveness interval for storage reuse.
 #' @param attrs Structured slot metadata.
 #' @export
 tccq_storage_slot <- function(
@@ -1511,6 +1553,7 @@ tccq_storage_slot <- function(
   materialized,
   reusable = FALSE,
   aliases = character(),
+  lifetime = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -1536,6 +1579,25 @@ tccq_storage_slot <- function(
       path = "storage.aliases"
     )
   }
+  .tccq_check_optional_s7(lifetime, TccqStorageLifetime, "TccqStorageLifetime", "lifetime")
+  if (isTRUE(reusable) && is.null(lifetime)) {
+    tccq_abort(
+      "schema.storage_lifetime_required",
+      "Reusable storage slots must carry a typed lifetime.",
+      phase = "schema",
+      path = "storage.lifetime",
+      data = list(slot = id, value_id = value_id)
+    )
+  }
+  if (!is.null(lifetime) && !identical(lifetime@value_id, value_id)) {
+    tccq_abort(
+      "schema.storage_lifetime_mismatch",
+      "Storage slot lifetime value id must match the slot value id.",
+      phase = "schema",
+      path = "storage.lifetime.value_id",
+      data = list(slot = id, value_id = value_id, lifetime_value_id = lifetime@value_id)
+    )
+  }
   .tccq_check_list(attrs, "attrs")
 
   TccqStorageSlot(
@@ -1546,7 +1608,35 @@ tccq_storage_slot <- function(
     materialized = materialized,
     reusable = reusable,
     aliases = aliases,
+    lifetime = lifetime,
     attrs = attrs
+  )
+}
+
+#' Construct a storage lifetime interval
+#'
+#' @param value_id Value whose lifetime is described.
+#' @param defined_at Linear definition position in the lowered value stream.
+#' @param last_used_at Last position where the value must remain live.
+#' @export
+tccq_storage_lifetime <- function(value_id, defined_at, last_used_at) {
+  .tccq_check_character_scalar(value_id, "value_id")
+  defined_at <- .tccq_check_positive_integer(defined_at, "defined_at")
+  last_used_at <- .tccq_check_positive_integer(last_used_at, "last_used_at")
+  if (last_used_at < defined_at) {
+    tccq_abort(
+      "schema.invalid_storage_lifetime",
+      "`last_used_at` must be greater than or equal to `defined_at`.",
+      phase = "schema",
+      path = "storage_lifetime.last_used_at",
+      data = list(value_id = value_id, defined_at = defined_at, last_used_at = last_used_at)
+    )
+  }
+
+  TccqStorageLifetime(
+    value_id = value_id,
+    defined_at = defined_at,
+    last_used_at = last_used_at
   )
 }
 

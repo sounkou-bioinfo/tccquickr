@@ -249,8 +249,12 @@ names(bound_storage_slots_by_value) <- vapply(
   function(slot) slot@value_id,
   character(1)
 )
-expect_equal(bound_storage_slots_by_value$value_0001@attrs$liveness, list(def = 3L, last_use = 4L))
-expect_equal(bound_storage_slots_by_value$value_0003@attrs$liveness, list(def = 5L, last_use = 6L))
+expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0001@lifetime, TccqStorageLifetime))
+expect_equal(bound_storage_slots_by_value$value_0001@lifetime@defined_at, 3L)
+expect_equal(bound_storage_slots_by_value$value_0001@lifetime@last_used_at, 4L)
+expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0003@lifetime, TccqStorageLifetime))
+expect_equal(bound_storage_slots_by_value$value_0003@lifetime@defined_at, 5L)
+expect_equal(bound_storage_slots_by_value$value_0003@lifetime@last_used_at, 6L)
 expect_equal(bound_result@value@storage_plan@reuse_groups, list(c("slot_0003", "slot_0005")))
 
 rebound_local <- function(x) {

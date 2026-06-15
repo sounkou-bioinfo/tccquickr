@@ -12,6 +12,7 @@ TccqStorageSlot(
   materialized = logical(0),
   reusable = logical(0),
   aliases = character(0),
+  lifetime = NULL,
   attrs = list()
 )
 }
@@ -29,6 +30,8 @@ TccqStorageSlot(
 \item{reusable}{Whether later planning may reuse the slot.}
 
 \item{aliases}{Value ids known to share storage with this slot.}
+
+\item{lifetime}{Optional typed liveness interval for storage reuse.}
 
 \item{attrs}{Structured slot metadata.}
 }

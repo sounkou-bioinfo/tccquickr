@@ -171,12 +171,12 @@ This preserves the difference between “R operation not modeled”,
 unsupported by this backend”.
 
 The minimal storage plan marks formals, literals, temporaries, and the
-output explicitly so printers can consume a typed plan. It records
-simple def/last-use liveness for each slot and only groups same-type
-temporary slots for reuse when their lifetimes do not overlap. This is
-still conservative: aliasing, mutation, materialization, layout, views,
-and device memory need explicit passes before storage reuse can become
-aggressive.
+output explicitly so printers can consume a typed plan. It records each
+slot’s definition and last use as a `TccqStorageLifetime`, then only
+groups same-type temporary slots for reuse when those typed lifetimes do
+not overlap. This is still conservative: aliasing, mutation,
+materialization, layout, views, and device memory need explicit passes
+before storage reuse can become aggressive.
 
 Source printers now consume a `TccqExpression` tree built from the
 lowered program result. That tree preserves reference leaves, literal

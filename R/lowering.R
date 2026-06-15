@@ -500,11 +500,12 @@ tccq_lower_function <- function(
 
   plan_storage <- function(values, result_id) {
     lowered_values <- unname(values)
-    liveness <- storage_liveness(lowered_values, result_id)
+    lifetimes <- storage_lifetimes(lowered_values, result_id)
     slots <- Map(function(value, slot_index) {
       role <- storage_role(value, result_id)
       materialized <- role %in% c("input", "output")
       reusable <- identical(role, "temporary") && !isTRUE(materialized)
+      lifetime <- lifetimes[[value@id]]
       tccq_storage_slot(
         id = sprintf("slot_%04d", slot_index),
         value_id = value@id,
@@ -512,7 +513,8 @@ tccq_lower_function <- function(
         role = role,
         materialized = materialized,
         reusable = reusable,
-        attrs = list(op = value@op, liveness = liveness[[value@id]])
+        lifetime = lifetime,
+        attrs = list(op = value@op)
       )
     }, lowered_values, seq_along(lowered_values))
     slot_ids <- vapply(slots, function(slot) slot@id, character(1))
@@ -526,11 +528,11 @@ tccq_lower_function <- function(
         "fused-map-reduce"
       } else {
         "fused-elementwise"
-      }, liveness = liveness)
+      }, lifetimes = lifetimes)
     )
   }
 
-  storage_liveness <- function(lowered_values, result_id) {
+  storage_lifetimes <- function(lowered_values, result_id) {
     value_ids <- vapply(lowered_values, function(value) value@id, character(1))
     def_positions <- seq_along(value_ids)
     names(def_positions) <- value_ids
@@ -548,11 +550,15 @@ tccq_lower_function <- function(
       last_use_positions[[result_id]] <- length(lowered_values) + 1L
     }
 
-    liveness <- Map(function(def_position, last_use_position) {
-      list(def = unname(def_position), last_use = unname(last_use_position))
-    }, def_positions, last_use_positions)
-    names(liveness) <- value_ids
-    liveness
+    lifetimes <- Map(function(value_id, def_position, last_use_position) {
+      tccq_storage_lifetime(
+        value_id,
+        defined_at = unname(def_position),
+        last_used_at = unname(last_use_position)
+      )
+    }, value_ids, def_positions, last_use_positions)
+    names(lifetimes) <- value_ids
+    lifetimes
   }
 
   storage_reuse_groups <- function(slots_by_id) {
@@ -562,7 +568,7 @@ tccq_lower_function <- function(
     )
     ordered_slots <- temporary_slots[order(vapply(
       temporary_slots,
-      function(slot) slot@attrs$liveness$def,
+      function(slot) slot@lifetime@defined_at,
       integer(1)
     ))]
     reuse_groups <- list()
@@ -592,7 +598,7 @@ tccq_lower_function <- function(
 
   storage_slots_can_share <- function(existing_slot, candidate_slot) {
     storage_types_compatible(existing_slot@type, candidate_slot@type) &&
-      existing_slot@attrs$liveness$last_use < candidate_slot@attrs$liveness$def
+      existing_slot@lifetime@last_used_at < candidate_slot@lifetime@defined_at
   }
 
   storage_types_compatible <- function(left_type, right_type) {

@@ -261,10 +261,10 @@ For the reset core, keep these rules explicit:
   not sideways into compatibility glue.
 - Matrix operations, reductions, domains, views, mutation, fusion, and storage
   planning must first appear as typed IR concepts.
-- Storage reuse must be derived from typed planning facts such as liveness,
-  storage compatibility, aliasing, materialization, layout, and memory space.
-  Do not group temporaries by role alone or hide reuse assumptions in source
-  printers.
+- Storage reuse must be derived from typed planning facts such as
+  `TccqStorageLifetime`, storage compatibility, aliasing, materialization,
+  layout, and memory space. Do not group temporaries by role alone or hide
+  reuse assumptions in source printers.
 - Source printers consume `TccqExpression` trees built from lowered programs.
   Do not make C, Fortran, TinyCC, CUDA, or graph printers rediscover expression
   semantics by walking raw values and switching on operation strings.

@@ -162,6 +162,40 @@ expect_equal(region@kind, "parallel")
 expect_false(region@touches_rapi)
 expect_equal(length(region@fusion_groups), 1L)
 
+lifetime <- tccq_storage_lifetime("value_0001", defined_at = 2L, last_used_at = 4L)
+storage_slot <- tccq_storage_slot(
+  "slot_0001",
+  "value_0001",
+  finite@type,
+  role = "temporary",
+  materialized = FALSE,
+  reusable = TRUE,
+  lifetime = lifetime
+)
+
+expect_true(S7::S7_inherits(lifetime, TccqStorageLifetime))
+expect_true(S7::S7_inherits(storage_slot, TccqStorageSlot))
+expect_equal(storage_slot@lifetime@last_used_at, 4L)
+
+bad_lifetime <- tryCatch(
+  tccq_storage_lifetime("value_0001", defined_at = 4L, last_used_at = 2L),
+  error = identity
+)
+expect_true(inherits(bad_lifetime, "tccq_error"))
+
+bad_reusable_slot <- tryCatch(
+  tccq_storage_slot(
+    "slot_bad",
+    "value_0001",
+    finite@type,
+    role = "temporary",
+    materialized = FALSE,
+    reusable = TRUE
+  ),
+  error = identity
+)
+expect_true(inherits(bad_reusable_slot, "tccq_error"))
+
 bad_fusion <- tryCatch(
   tccq_fusion_group(
     "bad_fusion",
