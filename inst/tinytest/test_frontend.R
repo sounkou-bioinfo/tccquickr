@@ -106,6 +106,7 @@ expect_equal(reduction_value@type@shape@rank, 0L)
 expect_equal(reduction_value@attrs$lowering, "reduction")
 expect_equal(reduction_value@attrs$reducer, "sum")
 expect_true(S7::S7_inherits(reduction_value@attrs$reduction, TccqReductionSpec))
+expect_true(S7::S7_inherits(reduction_value@attrs$reduction@signature, TccqOpSignature))
 expect_true(S7::S7_inherits(reduction_value@attrs$identity, TccqLiteral))
 
 reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
@@ -127,6 +128,7 @@ power_value <- power_result@value@values[[power_result@value@result]]
 expect_equal(power_value@op, "^")
 expect_equal(power_value@type@base, "double")
 expect_true(S7::S7_inherits(power_value@attrs$elementwise, TccqElementwiseSpec))
+expect_true(S7::S7_inherits(power_value@attrs$elementwise@signature, TccqOpSignature))
 
 negation_program <- function(x) {
   declare(type(x = double(n)))

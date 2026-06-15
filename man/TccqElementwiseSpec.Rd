@@ -6,23 +6,20 @@
 \usage{
 TccqElementwiseSpec(
   name = character(0),
-  arity = integer(0),
-  result_type = function() NULL,
+  signature = TccqOpSignature(),
   attrs = list()
 )
 }
 \arguments{
 \item{name}{Human-readable elementwise operation name.}
 
-\item{arity}{Accepted argument counts.}
-
-\item{result_type}{Function from input \code{TccqType} list to result \code{TccqType}.}
+\item{signature}{Shared operation signature.}
 
 \item{attrs}{Structured elementwise metadata.}
 }
 \description{
 An elementwise spec is attached to an operation implementation when calls to
 that implementation can lower to elementwise values over the compiler domain
-model. It carries arity and result-type rules so lowering does not recognize
+model. It carries an operation signature so lowering does not recognize
 elementwise operations by spelling.
 }

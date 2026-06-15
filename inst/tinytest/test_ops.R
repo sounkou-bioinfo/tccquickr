@@ -29,6 +29,29 @@ expect_true(resolved_custom@value@uses_rapi)
 render_context <- tccq_op_render_context(language = "c", backend_id = "unit_backend")
 expect_true(S7::S7_inherits(render_context, TccqOpRenderContext))
 
+same_type_signature <- tccq_op_signature(
+  "same_type",
+  c(1L, 2L),
+  result_type = function(input_types) input_types[[1L]]
+)
+expect_true(S7::S7_inherits(same_type_signature, TccqOpSignature))
+expect_equal(same_type_signature@arity, c(1L, 2L))
+same_type_signature_result <- tccq_op_signature_result_type(
+  same_type_signature,
+  list(tccq_type("integer"))
+)
+expect_true(same_type_signature_result@success)
+expect_equal(same_type_signature_result@value@base, "integer")
+bad_signature_arity <- tryCatch(
+  tccq_op_signature(
+    "bad",
+    1.5,
+    result_type = function(input_types) input_types[[1L]]
+  ),
+  error = identity
+)
+expect_true(inherits(bad_signature_arity, "tccq_error"))
+
 unrenderable_custom <- tccq_op_render(
   resolved_custom@value@implementation,
   "input_0001",
@@ -78,6 +101,7 @@ expect_true(inherits(bad_elementwise_arity, "tccq_error"))
 resolved_plus <- tccq_resolve_call(default_registry, tccq_call("+"), tccq_op_context())
 expect_true(resolved_plus@success)
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise, TccqElementwiseSpec))
+expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature, TccqOpSignature))
 plus_result_type <- tccq_elementwise_result_type(
   resolved_plus@value@elementwise,
   list(tccq_type("integer", tccq_shape(tccq_dim_symbol("n"))), tccq_type("double"))
@@ -151,6 +175,8 @@ expect_true(resolved_sum@success)
 expect_equal(resolved_sum@value@target, "pure_c")
 expect_equal(resolved_sum@value@region_kind, "kernel")
 expect_true(S7::S7_inherits(resolved_sum@value@reduction, TccqReductionSpec))
+expect_true(S7::S7_inherits(resolved_sum@value@reduction@signature, TccqOpSignature))
+expect_equal(resolved_sum@value@reduction@signature@arity, 1L)
 sum_identity <- tccq_reduction_identity(resolved_sum@value@reduction, tccq_type("double"))
 expect_true(sum_identity@success)
 expect_true(S7::S7_inherits(sum_identity@value, TccqLiteral))
@@ -174,6 +200,12 @@ expect_true(any(vapply(
   function(x) identical(x@code, "ops.unrenderable_operation"),
   logical(1)
 )))
+unresolved_binary_sum <- tccq_resolve_call(
+  default_registry,
+  tccq_call("sum", expr = quote(sum(x, y))),
+  tccq_op_context()
+)
+expect_false(unresolved_binary_sum@success)
 
 if_semantics <- tccq_call_semantics(tccq_call("if"))
 expect_equal(if_semantics@evaluator_kind, "special")

@@ -110,20 +110,19 @@ TccqOpRenderContext <- S7::new_class(
   }
 )
 
-#' Elementwise implementation metadata
+#' Operation signature metadata
 #'
-#' An elementwise spec is attached to an operation implementation when calls to
-#' that implementation can lower to elementwise values over the compiler domain
-#' model. It carries arity and result-type rules so lowering does not recognize
-#' elementwise operations by spelling.
+#' A signature is the shared operation contract for argument count and result
+#' typing. Elementwise, reduction, and future operation families should carry a
+#' signature instead of each inventing their own arity and type checks.
 #'
-#' @param name Human-readable elementwise operation name.
+#' @param name Human-readable operation signature name.
 #' @param arity Accepted argument counts.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
-#' @param attrs Structured elementwise metadata.
+#' @param attrs Structured signature metadata.
 #' @export
-TccqElementwiseSpec <- S7::new_class(
-  "TccqElementwiseSpec",
+TccqOpSignature <- S7::new_class(
+  "TccqOpSignature",
   package = "tccquickr",
   properties = list(
     name = S7::class_character,
@@ -146,6 +145,34 @@ TccqElementwiseSpec <- S7::new_class(
   }
 )
 
+#' Elementwise implementation metadata
+#'
+#' An elementwise spec is attached to an operation implementation when calls to
+#' that implementation can lower to elementwise values over the compiler domain
+#' model. It carries an operation signature so lowering does not recognize
+#' elementwise operations by spelling.
+#'
+#' @param name Human-readable elementwise operation name.
+#' @param signature Shared operation signature.
+#' @param attrs Structured elementwise metadata.
+#' @export
+TccqElementwiseSpec <- S7::new_class(
+  "TccqElementwiseSpec",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    signature = TccqOpSignature,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Reduction implementation metadata
 #'
 #' A reduction spec is attached to an operation implementation when calls to
@@ -153,6 +180,7 @@ TccqElementwiseSpec <- S7::new_class(
 #' printers consume this object instead of recognizing reducer names directly.
 #'
 #' @param name Human-readable reduction name.
+#' @param signature Shared operation signature.
 #' @param identity Function from result `TccqType` to identity `TccqLiteral`.
 #' @param combine Function from accumulator/source strings and render context
 #'   to a target-source combine expression.
@@ -167,6 +195,7 @@ TccqReductionSpec <- S7::new_class(
   package = "tccquickr",
   properties = list(
     name = S7::class_character,
+    signature = TccqOpSignature,
     identity = S7::class_function,
     combine = S7::class_function,
     associative = S7::class_logical,
@@ -453,14 +482,14 @@ S7::method(tccq_op_render, TccqOpImpl) <- function(impl, operands, context) {
   tccq_result(success = TRUE, value = rendered_operation)
 }
 
-#' Construct elementwise implementation metadata
+#' Construct operation signature metadata
 #'
-#' @param name Human-readable elementwise operation name.
+#' @param name Human-readable operation signature name.
 #' @param arity Accepted argument counts.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
-#' @param attrs Structured elementwise metadata.
+#' @param attrs Structured signature metadata.
 #' @export
-tccq_elementwise_spec <- function(
+tccq_op_signature <- function(
   name,
   arity,
   result_type,
@@ -475,14 +504,105 @@ tccq_elementwise_spec <- function(
       any(arity != as.integer(arity))
   ) {
     tccq_abort(
-      "schema.invalid_elementwise_arity",
+      "schema.invalid_op_signature_arity",
       "`arity` must contain positive integer arities.",
       phase = "schema",
-      path = "elementwise.arity",
+      path = "op_signature.arity",
       data = list(arity = arity)
     )
   }
-  arity <- as.integer(arity)
+  arity <- unique(as.integer(arity))
+  if (!is.function(result_type)) {
+    tccq_abort(
+      "schema.invalid_op_signature_result_type",
+      "`result_type` must be a function.",
+      phase = "schema",
+      path = "op_signature.result_type"
+    )
+  }
+  .tccq_check_list(attrs, "attrs")
+
+  TccqOpSignature(
+    name = name,
+    arity = arity,
+    result_type = result_type,
+    attrs = attrs
+  )
+}
+
+#' Return an operation signature result type
+#'
+#' @param signature Operation signature.
+#' @param input_types List of input `TccqType` values.
+#' @export
+tccq_op_signature_result_type <- S7::new_generic(
+  "tccq_op_signature_result_type",
+  dispatch_args = "signature",
+  function(signature, input_types) S7::S7_dispatch()
+)
+
+S7::method(tccq_op_signature_result_type, TccqOpSignature) <- function(signature, input_types) {
+  .tccq_check_list_of(input_types, TccqType, "TccqType", "input_types")
+  if (!(length(input_types) %in% signature@arity)) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_op_signature_arity",
+      "Operation signature arity is not supported by this implementation.",
+      phase = "ops",
+      path = "op_signature.arity",
+      data = list(
+        operation = signature@name,
+        arity = length(input_types),
+        supported = signature@arity
+      )
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+
+  result_type <- tryCatch(
+    signature@result_type(input_types),
+    tccq_error = identity,
+    error = identity
+  )
+  if (inherits(result_type, "tccq_error")) {
+    return(tccq_result(success = FALSE, diagnostics = list(tccq_condition_diagnostic(result_type))))
+  }
+  if (inherits(result_type, "error")) {
+    diagnostic <- tccq_diagnostic(
+      "ops.op_signature_result_type_failed",
+      conditionMessage(result_type),
+      phase = "ops",
+      path = "op_signature.result_type",
+      data = list(operation = signature@name)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  if (!S7::S7_inherits(result_type, TccqType)) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_op_signature_result_type",
+      "Operation signature result-type functions must return a <TccqType>.",
+      phase = "ops",
+      path = "op_signature.result_type",
+      data = list(operation = signature@name, type = class(result_type))
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  tccq_result(success = TRUE, value = result_type)
+}
+
+#' Construct elementwise implementation metadata
+#'
+#' @param name Human-readable elementwise operation name.
+#' @param arity Accepted argument counts.
+#' @param result_type Function from input `TccqType` list to result `TccqType`.
+#' @param attrs Structured elementwise metadata.
+#' @export
+tccq_elementwise_spec <- function(
+  name,
+  arity,
+  result_type,
+  attrs = list()
+) {
+  .tccq_check_character_scalar(name, "name")
   if (!is.function(result_type)) {
     tccq_abort(
       "schema.invalid_elementwise_result_type",
@@ -495,8 +615,7 @@ tccq_elementwise_spec <- function(
 
   TccqElementwiseSpec(
     name = name,
-    arity = unique(arity),
-    result_type = result_type,
+    signature = tccq_op_signature(name, arity, result_type),
     attrs = attrs
   )
 }
@@ -513,47 +632,7 @@ tccq_elementwise_result_type <- S7::new_generic(
 )
 
 S7::method(tccq_elementwise_result_type, TccqElementwiseSpec) <- function(spec, input_types) {
-  .tccq_check_list_of(input_types, TccqType, "TccqType", "input_types")
-  if (!length(input_types) %in% spec@arity) {
-    diagnostic <- tccq_diagnostic(
-      "ops.invalid_elementwise_arity",
-      "Elementwise operation arity is not supported by this implementation.",
-      phase = "ops",
-      path = "elementwise.arity",
-      data = list(operation = spec@name, arity = length(input_types), supported = spec@arity)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-
-  result_type <- tryCatch(
-    spec@result_type(input_types),
-    tccq_error = identity,
-    error = identity
-  )
-  if (inherits(result_type, "tccq_error")) {
-    return(tccq_result(success = FALSE, diagnostics = list(tccq_condition_diagnostic(result_type))))
-  }
-  if (inherits(result_type, "error")) {
-    diagnostic <- tccq_diagnostic(
-      "ops.elementwise_result_type_failed",
-      conditionMessage(result_type),
-      phase = "ops",
-      path = "elementwise.result_type",
-      data = list(operation = spec@name)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  if (!S7::S7_inherits(result_type, TccqType)) {
-    diagnostic <- tccq_diagnostic(
-      "ops.invalid_elementwise_result_type",
-      "Elementwise result type functions must return a <TccqType>.",
-      phase = "ops",
-      path = "elementwise.result_type",
-      data = list(operation = spec@name, type = class(result_type))
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  tccq_result(success = TRUE, value = result_type)
+  tccq_op_signature_result_type(spec@signature, input_types)
 }
 
 #' Construct reduction implementation metadata
@@ -565,6 +644,8 @@ S7::method(tccq_elementwise_result_type, TccqElementwiseSpec) <- function(spec, 
 #' @param associative Whether the reducer is associative.
 #' @param commutative Whether the reducer is commutative.
 #' @param attrs Structured reduction metadata.
+#' @param signature Shared operation signature. By default, reductions accept
+#'   one input and return a scalar of the input base type.
 #' @export
 tccq_reduction_spec <- function(
   name,
@@ -572,7 +653,8 @@ tccq_reduction_spec <- function(
   combine,
   associative = TRUE,
   commutative = TRUE,
-  attrs = list()
+  attrs = list(),
+  signature = NULL
 ) {
   .tccq_check_character_scalar(name, "name")
   if (!is.function(identity)) {
@@ -594,9 +676,21 @@ tccq_reduction_spec <- function(
   .tccq_check_logical_scalar(associative, "associative")
   .tccq_check_logical_scalar(commutative, "commutative")
   .tccq_check_list(attrs, "attrs")
+  if (is.null(signature)) {
+    signature <- tccq_op_signature(
+      name,
+      1L,
+      result_type = function(input_types) {
+        tccq_type(input_types[[1L]]@base)
+      }
+    )
+  } else {
+    .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  }
 
   TccqReductionSpec(
     name = name,
+    signature = signature,
     identity = identity,
     combine = combine,
     associative = associative,
@@ -764,7 +858,14 @@ tccq_register_traits <- function() {
         if (
           S7::S7_inherits(impl@elementwise, TccqElementwiseSpec) &&
             !is.na(call@arity) &&
-            !(call@arity %in% impl@elementwise@arity)
+            !(call@arity %in% impl@elementwise@signature@arity)
+        ) {
+          return(FALSE)
+        }
+        if (
+          S7::S7_inherits(impl@reduction, TccqReductionSpec) &&
+            !is.na(call@arity) &&
+            !(call@arity %in% impl@reduction@signature@arity)
         ) {
           return(FALSE)
         }

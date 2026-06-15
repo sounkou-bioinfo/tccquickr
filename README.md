@@ -106,22 +106,29 @@ storage, and backend planning can read typed implementation facts
 instead of rediscovering semantics from `TccqValue@op`. Operation
 implementations may also expose a source renderer through
 `tccq_op_render()`. That renderer is an implementation capability, not a
-backend-local switch over operation strings. The next tightening is
-richer signatures and domain rules on implementations, not another
-source whitelist.
+backend-local switch over operation strings.
+
+`TccqOpSignature` is the shared operation contract for arity and result
+typing. It is deliberately smaller than a full type system, but it is
+the right owner for facts such as “`sqrt` accepts one input and returns
+double over the input domain” or “this reducer accepts one array
+expression and returns a scalar”. Elementwise, reduction, and future
+operation families carry signatures rather than each growing private
+arity predicates and result-type helpers.
 
 Elementwise calls follow operation metadata too. A call lowers as
 elementwise only when the resolved operation carries a
-`TccqElementwiseSpec`, which supplies accepted arities and result-type
-rules. The default registry provides a small numeric elementwise surface
-for arithmetic, unary negation, powers, `sqrt`, and `exp`, but another
-registry can add a source-rendered call such as `square(x)` without
-changing the lowerer or printers.
+`TccqElementwiseSpec`, which carries a `TccqOpSignature`. The default
+registry provides a small numeric elementwise surface for arithmetic,
+unary negation, powers, `sqrt`, and `exp`, but another registry can add
+a source-rendered call such as `square(x)` without changing the lowerer
+or printers.
 
 Reducers follow the same rule. A reducer is not recognized because the
 lowerer knows the text `sum`; a call lowers as a reduction only when the
-resolved operation carries a `TccqReductionSpec`. That spec supplies the
-identity literal and the accumulator combine expression for source
+resolved operation carries a `TccqReductionSpec`. That spec carries a
+`TccqOpSignature` for the call shape and result type, then adds the
+identity literal and accumulator combine expression needed by source
 printers. The default registry models base `sum` as one such
 implementation, and another registry can model a different fold surface
 through the same contract without changing the lowerer or the C and

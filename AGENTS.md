@@ -11,9 +11,10 @@ write R as a r-lib programmer rather than a Python programmer that failed upward
 ## Scope
 
 `tccquickr` is a hard-reset experimental compiler core for a declared subset of
-R. The current package is not a working R-to-C compiler and should not pretend
-to be one. It is the typed semantic foundation that future lowering and backend
-work must justify itself against.
+R. The current package is not a general R-to-C compiler and should not pretend
+to be one. It is the typed semantic foundation that lowering and backend work
+must justify itself against; the minimal source/backend paths exist only as
+typed-IR consumers and contract pressure.
 
 This repo is responsible for:
 
@@ -24,21 +25,24 @@ This repo is responsible for:
   execution and backend planning
 - classed diagnostics and result values instead of branching on error strings
 - symbolic shape, effect, legality, and pass-pipeline work before backend work
+- operation signatures, implementation metadata, neutral expression lowering,
+  and typed source-planning consumers
 - compiler-facing tests for schema validity, frontend diagnostics, and contract
   behavior
 - the known failing apotheosis suite documented in `README.Rmd`
 
 This repo is not currently responsible for:
 
-- C emission
-- TinyCC integration
-- shared-library compilation
+- re-owning TinyCC runtime or FFI behavior that belongs in `Rtinycc`
+- target-specific compiler architecture hidden in emitted C, Fortran, CUDA, or
+  graph strings
+- shared-library compilation outside an explicit backend plan
 - a JIT cache
 - fake compatibility shims for deleted compiler paths
 - vignettes, ADR sprawl, or proof scaffolding ahead of a stable semantic core
 
-Backends may come back later, but only after the typed core can explain the
-program it is lowering.
+Backends are allowed only as typed consumers. They should make the core stricter
+by exposing missing semantics, not become a shortcut around the core.
 
 ## Current Architecture
 
@@ -51,6 +55,12 @@ The active architecture is the small typed core:
 - `R/contracts.R`: `s7contract` protocol for compiler passes.
 - `R/frontend.R`: declaration extraction, `codetools`-assisted call discovery,
   and operation-registry diagnostics.
+- `R/ops.R`: operation signatures, implementation traits, registries,
+  elementwise/reduction specs, and operation source render contracts.
+- `R/lowering.R`: typed lowering from the declared subset into values, regions,
+  fusion groups, and storage plans.
+- `R/z-expression.R`: backend-neutral expression trees consumed by source
+  printers.
 - `R/utils.R`: small schema validation helpers.
 - `docs/root.md`: the current root direction.
 
@@ -64,8 +74,9 @@ The intended growth path is:
 5. Add explicit effects, boundaries, and legality diagnostics.
 6. Add array domains, reducers, matrix operations, and fusion only as typed IR
    concepts.
-7. Add generic backend planning before target code emission.
-8. Add C emission only after the above model is coherent and tested.
+7. Keep generic backend planning ahead of target source printing.
+8. Keep C, Fortran, Rtinycc, graph, and object-call paths downstream of the
+   typed program and neutral expression handoff.
 
 Do not reintroduce the deleted backend stack to get a demo. The demo is the
 semantic core becoming strong enough that a backend is boring.
@@ -87,9 +98,12 @@ Rules:
 - Use gradual interface typing: specify argument and return contracts on
   protocol requirements as soon as the expected shape is known.
 - Operation/function/kernel support must go through typed implementation
-  declarations. Use `TccqOpImpl`, `TccqOpImplementation`, and
-  `TccqOpRegistry`; do not hardcode local allowed/not-allowed vectors in the
-  frontend.
+  declarations. Use `TccqOpSignature`, `TccqOpImpl`,
+  `TccqOpImplementation`, and `TccqOpRegistry`; do not hardcode local
+  allowed/not-allowed vectors in the frontend.
+- Argument-count and result-type rules belong in `TccqOpSignature`. Elementwise,
+  reduction, and future operation families should carry signatures rather than
+  growing category-specific disguised type checks.
 - Functions should mostly be constructors, pure transformations, generic
   methods, protocol runners, or small local helpers in service of one of those.
 - A private helper is acceptable only when it is truly local glue. It is not
@@ -199,6 +213,11 @@ For the reset core, keep these rules explicit:
   implementation, CUDA/device implementation, or explicit boundary
   implementation. The frontend asks an operation registry rather than owning
   the support policy.
+- `TccqOpSignature` is the shared operation contract for arity and result type.
+  `TccqElementwiseSpec` and `TccqReductionSpec` carry signatures; reductions add
+  reducer identity and combine behavior. Do not add another result-type helper
+  or source-name switch when a signature or implementation trait is the actual
+  concept.
 - Backend support is generic. Use `TccqBackendSpec`, `TccqBackend`,
   `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
   bridge/safepoint/debug metadata. `Rtinycc` is one backend descriptor for a
@@ -225,8 +244,8 @@ For the reset core, keep these rules explicit:
 - Operation-specific target spelling belongs to typed implementations through
   `tccq_op_render()` and `TccqOpRenderContext`, not backend-local `if`/`switch`
   ladders over operation names.
-- No backend should be added until the typed IR can represent the apotheosis
-  suite honestly.
+- No new backend family should be added unless it makes the typed IR represent
+  the apotheosis suite more honestly.
 
 ## Docs And Tests Rules
 

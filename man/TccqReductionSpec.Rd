@@ -6,6 +6,7 @@
 \usage{
 TccqReductionSpec(
   name = character(0),
+  signature = TccqOpSignature(),
   identity = function() NULL,
   combine = function() NULL,
   associative = logical(0),
@@ -15,6 +16,8 @@ TccqReductionSpec(
 }
 \arguments{
 \item{name}{Human-readable reduction name.}
+
+\item{signature}{Shared operation signature.}
 
 \item{identity}{Function from result \code{TccqType} to identity \code{TccqLiteral}.}
 

@@ -264,12 +264,13 @@ tccq_lower_function <- function(
   lower_elementwise <- function(resolved_operation, args, expr, state) {
     op <- resolved_operation@call@name
     elementwise_spec <- resolved_operation@elementwise
-    if (!length(args) %in% elementwise_spec@arity) {
+    signature <- elementwise_spec@signature
+    if (!(length(args) %in% signature@arity)) {
       return(diagnostic_value(
         "lowering.unsupported_elementwise_arity",
         sprintf("Elementwise operation `%s` does not accept this argument count.", op),
         expr,
-        data = list(op = op, arity = length(args), supported = elementwise_spec@arity)
+        data = list(op = op, arity = length(args), supported = signature@arity)
       ))
     }
     if (!isTRUE(resolved_operation@pure) || isTRUE(resolved_operation@boundary)) {
@@ -321,12 +322,21 @@ tccq_lower_function <- function(
   lower_reduction <- function(resolved_operation, args, expr, state) {
     reduction_spec <- resolved_operation@reduction
     reducer <- reduction_spec@name
-    if (length(args) != 1L) {
+    signature <- reduction_spec@signature
+    if (!(length(args) %in% signature@arity)) {
       return(diagnostic_value(
         "lowering.unsupported_reducer_arity",
-        sprintf("Reducer `%s` currently accepts exactly one expression argument.", reducer),
+        sprintf("Reducer `%s` does not accept this argument count.", reducer),
         expr,
-        data = list(reducer = reducer, arity = length(args))
+        data = list(reducer = reducer, arity = length(args), supported = signature@arity)
+      ))
+    }
+    if (length(args) != 1L) {
+      return(diagnostic_value(
+        "lowering.unsupported_reducer_lowering_arity",
+        sprintf("Reducer `%s` currently lowers exactly one expression argument.", reducer),
+        expr,
+        data = list(reducer = reducer, arity = length(args), supported = 1L)
       ))
     }
 
@@ -356,7 +366,11 @@ tccq_lower_function <- function(
         data = list(reducer = reducer, rank = lowered_arg$type@shape@rank)
       ))
     }
-    result_type <- tccq_type(lowered_arg$type@base)
+    result_type_result <- tccq_op_signature_result_type(signature, list(lowered_arg$type))
+    if (!result_type_result@success) {
+      return(list(value_id = NULL, type = NULL, diagnostics = result_type_result@diagnostics))
+    }
+    result_type <- result_type_result@value
     identity_result <- tccq_reduction_identity(reduction_spec, result_type)
     if (!identity_result@success) {
       return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))

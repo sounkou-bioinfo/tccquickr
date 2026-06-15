@@ -10,7 +10,8 @@ tccq_reduction_spec(
   combine,
   associative = TRUE,
   commutative = TRUE,
-  attrs = list()
+  attrs = list(),
+  signature = NULL
 )
 }
 \arguments{
@@ -26,6 +27,9 @@ to a target-source combine expression.}
 \item{commutative}{Whether the reducer is commutative.}
 
 \item{attrs}{Structured reduction metadata.}
+
+\item{signature}{Shared operation signature. By default, reductions accept
+one input and return a scalar of the input base type.}
 }
 \description{
 Construct reduction implementation metadata
