@@ -312,6 +312,10 @@ expect_equal(c_source_plan@value@attrs$function_interface@result_name, "output")
 expect_true(c_source_plan@value@attrs$function_interface@needs_length)
 expect_equal(c_source_plan@value@attrs$function_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
 expect_equal(length(c_source_plan@value@bridges), 3L)
+expect_equal(
+  vapply(c_source_plan@value@bridges, function(bridge) bridge@kind, character(1)),
+  c("sexp_to_buffer", "sexp_to_buffer", "buffer_to_sexp")
+)
 
 if (can_build_shared_library("c")) {
   c_shared_plan <- tccq_plan_backend(
@@ -560,6 +564,10 @@ expect_equal(reduction_c_source_plan@value@attrs$function_interface@kind, "reduc
 expect_equal(reduction_c_source_plan@value@attrs$function_interface@result_placement, "return")
 expect_equal(reduction_c_source_plan@value@attrs$function_interface@accumulator_name, "accumulator_0001")
 expect_equal(length(reduction_c_source_plan@value@bridges), 3L)
+expect_equal(
+  vapply(reduction_c_source_plan@value@bridges, function(bridge) bridge@kind, character(1)),
+  c("sexp_to_buffer", "sexp_to_buffer", "scalar_to_sexp")
+)
 
 reduction_fortran_source_plan <- tccq_plan_backend(
   reduction_program@value,

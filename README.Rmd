@@ -224,10 +224,11 @@ touches the R API and therefore cannot silently appear inside pure, parallel, or
 device regions.
 
 Bridges are a typed backend-plan layer. They represent transitions such as
-`SEXP -> C buffer`, `C buffer -> SEXP`, `host -> device`, `device -> host`,
-layout conversion, tile materialization, and explicit R call-evaluation
-boundaries.
-These are plan values, not target-side string glue.
+`SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> C buffer`, `C buffer -> SEXP`,
+`host -> device`, `device -> host`, layout conversion, tile materialization,
+and explicit R call-evaluation boundaries. These are plan values, not
+target-side string glue, and their kind must match the shape of the value being
+bridged.
 
 ## Backend planning
 

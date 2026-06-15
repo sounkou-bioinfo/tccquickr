@@ -26,6 +26,8 @@ TCCQ_BACKEND_CAPABILITIES <- c(
 )
 TCCQ_RUNTIME_MODES <- c("release", "checked", "trace", "debug")
 TCCQ_BRIDGE_KINDS <- c(
+  "sexp_to_scalar",
+  "scalar_to_sexp",
   "sexp_to_buffer",
   "buffer_to_sexp",
   "host_to_device",
@@ -2466,11 +2468,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
     }
     source <- source_result
+    input_bridge_kind <- function(value) {
+      if (identical(value@type@shape@rank, 0L)) "sexp_to_scalar" else "sexp_to_buffer"
+    }
+    output_bridge_kind <- function(value) {
+      if (identical(value@type@shape@rank, 0L)) "scalar_to_sexp" else "buffer_to_sexp"
+    }
     bridges <- c(
       Map(function(value, bridge_index) {
         tccq_bridge_plan(
           id = sprintf("bridge_input_%04d", bridge_index),
-          kind = "sexp_to_buffer",
+          kind = input_bridge_kind(value),
           from_space = "r",
           to_space = "host",
           from_type = value@type,
@@ -2480,7 +2488,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }, formals, seq_along(formals)),
       list(tccq_bridge_plan(
         id = "bridge_output_0001",
-        kind = "buffer_to_sexp",
+        kind = output_bridge_kind(result),
         from_space = "host",
         to_space = "r",
         from_type = result@type,

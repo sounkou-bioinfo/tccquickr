@@ -235,9 +235,11 @@ For the reset core, keep these rules explicit:
   device paths, and R call evaluation. Divergence between those families should
   produce typed capability or legality diagnostics, not target-specific hacks.
 - Backend planning must make representation transitions explicit through
-  `TccqBridgePlan` values. Do not hide `SEXP -> buffer`, `buffer -> SEXP`,
-  host/device transfer, layout conversion, tile materialization, or object-mode
-  boundaries inside emitted strings.
+  `TccqBridgePlan` values. The bridge kind must match the representation, so
+  scalar values use scalar bridges and vector/array values use buffer bridges.
+  Do not hide `SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> buffer`,
+  `buffer -> SEXP`, host/device transfer, layout conversion, tile
+  materialization, or object-mode boundaries inside emitted strings.
 - Backend planning must also make generated callable shape explicit through
   `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
   source printers independently infer scalar/map/reduction shape, generated
