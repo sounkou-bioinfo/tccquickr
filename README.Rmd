@@ -186,15 +186,16 @@ source is emitted. A C map kernel can return an allocated pointer while a
 Fortran `bind(c)` map kernel can expose an output argument, but that difference
 is already explicit in the function interface before either printer runs.
 
-Backend artifacts are also explicit. Source mode produces a
-`TccqBackendArtifact` carrying the generated source. Shared-library mode writes
-that same source artifact plus a generated C `.Call` wrapper to disk, invokes
-`R CMD SHLIB`, records the resulting shared library as another artifact, and
-attaches a native callable artifact when the wrapper symbol can be loaded.
-Rtinycc JIT mode keeps the same source and function interface, then attaches a
-callable artifact after TinyCC compilation. The old source string remains
-visible in backend attributes for inspection, but the architectural boundary is
-the typed expression, typed function interface, and typed artifact set.
+Backend products are also explicit. `TccqBackendProducts` carries the typed
+function interface, expression tree, storage plan, and concrete
+`TccqBackendArtifact` values. Source mode records a source artifact carrying
+the generated source. Shared-library mode writes that same source artifact plus
+a generated C `.Call` wrapper to disk, invokes `R CMD SHLIB`, records the
+resulting shared library as another artifact, and attaches a native callable
+artifact when the wrapper symbol can be loaded. Rtinycc JIT mode keeps the same
+source and function interface, then attaches a callable artifact after TinyCC
+compilation. The architectural boundary is the typed expression, typed function
+interface, typed storage plan, and typed product set.
 
 ## Control flow
 

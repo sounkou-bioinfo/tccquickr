@@ -16,6 +16,7 @@ tccq_backend_plan(
   safepoints = list(),
   debug_sites = list(),
   diagnostics = list(),
+  products = NULL,
   attrs = list()
 )
 }
@@ -41,6 +42,8 @@ tccq_backend_plan(
 \item{debug_sites}{Debug metadata retained for generated code.}
 
 \item{diagnostics}{Diagnostics attached to this plan.}
+
+\item{products}{Typed backend products.}
 
 \item{attrs}{Structured plan attributes.}
 }

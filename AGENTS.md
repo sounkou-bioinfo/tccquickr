@@ -247,10 +247,10 @@ For the reset core, keep these rules explicit:
   parameter mapping, ABI, result placement, generated result names,
   length/index variables, or reduction accumulator names.
 - Backend planning must make concrete products explicit through
-  `TccqBackendArtifact`. A backend must not claim `source`, `shared_library`,
-  `jit`, or later device/object products unless the plan either carries the
-  corresponding typed artifact or returns a typed diagnostic explaining why it
-  cannot.
+  `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
+  expression trees, storage plans, generated source, shared libraries, wrappers,
+  native callables, and JIT callables belong under the typed products payload,
+  not scattered across backend plan `attrs`.
 - Shared-library execution from R must cross through an explicit wrapper or
   callable artifact. Do not make user-facing execution depend on ad hoc
   `dyn.load()` / `.Call()` glue outside the backend plan.

@@ -14,6 +14,12 @@ context <- tccq_backend_context(
 )
 backend <- tccq_rtinycc_backend()
 
+backend_products <- function(plan_result) plan_result@value@products
+backend_source <- function(plan_result) backend_products(plan_result)@attrs$source
+backend_callable <- function(plan_result) backend_products(plan_result)@attrs$callable
+backend_artifacts <- function(plan_result) backend_products(plan_result)@artifacts
+backend_interface <- function(plan_result) backend_products(plan_result)@function_interface
+
 can_build_shared_library <- function(language) {
   config_key <- switch(language, c = "CC", fortran = "FC", "")
   if (!nzchar(config_key)) {
@@ -180,6 +186,7 @@ bad_backend_plan <- tryCatch(
     safepoints = list(safepoint),
     debug_sites = list(site),
     diagnostics = list(),
+    products = NULL,
     attrs = list()
   ),
   error = identity
@@ -297,20 +304,25 @@ c_source_plan <- tccq_plan_backend(
 )
 expect_true(c_source_plan@success)
 expect_equal(c_source_plan@value@attrs$source_language, "c")
-expect_true(grepl("double \\*", c_source_plan@value@attrs$source))
-expect_true(grepl("input_0001", c_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(S7::S7_inherits(c_source_plan@value@attrs$expression, TccqExpression))
-expect_true(S7::S7_inherits(c_source_plan@value@attrs$storage_plan, TccqStoragePlan))
-expect_true(S7::S7_inherits(c_source_plan@value@attrs$function_interface, TccqBackendFunctionInterface))
-expect_true(S7::S7_inherits(c_source_plan@value@attrs$artifacts$source, TccqBackendArtifact))
-expect_equal(c_source_plan@value@attrs$artifacts$source@kind, "source")
-expect_equal(c_source_plan@value@attrs$artifacts$source@attrs$text, c_source_plan@value@attrs$source)
-expect_equal(c_source_plan@value@attrs$function_interface@kind, "map")
-expect_equal(c_source_plan@value@attrs$function_interface@abi, "c")
-expect_equal(c_source_plan@value@attrs$function_interface@result_placement, "return")
-expect_equal(c_source_plan@value@attrs$function_interface@result_name, "output")
-expect_true(c_source_plan@value@attrs$function_interface@needs_length)
-expect_equal(c_source_plan@value@attrs$function_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
+c_products <- backend_products(c_source_plan)
+c_artifacts <- backend_artifacts(c_source_plan)
+c_interface <- backend_interface(c_source_plan)
+c_source <- backend_source(c_source_plan)
+expect_true(S7::S7_inherits(c_products, TccqBackendProducts))
+expect_true(grepl("double \\*", c_source))
+expect_true(grepl("input_0001", c_source, fixed = TRUE))
+expect_true(S7::S7_inherits(c_products@expression, TccqExpression))
+expect_true(S7::S7_inherits(c_products@storage_plan, TccqStoragePlan))
+expect_true(S7::S7_inherits(c_interface, TccqBackendFunctionInterface))
+expect_true(S7::S7_inherits(c_artifacts$source, TccqBackendArtifact))
+expect_equal(c_artifacts$source@kind, "source")
+expect_equal(c_artifacts$source@attrs$text, c_source)
+expect_equal(c_interface@kind, "map")
+expect_equal(c_interface@abi, "c")
+expect_equal(c_interface@result_placement, "return")
+expect_equal(c_interface@result_name, "output")
+expect_true(c_interface@needs_length)
+expect_equal(c_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
 expect_equal(length(c_source_plan@value@bridges), 3L)
 expect_equal(
   vapply(c_source_plan@value@bridges, function(bridge) bridge@kind, character(1)),
@@ -325,23 +337,25 @@ if (can_build_shared_library("c")) {
   )
   expect_true(c_shared_plan@success)
   expect_equal(c_shared_plan@value@mode, "shared_library")
-  expect_true(file.exists(c_shared_plan@value@attrs$source_path))
-  expect_true(file.exists(c_shared_plan@value@attrs$shared_library_path))
+  c_shared_products <- backend_products(c_shared_plan)
+  c_shared_artifacts <- backend_artifacts(c_shared_plan)
+  expect_true(file.exists(c_shared_products@attrs$source_path))
+  expect_true(file.exists(c_shared_products@attrs$shared_library_path))
   expect_true(S7::S7_inherits(
-    c_shared_plan@value@attrs$artifacts$source,
+    c_shared_artifacts$source,
     TccqBackendArtifact
   ))
   expect_true(S7::S7_inherits(
-    c_shared_plan@value@attrs$artifacts$shared_library,
+    c_shared_artifacts$shared_library,
     TccqBackendArtifact
   ))
-  expect_equal(c_shared_plan@value@attrs$artifacts$shared_library@kind, "shared_library")
+  expect_equal(c_shared_artifacts$shared_library@kind, "shared_library")
   expect_true(S7::S7_inherits(
-    c_shared_plan@value@attrs$artifacts$native_callable,
+    c_shared_artifacts$native_callable,
     TccqBackendArtifact
   ))
-  expect_equal(c_shared_plan@value@attrs$artifacts$native_callable@kind, "native_callable")
-  expect_equal(c_shared_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
+  expect_equal(c_shared_artifacts$native_callable@kind, "native_callable")
+  expect_equal(backend_callable(c_shared_plan)(c(1, 2), c(3, 4)), c(4, 6))
 }
 
 negation_program <- function(x) {
@@ -357,14 +371,14 @@ negation_c_plan <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "c")
 )
 expect_true(negation_c_plan@success)
-expect_true(grepl("(-input_0001[index_0001])", negation_c_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("(-input_0001[index_0001])", backend_source(negation_c_plan), fixed = TRUE))
 negation_fortran_plan <- tccq_plan_backend(
   negation_program@value,
   tccq_fortran_backend(),
   tccq_backend_context(mode = "source", target = "fortran")
 )
 expect_true(negation_fortran_plan@success)
-expect_true(grepl("(-input_0001(index_0001))", negation_fortran_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("(-input_0001(index_0001))", backend_source(negation_fortran_plan), fixed = TRUE))
 
 square <- function(x) x
 square_registry <- tccq_op_registry_add(
@@ -396,7 +410,7 @@ custom_elementwise_c_plan <- tccq_plan_backend(
 expect_true(custom_elementwise_c_plan@success)
 expect_true(grepl(
   "(input_0001[index_0001] * input_0001[index_0001])",
-  custom_elementwise_c_plan@value@attrs$source,
+  backend_source(custom_elementwise_c_plan),
   fixed = TRUE
 ))
 custom_elementwise_fortran_plan <- tccq_plan_backend(
@@ -407,7 +421,7 @@ custom_elementwise_fortran_plan <- tccq_plan_backend(
 expect_true(custom_elementwise_fortran_plan@success)
 expect_true(grepl(
   "(input_0001(index_0001) * input_0001(index_0001))",
-  custom_elementwise_fortran_plan@value@attrs$source,
+  backend_source(custom_elementwise_fortran_plan),
   fixed = TRUE
 ))
 
@@ -449,16 +463,20 @@ fortran_source_plan <- tccq_plan_backend(
 )
 expect_true(fortran_source_plan@success)
 expect_equal(fortran_source_plan@value@attrs$source_language, "fortran")
-expect_true(grepl("subroutine", fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("iso_c_binding", fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$expression, TccqExpression))
-expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$function_interface, TccqBackendFunctionInterface))
-expect_true(S7::S7_inherits(fortran_source_plan@value@attrs$artifacts$source, TccqBackendArtifact))
-expect_equal(fortran_source_plan@value@attrs$function_interface@kind, "map")
-expect_equal(fortran_source_plan@value@attrs$function_interface@source_language, "fortran")
-expect_equal(fortran_source_plan@value@attrs$function_interface@abi, "fortran_bind_c")
-expect_equal(fortran_source_plan@value@attrs$function_interface@result_placement, "output_argument")
-expect_equal(fortran_source_plan@value@attrs$function_interface@result_name, "output")
+fortran_products <- backend_products(fortran_source_plan)
+fortran_artifacts <- backend_artifacts(fortran_source_plan)
+fortran_interface <- backend_interface(fortran_source_plan)
+fortran_source <- backend_source(fortran_source_plan)
+expect_true(grepl("subroutine", fortran_source, fixed = TRUE))
+expect_true(grepl("iso_c_binding", fortran_source, fixed = TRUE))
+expect_true(S7::S7_inherits(fortran_products@expression, TccqExpression))
+expect_true(S7::S7_inherits(fortran_interface, TccqBackendFunctionInterface))
+expect_true(S7::S7_inherits(fortran_artifacts$source, TccqBackendArtifact))
+expect_equal(fortran_interface@kind, "map")
+expect_equal(fortran_interface@source_language, "fortran")
+expect_equal(fortran_interface@abi, "fortran_bind_c")
+expect_equal(fortran_interface@result_placement, "output_argument")
+expect_equal(fortran_interface@result_name, "output")
 expect_equal(length(fortran_source_plan@value@bridges), 3L)
 
 if (can_build_shared_library("fortran")) {
@@ -469,19 +487,21 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(fortran_shared_plan@success)
   expect_equal(fortran_shared_plan@value@mode, "shared_library")
-  expect_true(file.exists(fortran_shared_plan@value@attrs$source_path))
-  expect_true(file.exists(fortran_shared_plan@value@attrs$shared_library_path))
+  fortran_shared_products <- backend_products(fortran_shared_plan)
+  fortran_shared_artifacts <- backend_artifacts(fortran_shared_plan)
+  expect_true(file.exists(fortran_shared_products@attrs$source_path))
+  expect_true(file.exists(fortran_shared_products@attrs$shared_library_path))
   expect_true(S7::S7_inherits(
-    fortran_shared_plan@value@attrs$artifacts$shared_library,
+    fortran_shared_artifacts$shared_library,
     TccqBackendArtifact
   ))
-  expect_equal(fortran_shared_plan@value@attrs$artifacts$shared_library@source_language, "fortran")
+  expect_equal(fortran_shared_artifacts$shared_library@source_language, "fortran")
   expect_true(S7::S7_inherits(
-    fortran_shared_plan@value@attrs$artifacts$native_callable,
+    fortran_shared_artifacts$native_callable,
     TccqBackendArtifact
   ))
-  expect_equal(fortran_shared_plan@value@attrs$artifacts$native_callable@kind, "native_callable")
-  expect_equal(fortran_shared_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
+  expect_equal(fortran_shared_artifacts$native_callable@kind, "native_callable")
+  expect_equal(backend_callable(fortran_shared_plan)(c(1, 2), c(3, 4)), c(4, 6))
 }
 
 bound_chain <- function(x, y) {
@@ -501,7 +521,7 @@ bound_c_source_plan <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "c")
 )
 expect_true(bound_c_source_plan@success)
-expect_true(grepl("exp(sqrt(input_0001[index_0001]))", bound_c_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("exp(sqrt(input_0001[index_0001]))", backend_source(bound_c_source_plan), fixed = TRUE))
 
 bound_fortran_source_plan <- tccq_plan_backend(
   bound_program@value,
@@ -509,7 +529,7 @@ bound_fortran_source_plan <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "fortran")
 )
 expect_true(bound_fortran_source_plan@success)
-expect_true(grepl("exp(sqrt(input_0001(index_0001)))", bound_fortran_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("exp(sqrt(input_0001(index_0001)))", backend_source(bound_fortran_source_plan), fixed = TRUE))
 
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
   jit_plan <- tccq_plan_backend(
@@ -519,9 +539,9 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   )
   expect_true(jit_plan@success)
   expect_equal(jit_plan@diagnostics, list())
-  expect_equal(jit_plan@value@attrs$callable(c(1, 2), c(3, 4)), c(4, 6))
-  expect_true(S7::S7_inherits(jit_plan@value@attrs$artifacts$jit_callable, TccqBackendArtifact))
-  expect_equal(jit_plan@value@attrs$artifacts$jit_callable@kind, "jit_callable")
+  expect_equal(backend_callable(jit_plan)(c(1, 2), c(3, 4)), c(4, 6))
+  expect_true(S7::S7_inherits(backend_artifacts(jit_plan)$jit_callable, TccqBackendArtifact))
+  expect_equal(backend_artifacts(jit_plan)$jit_callable@kind, "jit_callable")
 
   negation_jit_plan <- tccq_plan_backend(
     negation_program@value,
@@ -529,7 +549,7 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
     tccq_backend_context(mode = "jit", target = "c")
   )
   expect_true(negation_jit_plan@success)
-  expect_equal(negation_jit_plan@value@attrs$callable(c(2, -3, 5)), c(-2, 3, -5))
+  expect_equal(backend_callable(negation_jit_plan)(c(2, -3, 5)), c(-2, 3, -5))
 
   custom_elementwise_jit_plan <- tccq_plan_backend(
     custom_elementwise_program@value,
@@ -538,7 +558,7 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   )
   expect_true(custom_elementwise_jit_plan@success)
   expect_equal(
-    custom_elementwise_jit_plan@value@attrs$callable(c(2, 3, 5)),
+    backend_callable(custom_elementwise_jit_plan)(c(2, 3, 5)),
     c(4, 9, 25)
   )
 }
@@ -565,17 +585,19 @@ reduction_c_source_plan <- tccq_plan_backend(
 )
 expect_true(reduction_c_source_plan@success)
 expect_equal(reduction_c_source_plan@value@attrs$source_language, "c")
-expect_true(grepl("double accumulator_0001 = 0.0;", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("for (int index_0001 = 0;", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("accumulator_0001 = accumulator_0001 + ", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("int length_0001", reduction_c_source_plan@value@attrs$source, fixed = TRUE))
+reduction_c_source <- backend_source(reduction_c_source_plan)
+reduction_c_interface <- backend_interface(reduction_c_source_plan)
+expect_true(grepl("double accumulator_0001 = 0.0;", reduction_c_source, fixed = TRUE))
+expect_true(grepl("for (int index_0001 = 0;", reduction_c_source, fixed = TRUE))
+expect_true(grepl("accumulator_0001 = accumulator_0001 + ", reduction_c_source, fixed = TRUE))
+expect_true(grepl("int length_0001", reduction_c_source, fixed = TRUE))
 expect_true(S7::S7_inherits(
-  reduction_c_source_plan@value@attrs$function_interface,
+  reduction_c_interface,
   TccqBackendFunctionInterface
 ))
-expect_equal(reduction_c_source_plan@value@attrs$function_interface@kind, "reduction")
-expect_equal(reduction_c_source_plan@value@attrs$function_interface@result_placement, "return")
-expect_equal(reduction_c_source_plan@value@attrs$function_interface@accumulator_name, "accumulator_0001")
+expect_equal(reduction_c_interface@kind, "reduction")
+expect_equal(reduction_c_interface@result_placement, "return")
+expect_equal(reduction_c_interface@accumulator_name, "accumulator_0001")
 expect_equal(length(reduction_c_source_plan@value@bridges), 3L)
 expect_equal(
   vapply(reduction_c_source_plan@value@bridges, function(bridge) bridge@kind, character(1)),
@@ -589,14 +611,16 @@ reduction_fortran_source_plan <- tccq_plan_backend(
 )
 expect_true(reduction_fortran_source_plan@success)
 expect_equal(reduction_fortran_source_plan@value@attrs$source_language, "fortran")
-expect_true(grepl("function", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("integer(c_int), value :: length_0001", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("output = 0.0_c_double", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("do index_0001 = 1, length_0001", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_true(grepl("output = output + ", reduction_fortran_source_plan@value@attrs$source, fixed = TRUE))
-expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@abi, "fortran_bind_c")
-expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@result_placement, "return")
-expect_equal(reduction_fortran_source_plan@value@attrs$function_interface@result_name, "output")
+reduction_fortran_source <- backend_source(reduction_fortran_source_plan)
+reduction_fortran_interface <- backend_interface(reduction_fortran_source_plan)
+expect_true(grepl("function", reduction_fortran_source, fixed = TRUE))
+expect_true(grepl("integer(c_int), value :: length_0001", reduction_fortran_source, fixed = TRUE))
+expect_true(grepl("output = 0.0_c_double", reduction_fortran_source, fixed = TRUE))
+expect_true(grepl("do index_0001 = 1, length_0001", reduction_fortran_source, fixed = TRUE))
+expect_true(grepl("output = output + ", reduction_fortran_source, fixed = TRUE))
+expect_equal(reduction_fortran_interface@abi, "fortran_bind_c")
+expect_equal(reduction_fortran_interface@result_placement, "return")
+expect_equal(reduction_fortran_interface@result_name, "output")
 expect_equal(length(reduction_fortran_source_plan@value@bridges), 3L)
 
 if (can_build_shared_library("c")) {
@@ -606,7 +630,7 @@ if (can_build_shared_library("c")) {
     tccq_backend_context(mode = "shared_library", target = "c")
   )
   expect_true(reduction_c_shared_plan@success)
-  expect_equal(reduction_c_shared_plan@value@attrs$callable(c(0, log(2)), c(5, 7)), 19)
+  expect_equal(backend_callable(reduction_c_shared_plan)(c(0, log(2)), c(5, 7)), 19)
 }
 
 if (can_build_shared_library("fortran")) {
@@ -616,7 +640,7 @@ if (can_build_shared_library("fortran")) {
     tccq_backend_context(mode = "shared_library", target = "fortran")
   )
   expect_true(reduction_fortran_shared_plan@success)
-  expect_equal(reduction_fortran_shared_plan@value@attrs$callable(c(0, log(2)), c(5, 7)), 19)
+  expect_equal(backend_callable(reduction_fortran_shared_plan)(c(0, log(2)), c(5, 7)), 19)
 }
 
 fold_add <- function(x) x
@@ -647,7 +671,7 @@ custom_c_source_plan <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "c")
 )
 expect_true(custom_c_source_plan@success)
-expect_true(grepl("accumulator_0001 = accumulator_0001 + ", custom_c_source_plan@value@attrs$source, fixed = TRUE))
+expect_true(grepl("accumulator_0001 = accumulator_0001 + ", backend_source(custom_c_source_plan), fixed = TRUE))
 
 if (requireNamespace("Rtinycc", quietly = TRUE)) {
   reduction_jit_plan <- tccq_plan_backend(
@@ -659,7 +683,7 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   x <- c(0, log(2), log(3))
   y <- c(5, 7, 11)
   expect_equal(
-    reduction_jit_plan@value@attrs$callable(x, y),
+    backend_callable(reduction_jit_plan)(x, y),
     sum(exp(x) * y)
   )
   custom_reduction_jit_plan <- tccq_plan_backend(
@@ -669,7 +693,7 @@ if (requireNamespace("Rtinycc", quietly = TRUE)) {
   )
   expect_true(custom_reduction_jit_plan@success)
   expect_equal(
-    custom_reduction_jit_plan@value@attrs$callable(x),
+    backend_callable(custom_reduction_jit_plan)(x),
     sum(exp(x))
   )
 }

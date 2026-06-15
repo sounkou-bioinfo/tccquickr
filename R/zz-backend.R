@@ -548,6 +548,52 @@ TccqBackendArtifact <- S7::new_class(
   }
 )
 
+#' Backend products
+#'
+#' Backend products are the typed outputs owned by a backend plan: the callable
+#' interface, expression tree consumed by the source printer, storage plan, and
+#' concrete artifacts. Runtime handles such as loaded libraries and compiled
+#' callables stay in `attrs`, but under this typed products value rather than
+#' directly on the backend plan.
+#'
+#' @param function_interface Source-level callable interface, if source exists.
+#' @param expression Expression tree consumed by the backend, if source exists.
+#' @param storage_plan Storage plan consumed by the backend, if available.
+#' @param artifacts Named backend artifacts.
+#' @param attrs Structured product metadata.
+#' @export
+TccqBackendProducts <- S7::new_class(
+  "TccqBackendProducts",
+  package = "tccquickr",
+  properties = list(
+    function_interface = S7::new_union(NULL, TccqBackendFunctionInterface),
+    expression = S7::new_union(NULL, TccqExpression),
+    storage_plan = S7::new_union(NULL, TccqStoragePlan),
+    artifacts = S7::class_list,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    artifacts_are_typed <- vapply(
+      self@artifacts,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqBackendArtifact
+    )
+    artifact_ids <- names(self@artifacts)
+    if (!all(artifacts_are_typed)) {
+      problems <- c(problems, "@artifacts must contain only <TccqBackendArtifact> values")
+    }
+    if (
+      length(self@artifacts) > 0L &&
+        (is.null(artifact_ids) || anyNA(artifact_ids) || any(!nzchar(artifact_ids)) || anyDuplicated(artifact_ids))
+    ) {
+      problems <- c(problems, "@artifacts must be named by unique non-empty artifact roles")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Backend plan
 #'
 #' @param id Stable plan id.
@@ -561,6 +607,7 @@ TccqBackendArtifact <- S7::new_class(
 #' @param safepoints Generated-program safepoints.
 #' @param debug_sites Debug metadata retained for generated code.
 #' @param diagnostics Diagnostics attached to this plan.
+#' @param products Typed backend products.
 #' @param attrs Structured plan attributes.
 #' @export
 TccqBackendPlan <- S7::new_class(
@@ -578,6 +625,7 @@ TccqBackendPlan <- S7::new_class(
     safepoints = S7::class_list,
     debug_sites = S7::class_list,
     diagnostics = S7::class_list,
+    products = S7::new_union(NULL, TccqBackendProducts),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -1314,6 +1362,54 @@ tccq_backend_artifact <- function(
   )
 }
 
+#' Construct backend products
+#'
+#' @param function_interface Source-level callable interface, if source exists.
+#' @param expression Expression tree consumed by the backend, if source exists.
+#' @param storage_plan Storage plan consumed by the backend, if available.
+#' @param artifacts Named backend artifacts.
+#' @param attrs Structured product metadata.
+#' @export
+tccq_backend_products <- function(
+  function_interface = NULL,
+  expression = NULL,
+  storage_plan = NULL,
+  artifacts = list(),
+  attrs = list()
+) {
+  .tccq_check_optional_s7(
+    function_interface,
+    TccqBackendFunctionInterface,
+    "TccqBackendFunctionInterface",
+    "function_interface"
+  )
+  .tccq_check_optional_s7(expression, TccqExpression, "TccqExpression", "expression")
+  .tccq_check_optional_s7(storage_plan, TccqStoragePlan, "TccqStoragePlan", "storage_plan")
+  .tccq_check_list_of(artifacts, TccqBackendArtifact, "TccqBackendArtifact", "artifacts")
+  artifact_roles <- names(artifacts)
+  if (
+    length(artifacts) > 0L &&
+      (is.null(artifact_roles) || anyNA(artifact_roles) || any(!nzchar(artifact_roles)) || anyDuplicated(artifact_roles))
+  ) {
+    tccq_abort(
+      "schema.invalid_backend_product_artifacts",
+      "`artifacts` must be named by unique non-empty artifact roles.",
+      phase = "schema",
+      path = "backend_products.artifacts",
+      data = list(artifact_roles = artifact_roles)
+    )
+  }
+  .tccq_check_list(attrs, "attrs")
+
+  TccqBackendProducts(
+    function_interface = function_interface,
+    expression = expression,
+    storage_plan = storage_plan,
+    artifacts = artifacts,
+    attrs = attrs
+  )
+}
+
 #' Construct a backend plan
 #'
 #' @param id Stable plan id.
@@ -1327,6 +1423,7 @@ tccq_backend_artifact <- function(
 #' @param safepoints Generated-program safepoints.
 #' @param debug_sites Debug metadata retained for generated code.
 #' @param diagnostics Diagnostics attached to this plan.
+#' @param products Typed backend products.
 #' @param attrs Structured plan attributes.
 #' @export
 tccq_backend_plan <- function(
@@ -1341,6 +1438,7 @@ tccq_backend_plan <- function(
   safepoints = list(),
   debug_sites = list(),
   diagnostics = list(),
+  products = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -1377,6 +1475,7 @@ tccq_backend_plan <- function(
   .tccq_check_list_of(safepoints, TccqSafepoint, "TccqSafepoint", "safepoints")
   .tccq_check_list_of(debug_sites, TccqDebugSite, "TccqDebugSite", "debug_sites")
   .tccq_check_list_of(diagnostics, TccqDiagnostic, "TccqDiagnostic", "diagnostics")
+  .tccq_check_optional_s7(products, TccqBackendProducts, "TccqBackendProducts", "products")
   .tccq_check_list(attrs, "attrs")
 
   TccqBackendPlan(
@@ -1391,6 +1490,7 @@ tccq_backend_plan <- function(
     safepoints = safepoints,
     debug_sites = debug_sites,
     diagnostics = diagnostics,
+    products = products,
     attrs = attrs
   )
 }
@@ -1849,6 +1949,27 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         source_language = source_language,
         attrs = list(callable = callable)
       )
+    }
+
+    product_attrs <- function(plan) {
+      products <- plan@products %||% tccq_backend_products()
+      products@attrs
+    }
+
+    set_product_attrs <- function(plan, attrs) {
+      products <- plan@products %||% tccq_backend_products()
+      products@attrs <- attrs
+      plan@products <- products
+      plan
+    }
+
+    set_product_artifact <- function(plan, role, artifact) {
+      products <- plan@products %||% tccq_backend_products()
+      artifacts <- products@artifacts
+      artifacts[[role]] <- artifact
+      products@artifacts <- artifacts
+      plan@products <- products
+      plan
     }
 
     validate_lowered_program <- function(result, formals) {
@@ -2421,7 +2542,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         list(ffi),
         stats::setNames(list(list(args = ffi_arg_types, returns = ffi_return)), symbol)
       ))
-      ffi <- Rtinycc::tcc_source(ffi, plan@attrs$source)
+      ffi <- Rtinycc::tcc_source(ffi, plan@products@attrs$source)
       compiled <- tryCatch(
         Rtinycc::tcc_compile(ffi),
         error = identity
@@ -2475,11 +2596,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         do.call(compiled[[symbol]], call_arguments)
       }
 
-      attrs <- plan@attrs
+      attrs <- product_attrs(plan)
       attrs$compiled <- compiled
       attrs$callable <- callable
-      attrs$artifacts$jit_callable <- jit_callable_artifact(symbol, callable)
-      plan@attrs <- attrs
+      plan <- set_product_attrs(plan, attrs)
+      plan <- set_product_artifact(plan, "jit_callable", jit_callable_artifact(symbol, callable))
       tccq_result(success = TRUE, value = plan, diagnostics = list())
     }
 
@@ -2515,14 +2636,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         writeLines(wrapper_source, wrapper_source_path, useBytes = TRUE)
         NULL
       }, error = identity)
-      attrs <- plan@attrs
+      attrs <- product_attrs(plan)
       attrs$source_path <- source_path
       attrs$wrapper_source <- wrapper_source
       attrs$wrapper_source_path <- wrapper_source_path
       attrs$wrapper_symbol <- wrapper_symbol
-      attrs$artifacts$source <- source_artifact(symbol, source, path = source_path)
-      attrs$artifacts$wrapper_source <- source_artifact(wrapper_symbol, wrapper_source, path = wrapper_source_path)
-      plan@attrs <- attrs
+      plan <- set_product_attrs(plan, attrs)
+      plan <- set_product_artifact(plan, "source", source_artifact(symbol, source, path = source_path))
+      plan <- set_product_artifact(plan, "wrapper_source", source_artifact(wrapper_symbol, wrapper_source, path = wrapper_source_path))
       if (inherits(write_result, "error")) {
         diagnostic <- tccq_diagnostic(
           "backend.shared_library_write_failed",
@@ -2585,10 +2706,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
       }
 
-      attrs <- plan@attrs
+      attrs <- product_attrs(plan)
       attrs$shared_library_path <- library_path
       attrs$shared_library_output <- compile_log
-      attrs$artifacts$shared_library <- shared_library_artifact(symbol, library_path)
+      plan <- set_product_attrs(plan, attrs)
+      plan <- set_product_artifact(plan, "shared_library", shared_library_artifact(symbol, library_path))
       shared_library <- tryCatch(
         dyn.load(library_path),
         error = identity
@@ -2606,7 +2728,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         )
         plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
-        plan@attrs <- attrs
         return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
       }
       native_symbol <- tryCatch(
@@ -2627,7 +2748,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         )
         plan@diagnostics <- c(plan@diagnostics, list(diagnostic))
-        plan@attrs <- attrs
         return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
       }
       callable <- function(...) {
@@ -2646,8 +2766,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       attrs$shared_library <- shared_library
       attrs$native_symbol <- native_symbol
       attrs$callable <- callable
-      attrs$artifacts$native_callable <- native_callable_artifact(symbol, callable)
-      plan@attrs <- attrs
+      plan <- set_product_attrs(plan, attrs)
+      plan <- set_product_artifact(plan, "native_callable", native_callable_artifact(symbol, callable))
       tccq_result(success = TRUE, value = plan, diagnostics = list())
     }
 
@@ -2729,16 +2849,18 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       capabilities = backend@capabilities,
       regions = program@regions,
       bridges = bridges,
+      products = tccq_backend_products(
+        function_interface = function_interface,
+        expression = source_expression,
+        storage_plan = program@storage_plan,
+        artifacts = list(source = source_artifact(symbol, source)),
+        attrs = list(source = source)
+      ),
       attrs = list(
         driver = backend@driver,
         runtime = context@runtime,
         source_language = source_language,
-        symbol = symbol,
-        function_interface = function_interface,
-        source = source,
-        artifacts = list(source = source_artifact(symbol, source)),
-        expression = source_expression,
-        storage_plan = program@storage_plan
+        symbol = symbol
       )
     )
 
