@@ -16,7 +16,8 @@ TccqOpImpl(
   supports = function() NULL,
   render = NULL,
   elementwise = NULL,
-  reduction = NULL
+  reduction = NULL,
+  contraction = NULL
 )
 }
 \arguments{
@@ -45,6 +46,8 @@ TccqOpImpl(
 \item{elementwise}{Optional elementwise metadata.}
 
 \item{reduction}{Optional reduction metadata.}
+
+\item{contraction}{Optional contraction metadata.}
 }
 \description{
 Operation implementation descriptor

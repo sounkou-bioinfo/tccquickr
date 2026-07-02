@@ -57,6 +57,10 @@ tccq_lower_function <- function(
     state$local_bindings <- list()
     state$values <- list()
     state$value_counter <- 0L
+    state$dim_symbols <- unique(unlist(lapply(bindings, function(binding) {
+      labels <- vapply(binding@type@shape@dims, function(dim) dim@label, character(1))
+      labels[nzchar(labels)]
+    })))
     for (binding_index in seq_along(bindings)) {
       binding_name <- names(bindings)[[binding_index]]
       binding <- bindings[[binding_name]]
@@ -174,6 +178,16 @@ tccq_lower_function <- function(
     if (identical(call_name, "(") && length(expr) == 2L) {
       return(lower_expression(expr[[2L]], state))
     }
+    if (identical(call_name, "[")) {
+      return(lower_slice(expr, state))
+    }
+    if (identical(call_name, ":")) {
+      return(diagnostic_value(
+        "lowering.range_outside_slice",
+        "Range expressions are only lowerable as `[` slice bounds for now.",
+        expr
+      ))
+    }
 
     resolution <- tccq_resolve_call(registry, tccq_call(call_name, expr = expr), context)
     if (
@@ -187,6 +201,12 @@ tccq_lower_function <- function(
         S7::S7_inherits(resolution@value@reduction, TccqReductionSpec)
     ) {
       return(lower_reduction(resolution@value, as.list(expr)[-1L], expr, state))
+    }
+    if (
+      resolution@success &&
+        S7::S7_inherits(resolution@value@contraction, TccqContractionSpec)
+    ) {
+      return(lower_contraction(resolution@value, as.list(expr)[-1L], expr, state))
     }
     if (resolution@success && (!isTRUE(resolution@value@pure) || isTRUE(resolution@value@boundary))) {
       return(diagnostic_value(
@@ -417,6 +437,193 @@ tccq_lower_function <- function(
     list(value_id = value_id, type = result_type, diagnostics = list())
   }
 
+  affine_bound <- function(expr, state) {
+    if (is.numeric(expr) && length(expr) == 1L && !is.na(expr) && expr == as.integer(expr)) {
+      return(list(symbol = "", offset = as.integer(expr)))
+    }
+    if (is.symbol(expr)) {
+      symbol_name <- as.character(expr)
+      if (symbol_name %in% state$dim_symbols) {
+        return(list(symbol = symbol_name, offset = 0L))
+      }
+      return(NULL)
+    }
+    if (!is.call(expr)) {
+      return(NULL)
+    }
+    bound_call_name <- tccq_call_name(expr)
+    if (identical(bound_call_name, "(") && length(expr) == 2L) {
+      return(affine_bound(expr[[2L]], state))
+    }
+    if (bound_call_name %in% c("+", "-") && length(expr) == 3L) {
+      left <- affine_bound(expr[[2L]], state)
+      right <- affine_bound(expr[[3L]], state)
+      if (is.null(left) || is.null(right)) {
+        return(NULL)
+      }
+      if (identical(bound_call_name, "-") && !nzchar(right$symbol)) {
+        return(list(symbol = left$symbol, offset = left$offset - right$offset))
+      }
+      if (identical(bound_call_name, "+") && (!nzchar(left$symbol) || !nzchar(right$symbol))) {
+        symbol <- if (nzchar(left$symbol)) left$symbol else right$symbol
+        return(list(symbol = symbol, offset = left$offset + right$offset))
+      }
+      return(NULL)
+    }
+    if (identical(bound_call_name, "-") && length(expr) == 2L) {
+      inner <- affine_bound(expr[[2L]], state)
+      if (is.null(inner) || nzchar(inner$symbol)) {
+        return(NULL)
+      }
+      return(list(symbol = "", offset = -inner$offset))
+    }
+    NULL
+  }
+
+  lower_slice <- function(expr, state) {
+    if (length(expr) != 3L) {
+      return(diagnostic_value(
+        "lowering.unsupported_index",
+        "Only single-axis `[` slices are lowerable for now.",
+        expr,
+        data = list(arity = length(expr) - 2L)
+      ))
+    }
+    target <- lower_expression(expr[[2L]], state)
+    if (length(target$diagnostics) > 0L) {
+      return(target)
+    }
+    if (target$type@shape@rank != 1L) {
+      return(diagnostic_value(
+        "lowering.unsupported_slice_rank",
+        "Slices currently apply to rank-1 values with one range index.",
+        expr,
+        data = list(rank = target$type@shape@rank)
+      ))
+    }
+    index_expr <- expr[[3L]]
+    if (!(is.call(index_expr) && identical(tccq_call_name(index_expr), ":") && length(index_expr) == 3L)) {
+      return(diagnostic_value(
+        "lowering.unsupported_index",
+        "Slice indices must be `from:to` ranges for now.",
+        expr,
+        data = list(index = deparse1(index_expr))
+      ))
+    }
+    from <- affine_bound(index_expr[[2L]], state)
+    to <- affine_bound(index_expr[[3L]], state)
+    if (is.null(from) || is.null(to)) {
+      return(diagnostic_value(
+        "lowering.non_affine_slice_bounds",
+        "Slice bounds must be integer constants or declared dimension symbols plus offsets.",
+        expr,
+        data = list(index = deparse1(index_expr), dim_symbols = state$dim_symbols)
+      ))
+    }
+    if (nzchar(from$symbol) || from$offset < 1L) {
+      return(diagnostic_value(
+        "lowering.unsupported_slice_lower_bound",
+        "Slice lower bounds must be positive integer constants for now.",
+        expr,
+        data = list(from = deparse1(index_expr[[2L]]))
+      ))
+    }
+    extent <- if (nzchar(to$symbol)) {
+      tccq_dim_affine(to$symbol, to$offset - from$offset + 1L)
+    } else {
+      if (to$offset - from$offset + 1L < 0L) {
+        return(diagnostic_value(
+          "lowering.empty_slice",
+          "Slice ranges must have non-negative extent.",
+          expr,
+          data = list(index = deparse1(index_expr))
+        ))
+      }
+      tccq_dim_constant(to$offset - from$offset + 1L)
+    }
+    result_type <- tccq_type(target$type@base, tccq_shape(list(extent)))
+    value_id <- next_value_id(state)
+    add_value(
+      state,
+      tccq_value(
+        id = value_id,
+        op = "[",
+        inputs = list(target$value_id),
+        type = result_type,
+        effect = tccq_effect(reads = TRUE),
+        attrs = list(slice_offsets = from$offset - 1L)
+      )
+    )
+    list(value_id = value_id, type = result_type, diagnostics = list())
+  }
+
+  lower_contraction <- function(resolved_operation, args, expr, state) {
+    contraction_spec <- resolved_operation@contraction
+    surface_op <- resolved_operation@call@name
+    signature <- contraction_spec@signature
+    if (!(length(args) %in% signature@arity)) {
+      return(diagnostic_value(
+        "lowering.unsupported_contraction_arity",
+        sprintf("Contraction `%s` does not accept this argument count.", surface_op),
+        expr,
+        data = list(op = surface_op, arity = length(args), supported = signature@arity)
+      ))
+    }
+    if (!isTRUE(resolved_operation@pure) || isTRUE(resolved_operation@boundary)) {
+      return(diagnostic_value(
+        "lowering.effectful_operation",
+        sprintf("Contraction `%s` is modeled but is not legal in a fused region.", surface_op),
+        expr,
+        data = list(
+          op = surface_op,
+          target = resolved_operation@target,
+          boundary = resolved_operation@boundary,
+          pure = resolved_operation@pure
+        )
+      ))
+    }
+
+    lowered_args <- lapply(args, lower_expression, state = state)
+    diagnostics <- unlist(lapply(lowered_args, `[[`, "diagnostics"), recursive = FALSE)
+    if (length(diagnostics) > 0L) {
+      return(list(value_id = NULL, type = NULL, diagnostics = diagnostics))
+    }
+
+    input_ids <- lapply(lowered_args, `[[`, "value_id")
+    input_types <- lapply(lowered_args, `[[`, "type")
+    result_type_result <- tccq_op_signature_result_type(signature, input_types)
+    if (!result_type_result@success) {
+      return(list(value_id = NULL, type = NULL, diagnostics = result_type_result@diagnostics))
+    }
+    result_type <- result_type_result@value
+    identity_result <- tccq_reduction_identity(
+      contraction_spec@reducer,
+      tccq_type(result_type@base)
+    )
+    if (!identity_result@success) {
+      return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))
+    }
+    value_id <- next_value_id(state)
+    operation <- tccq_lowered_operation(
+      "contraction",
+      resolved_operation,
+      contraction = contraction_spec,
+      identity = identity_result@value
+    )
+    add_value(
+      state,
+      tccq_value(
+        id = value_id,
+        op = surface_op,
+        inputs = input_ids,
+        type = result_type,
+        effect = resolved_operation@effect,
+        attrs = list(operation = operation)
+      )
+    )
+    list(value_id = value_id, type = result_type, diagnostics = list())
+  }
+
   lowered_operation <- function(value) {
     operation <- value@attrs$operation
     if (S7::S7_inherits(operation, TccqLoweredOperation)) operation else NULL
@@ -434,12 +641,25 @@ tccq_lower_function <- function(
       identical(operation@attrs$reduction_kind, "axis")
   }
 
+  value_is_contraction <- function(value) {
+    operation <- lowered_operation(value)
+    !is.null(operation) && identical(operation@family, "contraction")
+  }
+
+  value_is_slice <- function(value) {
+    identical(value@op, "[")
+  }
+
   plan_regions <- function(values, result_id) {
     result_value <- values[[result_id]]
     result_operation <- lowered_operation(result_value)
     result_is_reduction <- value_is_reduction(result_value)
+    result_is_contraction <- value_is_contraction(result_value)
     domain_shape <- if (isTRUE(result_is_reduction)) {
       values[[result_value@inputs[[1L]]]]@type@shape
+    } else if (isTRUE(result_is_contraction)) {
+      contracted_dim <- values[[result_value@inputs[[1L]]]]@type@shape@dims[[2L]]
+      tccq_shape(c(result_value@type@shape@dims, list(contracted_dim)))
     } else {
       result_value@type@shape
     }
@@ -476,7 +696,13 @@ tccq_lower_function <- function(
       lapply(lowered_operations, function(operation) operation@resolved_op)
     )
     accesses <- lapply(lowered_values, function(value) {
-      access_kind <- if (value@type@shape@rank == 0L) "scalar" else "identity"
+      access_kind <- if (value@type@shape@rank == 0L) {
+        "scalar"
+      } else if (value_is_slice(value)) {
+        "slice"
+      } else {
+        "identity"
+      }
       tccq_access(value@id, domain, kind = access_kind)
     })
     region_kind <- if (domain_shape@rank > 0L) "kernel" else "host"
@@ -486,10 +712,14 @@ tccq_lower_function <- function(
       default = "any"
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
-    fusion_kind <- if (isTRUE(value_is_axis_reduction(result_value))) {
+    fusion_kind <- if (isTRUE(result_is_contraction)) {
+      "contract"
+    } else if (isTRUE(value_is_axis_reduction(result_value))) {
       "axis_reduce"
     } else if (isTRUE(result_is_reduction)) {
       "map_reduce"
+    } else if (any(vapply(operation_values, value_is_slice, logical(1)))) {
+      "stencil"
     } else {
       "map"
     }
@@ -544,6 +774,23 @@ tccq_lower_function <- function(
     )
   }
 
+  result_strategy <- function(values, result_id) {
+    result_value <- values[[result_id]]
+    if (value_is_contraction(result_value)) {
+      return("contract")
+    }
+    if (value_is_axis_reduction(result_value)) {
+      return("axis-reduce")
+    }
+    if (value_is_reduction(result_value)) {
+      return("map-reduce")
+    }
+    if (any(vapply(unname(values), value_is_slice, logical(1)))) {
+      return("stencil")
+    }
+    "elementwise"
+  }
+
   plan_storage <- function(values, result_id) {
     lowered_values <- unname(values)
     lifetimes <- storage_lifetimes(lowered_values, result_id)
@@ -570,13 +817,10 @@ tccq_lower_function <- function(
     tccq_storage_plan(
       slots = unname(slots_by_id),
       reuse_groups = reuse_groups,
-      attrs = list(strategy = if (value_is_axis_reduction(values[[result_id]])) {
-        "fused-axis-reduce"
-      } else if (value_is_reduction(values[[result_id]])) {
-        "fused-map-reduce"
-      } else {
-        "fused-elementwise"
-      }, lifetimes = lifetimes)
+      attrs = list(
+        strategy = sprintf("fused-%s", result_strategy(values, result_id)),
+        lifetimes = lifetimes
+      )
     )
   }
 
@@ -713,6 +957,30 @@ tccq_lower_function <- function(
     }
   }
 
+  non_root_fused_operations <- Filter(function(value) {
+    operation <- lowered_operation(value)
+    !is.null(operation) &&
+      operation@family %in% c("reduction", "contraction") &&
+      !identical(value@id, result$value_id)
+  }, unname(state$values))
+  if (length(non_root_fused_operations) > 0L) {
+    return(new_plan(
+      values = state$values,
+      diagnostics = list(tccq_diagnostic(
+        "lowering.unsupported_composition",
+        "Reductions and contractions must produce the program result in the current single-nest lowerer.",
+        phase = "lowering",
+        path = "expression",
+        data = list(value_ids = vapply(
+          non_root_fused_operations,
+          function(value) value@id,
+          character(1)
+        ))
+      )),
+      attrs = list(local_bindings = state$local_bindings)
+    ))
+  }
+
   storage_plan <- plan_storage(state$values, result$value_id)
   regions <- plan_regions(state$values, result$value_id)
   new_plan(
@@ -720,12 +988,9 @@ tccq_lower_function <- function(
     regions = regions,
     result = result$value_id,
     storage_plan = storage_plan,
-    attrs = list(strategy = if (value_is_axis_reduction(state$values[[result$value_id]])) {
-      "axis-reduce-expression"
-    } else if (value_is_reduction(state$values[[result$value_id]])) {
-      "map-reduce-expression"
-    } else {
-      "elementwise-expression"
-    }, local_bindings = state$local_bindings)
+    attrs = list(
+      strategy = sprintf("%s-expression", result_strategy(state$values, result$value_id)),
+      local_bindings = state$local_bindings
+    )
   )
 }

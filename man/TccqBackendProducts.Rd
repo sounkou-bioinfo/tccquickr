@@ -7,6 +7,7 @@
 TccqBackendProducts(
   function_interface = NULL,
   expression = NULL,
+  loop_nest = NULL,
   storage_plan = NULL,
   artifacts = list(),
   attrs = list()
@@ -17,6 +18,8 @@ TccqBackendProducts(
 
 \item{expression}{Expression tree consumed by the backend, if source exists.}
 
+\item{loop_nest}{Loop nest consumed by the backend, if source exists.}
+
 \item{storage_plan}{Storage plan consumed by the backend, if available.}
 
 \item{artifacts}{Named backend artifacts.}
@@ -25,8 +28,8 @@ TccqBackendProducts(
 }
 \description{
 Backend products are the typed outputs owned by a backend plan: the callable
-interface, expression tree consumed by the source printer, storage plan, and
-concrete artifacts. Runtime handles such as loaded libraries and compiled
-callables stay in \code{attrs}, but under this typed products value rather than
-directly on the backend plan.
+interface, loop nest and expression tree consumed by the source printer,
+storage plan, and concrete artifacts. Runtime handles such as loaded
+libraries and compiled callables stay in \code{attrs}, but under this typed
+products value rather than directly on the backend plan.
 }

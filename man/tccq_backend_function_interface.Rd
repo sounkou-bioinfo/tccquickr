@@ -15,11 +15,11 @@ tccq_backend_function_interface(
   result_placement = "return",
   result_name = "",
   domain = NULL,
+  extent_symbols = character(),
   extent_names = character(),
-  element_count_name = "",
-  result_extent_names = character(),
+  index_names = character(),
+  result_dims = list(),
   result_count_name = "",
-  index_name = "",
   accumulator_name = "",
   attrs = list()
 )
@@ -29,7 +29,7 @@ tccq_backend_function_interface(
 
 \item{source_language}{Source language consumed by the printer.}
 
-\item{kind}{Function shape: scalar, map, or reduction.}
+\item{kind}{Function shape: \code{scalar} or \code{loop_nest}.}
 
 \item{abi}{Callable ABI.}
 
@@ -43,17 +43,18 @@ tccq_backend_function_interface(
 
 \item{result_name}{Generated result/output variable name, or empty string.}
 
-\item{domain}{Iteration domain consumed by the callable, or \code{NULL}.}
+\item{domain}{Loop-nest iteration domain, or \code{NULL}.}
 
-\item{extent_names}{Generated per-axis extent parameter names.}
+\item{extent_symbols}{Symbolic dimension names carried by the ABI.}
 
-\item{element_count_name}{Generated total element-count parameter name, or empty string.}
+\item{extent_names}{Generated extent parameter names, one per symbol.}
 
-\item{result_extent_names}{Generated per-axis result extent names.}
+\item{index_names}{Generated per-axis loop index names.}
 
-\item{result_count_name}{Generated result element-count name, or empty string.}
+\item{result_dims}{Typed result dimensions.}
 
-\item{index_name}{Generated loop index name, or empty string.}
+\item{result_count_name}{Generated result element-count parameter name, or
+empty string for scalar results.}
 
 \item{accumulator_name}{Generated reduction accumulator name, or empty string.}
 

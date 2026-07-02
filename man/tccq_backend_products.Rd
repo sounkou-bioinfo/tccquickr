@@ -7,6 +7,7 @@
 tccq_backend_products(
   function_interface = NULL,
   expression = NULL,
+  loop_nest = NULL,
   storage_plan = NULL,
   artifacts = list(),
   attrs = list()
@@ -16,6 +17,8 @@ tccq_backend_products(
 \item{function_interface}{Source-level callable interface, if source exists.}
 
 \item{expression}{Expression tree consumed by the backend, if source exists.}
+
+\item{loop_nest}{Loop nest consumed by the backend, if source exists.}
 
 \item{storage_plan}{Storage plan consumed by the backend, if available.}
 

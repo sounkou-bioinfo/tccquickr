@@ -7,11 +7,12 @@ TCCQ_BASE_TYPES <- c(
   "raw",
   "buffer"
 )
-TCCQ_DIM_KINDS <- c("constant", "symbol", "unknown")
+TCCQ_DIM_KINDS <- c("constant", "symbol", "affine", "unknown")
+TCCQ_AXIS_ROLES <- c("map", "reduce")
 TCCQ_LITERAL_KINDS <- c("finite", "na", "nan", "pos_inf", "neg_inf")
 TCCQ_LAYOUT_ORDERS <- c("unknown", "column_major", "row_major", "strided", "opaque")
 TCCQ_ACCESS_KINDS <- c("identity", "scalar", "broadcast", "slice", "transpose", "custom")
-TCCQ_FUSION_KINDS <- c("map", "map_reduce", "axis_reduce", "stencil", "tile", "custom")
+TCCQ_FUSION_KINDS <- c("map", "map_reduce", "axis_reduce", "contract", "stencil", "tile", "custom")
 TCCQ_REGION_KINDS <- c("host", "kernel", "parallel", "device")
 TCCQ_MEMORY_SPACES <- c("r", "host", "device", "opaque")
 TCCQ_STORAGE_ROLES <- c("input", "literal", "temporary", "output")
@@ -246,6 +247,14 @@ TccqDim <- S7::new_class(
     if (identical(self@kind, "constant") && (is.na(self@value) || self@value < 0L)) {
       problems <- c(problems, "@value must be a non-negative integer for constant dimensions")
     }
+    if (identical(self@kind, "affine")) {
+      if (!grepl("^[A-Za-z.][A-Za-z0-9_.]*$", self@label)) {
+        problems <- c(problems, "@label must be a valid symbolic dimension name for affine dimensions")
+      }
+      if (is.na(self@value)) {
+        problems <- c(problems, "@value must be a signed integer offset for affine dimensions")
+      }
+    }
     if (identical(self@kind, "unknown") && (!identical(self@label, "") || !is.na(self@value))) {
       problems <- c(problems, "unknown dimensions must have empty @label and NA @value")
     }
@@ -381,6 +390,72 @@ TccqDomain <- S7::new_class(
     }
     if (length(self@axes) != self@shape@rank || anyNA(self@axes) || any(!nzchar(self@axes))) {
       problems <- c(problems, "@axes must be non-empty names matching @shape rank")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Affine index expression
+#'
+#' An index expression maps one stored-tensor axis into the iteration space of
+#' a loop nest as `axis + offset`, or to a constant position when `axis` is
+#' empty. It is the typed unit of access maps, so stencil shifts, broadcasts,
+#' and transposes are dimension facts rather than printed index strings.
+#'
+#' @param axis Iteration-axis name, or empty for a constant index.
+#' @param offset Signed integer offset (zero-based).
+#' @export
+TccqIndexExpr <- S7::new_class(
+  "TccqIndexExpr",
+  package = "tccquickr",
+  properties = list(
+    axis = S7::class_character,
+    offset = S7::class_integer
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@axis) != 1L || is.na(self@axis)) {
+      problems <- c(problems, "@axis must be a single string")
+    }
+    if (length(self@offset) != 1L || is.na(self@offset)) {
+      problems <- c(problems, "@offset must be a single integer")
+    }
+    is_constant_index <- length(self@axis) == 1L && !is.na(self@axis) && !nzchar(self@axis)
+    if (is_constant_index && length(self@offset) == 1L && !is.na(self@offset) && self@offset < 0L) {
+      problems <- c(problems, "constant index expressions must be non-negative")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Loop-nest iteration axis
+#'
+#' An axis is one dimension of a loop-nest iteration space: a stable name, a
+#' typed extent, and a role. `map` axes produce output positions; `reduce` axes
+#' fold into an accumulator.
+#'
+#' @param name Iteration-axis name.
+#' @param extent Typed axis extent.
+#' @param role Axis role, `map` or `reduce`.
+#' @export
+TccqLoopAxis <- S7::new_class(
+  "TccqLoopAxis",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    extent = TccqDim,
+    role = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (length(self@role) != 1L || is.na(self@role) || !self@role %in% TCCQ_AXIS_ROLES) {
+      problems <- c(problems, "@role must be one supported axis role")
+    }
+    if (identical(self@extent@kind, "unknown")) {
+      problems <- c(problems, "@extent must be a constant, symbolic, or affine dimension")
     }
     if (length(problems) > 0L) problems
   }
@@ -587,6 +662,20 @@ TccqAccess <- S7::new_class(
     }
     if (length(self@kind) != 1L || is.na(self@kind) || !self@kind %in% TCCQ_ACCESS_KINDS) {
       problems <- c(problems, "@kind must be one supported access kind")
+    }
+    index_map_is_typed <- vapply(
+      self@index_map,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqIndexExpr
+    )
+    if (!all(index_map_is_typed)) {
+      problems <- c(problems, "@index_map must contain only <TccqIndexExpr> values")
+    }
+    index_axes <- vapply(self@index_map, function(index) index@axis, character(1))
+    referenced_axes <- setdiff(unique(index_axes), "")
+    if (length(setdiff(referenced_axes, self@domain@axes)) > 0L) {
+      problems <- c(problems, "@index_map may only reference @domain axes")
     }
     if (length(problems) > 0L) problems
   }
@@ -1050,6 +1139,60 @@ tccq_dim_unknown <- function() {
   TccqDim(kind = "unknown", label = "", value = NA_integer_)
 }
 
+#' Construct an affine dimension
+#'
+#' An affine dimension is a symbolic extent plus a signed integer offset, such
+#' as the `n - 2` extent of an interior stencil domain. It keeps shape
+#' arithmetic a typed dimension fact instead of a backend string.
+#'
+#' @param name Symbolic dimension name.
+#' @param offset Signed integer offset added to the symbolic extent.
+#' @export
+tccq_dim_affine <- function(name, offset) {
+  .tccq_check_character_scalar(name, "name")
+  if (!grepl("^[A-Za-z.][A-Za-z0-9_.]*$", name)) {
+    tccq_abort(
+      "schema.invalid_dim_symbol",
+      "`name` must be a simple dimension symbol.",
+      phase = "schema",
+      path = "dim.name",
+      data = list(name = name)
+    )
+  }
+  if (!is.numeric(offset) || length(offset) != 1L || is.na(offset) || offset != as.integer(offset)) {
+    tccq_abort(
+      "schema.invalid_dim_offset",
+      "`offset` must be a single signed integer.",
+      phase = "schema",
+      path = "dim.offset",
+      data = list(offset = offset)
+    )
+  }
+  offset <- as.integer(offset)
+  if (identical(offset, 0L)) {
+    return(tccq_dim_symbol(name))
+  }
+  TccqDim(kind = "affine", label = name, value = offset)
+}
+
+#' Compare two dimensions for semantic equality
+#'
+#' Constant dimensions compare by value, symbolic and affine dimensions by
+#' symbol and offset. Unknown dimensions never compare equal.
+#'
+#' @param left,right `TccqDim` values.
+#' @export
+tccq_dim_equal <- function(left, right) {
+  .tccq_check_s7(left, TccqDim, "TccqDim", "left")
+  .tccq_check_s7(right, TccqDim, "TccqDim", "right")
+  if (identical(left@kind, "unknown") || identical(right@kind, "unknown")) {
+    return(FALSE)
+  }
+  identical(left@kind, right@kind) &&
+    identical(left@label, right@label) &&
+    identical(left@value, right@value)
+}
+
 #' Construct a shape
 #'
 #' @param dims A list, character vector, integer vector, or single dimension.
@@ -1172,6 +1315,47 @@ tccq_domain <- function(id, shape, axes = NULL, attrs = list()) {
   }
 
   TccqDomain(id = id, shape = shape, axes = axes, attrs = attrs)
+}
+
+#' Construct an affine index expression
+#'
+#' @param axis Iteration-axis name, or empty for a constant index.
+#' @param offset Signed integer offset (zero-based).
+#' @export
+tccq_index_expr <- function(axis = "", offset = 0L) {
+  .tccq_check_character_or_empty(axis, "axis")
+  if (!is.numeric(offset) || length(offset) != 1L || is.na(offset) || offset != as.integer(offset)) {
+    tccq_abort(
+      "schema.invalid_index_offset",
+      "`offset` must be a single signed integer.",
+      phase = "schema",
+      path = "index_expr.offset",
+      data = list(offset = offset)
+    )
+  }
+  TccqIndexExpr(axis = axis, offset = as.integer(offset))
+}
+
+#' Construct a loop-nest iteration axis
+#'
+#' @param name Iteration-axis name.
+#' @param extent Typed axis extent.
+#' @param role Axis role, `map` or `reduce`.
+#' @export
+tccq_loop_axis <- function(name, extent, role = "map") {
+  .tccq_check_character_scalar(name, "name")
+  extent <- .tccq_as_dim(extent, "extent")
+  .tccq_check_character_scalar(role, "role")
+  if (!role %in% TCCQ_AXIS_ROLES) {
+    tccq_abort(
+      "schema.invalid_axis_role",
+      "`role` is not a supported axis role.",
+      phase = "schema",
+      path = "axis.role",
+      data = list(role = role, supported = TCCQ_AXIS_ROLES)
+    )
+  }
+  TccqLoopAxis(name = name, extent = extent, role = role)
 }
 
 #' Construct a compiler type

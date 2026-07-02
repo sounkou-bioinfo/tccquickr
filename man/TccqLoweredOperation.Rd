@@ -11,6 +11,7 @@ TccqLoweredOperation(
   domain_policy = NULL,
   elementwise = NULL,
   reduction = NULL,
+  contraction = NULL,
   identity = NULL,
   attrs = list()
 )
@@ -27,6 +28,8 @@ TccqLoweredOperation(
 \item{elementwise}{Optional elementwise metadata.}
 
 \item{reduction}{Optional reduction metadata.}
+
+\item{contraction}{Optional contraction metadata.}
 
 \item{identity}{Optional reduction identity literal.}
 

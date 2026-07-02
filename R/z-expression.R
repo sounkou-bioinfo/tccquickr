@@ -196,7 +196,50 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = value@op,
         type = value@type,
-        attrs = list(symbol = value@attrs$symbol)
+        attrs = list(symbol = value@attrs$symbol, storage_value_id = current_value_id)
+      ))
+    }
+    if (identical(value@op, "[")) {
+      slice_offsets <- integer()
+      source_value <- value
+      while (identical(source_value@op, "[")) {
+        current_offsets <- as.integer(source_value@attrs$slice_offsets %||% integer())
+        slice_offsets <- if (length(slice_offsets) == 0L) {
+          current_offsets
+        } else {
+          slice_offsets + current_offsets
+        }
+        source_value <- program@values[[source_value@inputs[[1L]]]]
+        if (is.null(source_value)) {
+          diagnostics <<- c(diagnostics, list(expression_diagnostic(
+            "expression.unknown_value",
+            "Slice source value id is not present in the lowered program.",
+            "expression.value_id",
+            data = list(value_id = current_value_id)
+          )))
+          return(NULL)
+        }
+      }
+      if (!identical(source_value@op, "formal")) {
+        diagnostics <<- c(diagnostics, list(expression_diagnostic(
+          "expression.slice_of_computed_value",
+          "Slices of computed values are not lowerable without materialization yet.",
+          "expression.slice",
+          data = list(value_id = current_value_id, source_op = source_value@op)
+        )))
+        return(NULL)
+      }
+      return(tccq_expression(
+        id = current_value_id,
+        kind = "reference",
+        value_id = current_value_id,
+        op = "formal",
+        type = value@type,
+        attrs = list(
+          symbol = source_value@attrs$symbol,
+          storage_value_id = source_value@id,
+          slice_offsets = slice_offsets
+        )
       ))
     }
     if (identical(value@op, "literal")) {
@@ -293,4 +336,408 @@ tccq_expression_tree <- function(program, value_id = program@result) {
     return(tccq_result(success = FALSE, diagnostics = diagnostics))
   }
   tccq_result(success = TRUE, value = expression)
+}
+
+#' Loop-nest program plan
+#'
+#' `TccqLoopNest` is the single backend-neutral iteration plan consumed by
+#' source printers, in the spirit of the SAC with-loop. One loop nest carries
+#' ordered typed axes (`map` axes produce output positions, `reduce` axes fold
+#' into an accumulator), a body expression whose references carry typed affine
+#' accesses, an optional reducer with its identity, and an output access.
+#' Elementwise maps, full and per-axis reductions, contractions, and stencils
+#' are all instances of this one value; printers must not reintroduce
+#' per-family loop shapes.
+#'
+#' @param id Stable loop-nest id.
+#' @param domain Iteration domain naming the axes.
+#' @param axes Ordered `TccqLoopAxis` values, outermost first.
+#' @param body Body expression with access-carrying references.
+#' @param result_type Result type of the loop nest.
+#' @param output Output access over map axes, or `NULL` for scalar results.
+#' @param reducer Reduction metadata for reduce axes, or `NULL`.
+#' @param identity Reducer identity literal, or `NULL`.
+#' @param attrs Structured metadata.
+#' @export
+TccqLoopNest <- S7::new_class(
+  "TccqLoopNest",
+  package = "tccquickr",
+  properties = list(
+    id = S7::class_character,
+    domain = TccqDomain,
+    axes = S7::class_list,
+    body = TccqExpression,
+    result_type = TccqType,
+    output = S7::new_union(NULL, TccqAccess),
+    reducer = S7::new_union(NULL, TccqReductionSpec),
+    identity = S7::new_union(NULL, TccqLiteral),
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@id) != 1L || is.na(self@id) || !nzchar(self@id)) {
+      problems <- c(problems, "@id must be a single non-empty string")
+    }
+    axes_are_typed <- vapply(self@axes, S7::S7_inherits, logical(1), class = TccqLoopAxis)
+    if (!all(axes_are_typed)) {
+      problems <- c(problems, "@axes must contain only <TccqLoopAxis> values")
+    }
+    if (all(axes_are_typed)) {
+      axis_names <- vapply(self@axes, function(axis) axis@name, character(1))
+      if (anyDuplicated(axis_names)) {
+        problems <- c(problems, "@axes must have unique names")
+      }
+      if (!identical(self@domain@axes, axis_names)) {
+        problems <- c(problems, "@domain axes must match @axes names in order")
+      }
+      axis_roles <- vapply(self@axes, function(axis) axis@role, character(1))
+      has_reduce_axes <- any(axis_roles == "reduce")
+      if (has_reduce_axes && !S7::S7_inherits(self@reducer, TccqReductionSpec)) {
+        problems <- c(problems, "loop nests with reduce axes must carry a reducer")
+      }
+      if (!has_reduce_axes && !is.null(self@reducer)) {
+        problems <- c(problems, "loop nests without reduce axes cannot carry a reducer")
+      }
+      if (!is.null(self@output)) {
+        map_axis_names <- axis_names[axis_roles == "map"]
+        output_axes <- vapply(self@output@index_map, function(index) index@axis, character(1))
+        if (length(setdiff(setdiff(output_axes, ""), map_axis_names)) > 0L) {
+          problems <- c(problems, "@output may only index map axes")
+        }
+      }
+    }
+    reducer_present <- S7::S7_inherits(self@reducer, TccqReductionSpec)
+    identity_present <- S7::S7_inherits(self@identity, TccqLiteral)
+    if (reducer_present != identity_present) {
+      problems <- c(problems, "@reducer and @identity must be present together")
+    }
+    if (self@result_type@shape@rank > 0L && is.null(self@output)) {
+      problems <- c(problems, "non-scalar loop nests must carry an output access")
+    }
+    if (self@result_type@shape@rank == 0L && !is.null(self@output)) {
+      problems <- c(problems, "scalar loop nests cannot carry an output access")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Construct a loop nest
+#'
+#' @param id Stable loop-nest id.
+#' @param axes Ordered `TccqLoopAxis` values, outermost first.
+#' @param body Body expression with access-carrying references.
+#' @param result_type Result type of the loop nest.
+#' @param output Output access over map axes, or `NULL` for scalar results.
+#' @param reducer Reduction metadata for reduce axes, or `NULL`.
+#' @param identity Reducer identity literal, or `NULL`.
+#' @param domain Optional iteration domain. Defaults to one built from `axes`.
+#' @param attrs Structured metadata.
+#' @export
+tccq_loop_nest <- function(
+  id,
+  axes,
+  body,
+  result_type,
+  output = NULL,
+  reducer = NULL,
+  identity = NULL,
+  domain = NULL,
+  attrs = list()
+) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_list_of(axes, TccqLoopAxis, "TccqLoopAxis", "axes")
+  .tccq_check_s7(body, TccqExpression, "TccqExpression", "body")
+  .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
+  .tccq_check_optional_s7(output, TccqAccess, "TccqAccess", "output")
+  .tccq_check_optional_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
+  .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
+  .tccq_check_list(attrs, "attrs")
+  if (is.null(domain)) {
+    domain <- tccq_domain(
+      sprintf("%s.domain", id),
+      tccq_shape(lapply(axes, function(axis) axis@extent)),
+      axes = vapply(axes, function(axis) axis@name, character(1))
+    )
+  }
+  .tccq_check_s7(domain, TccqDomain, "TccqDomain", "domain")
+
+  TccqLoopNest(
+    id = id,
+    domain = domain,
+    axes = axes,
+    body = body,
+    result_type = result_type,
+    output = output,
+    reducer = reducer,
+    identity = identity,
+    attrs = attrs
+  )
+}
+
+#' Plan the loop nest for a lowered program
+#'
+#' This is the pass that turns a lowered value graph into the single loop nest
+#' consumed by source printers. Elementwise maps become all-map nests, full
+#' reductions become all-reduce nests, per-axis reductions and contractions
+#' become mixed nests, and slice values disappear into affine accesses.
+#' Programs the single-nest planner cannot express honestly return structured
+#' diagnostics.
+#'
+#' @param program Lowered program.
+#' @export
+tccq_program_loop_nest <- function(program) {
+  .tccq_check_s7(program, TccqProgram, "TccqProgram", "program")
+
+  nest_diagnostic <- function(code, message, data = list()) {
+    tccq_diagnostic(
+      code,
+      message,
+      phase = "loop_nest",
+      path = "loop_nest",
+      data = c(list(program = program@name), data)
+    )
+  }
+  failed <- function(diagnostic) {
+    tccq_result(success = FALSE, diagnostics = list(diagnostic))
+  }
+
+  if (is.null(program@result) || is.null(program@values[[program@result]])) {
+    return(failed(nest_diagnostic(
+      "loop_nest.missing_result",
+      "Loop-nest planning needs a lowered program result."
+    )))
+  }
+  expression_result <- tccq_expression_tree(program)
+  if (!expression_result@success) {
+    return(tccq_result(success = FALSE, diagnostics = expression_result@diagnostics))
+  }
+  root <- expression_result@value
+  root_operation <- root@attrs$operation
+  root_family <- if (S7::S7_inherits(root_operation, TccqLoweredOperation)) {
+    root_operation@family
+  } else {
+    "elementwise"
+  }
+
+  axis_name <- function(position) sprintf("axis_%04d", position)
+
+  expression_family <- function(expression) {
+    operation <- expression@attrs$operation
+    if (S7::S7_inherits(operation, TccqLoweredOperation)) operation@family else NULL
+  }
+
+  # Rewrite one expression subtree so every reference carries a typed access.
+  # `axis_names` maps tensor-axis positions of values in this subtree to
+  # iteration-axis names.
+  annotate <- function(expression, axis_names, domain) {
+    if (identical(expression@kind, "literal")) {
+      return(expression)
+    }
+    if (identical(expression@kind, "reference")) {
+      rank <- expression@type@shape@rank
+      if (rank == 0L) {
+        access <- tccq_access(
+          expression@attrs$storage_value_id %||% expression@value_id,
+          domain,
+          kind = "scalar"
+        )
+      } else {
+        if (rank > length(axis_names)) {
+          tccq_abort_diagnostic(nest_diagnostic(
+            "loop_nest.rank_mismatch",
+            "A referenced value has more axes than the iteration space of its subtree.",
+            data = list(value_id = expression@value_id, rank = rank)
+          ))
+        }
+        offsets <- as.integer(expression@attrs$slice_offsets %||% integer())
+        if (length(offsets) == 0L) {
+          offsets <- rep(0L, rank)
+        }
+        index_map <- lapply(seq_len(rank), function(position) {
+          tccq_index_expr(axis_names[[position]], offsets[[position]])
+        })
+        access_kind <- if (any(offsets != 0L)) "slice" else "identity"
+        access <- tccq_access(
+          expression@attrs$storage_value_id %||% expression@value_id,
+          domain,
+          kind = access_kind,
+          index_map = index_map
+        )
+      }
+      expression@attrs$access <- access
+      return(expression)
+    }
+    family <- expression_family(expression)
+    if (!identical(family, "elementwise")) {
+      tccq_abort_diagnostic(nest_diagnostic(
+        "loop_nest.unsupported_composition",
+        "Reductions and contractions must produce the program result in the current single-nest planner.",
+        data = list(value_id = expression@value_id, op = expression@op, family = family)
+      ))
+    }
+    expression@inputs <- lapply(expression@inputs, annotate, axis_names = axis_names, domain = domain)
+    expression
+  }
+
+  build <- function() {
+    result_value <- program@values[[program@result]]
+
+    if (identical(root_family, "reduction")) {
+      input_shape <- root@inputs[[1L]]@type@shape
+      reduction_axes <- as.integer(root_operation@attrs$reduction_axes %||% seq_len(input_shape@rank))
+      kept_axes <- as.integer(root_operation@attrs$kept_axes %||% integer())
+      names_by_position <- vapply(seq_len(input_shape@rank), axis_name, character(1))
+      loop_order <- c(kept_axes, reduction_axes)
+      axes <- lapply(loop_order, function(position) {
+        tccq_loop_axis(
+          names_by_position[[position]],
+          input_shape@dims[[position]],
+          role = if (position %in% reduction_axes) "reduce" else "map"
+        )
+      })
+      domain <- tccq_domain(
+        "loop_nest_main.domain",
+        tccq_shape(lapply(loop_order, function(position) input_shape@dims[[position]])),
+        axes = names_by_position[loop_order]
+      )
+      body <- annotate(root@inputs[[1L]], names_by_position, domain)
+      output <- if (length(kept_axes) > 0L) {
+        tccq_access(
+          program@result,
+          domain,
+          kind = "identity",
+          index_map = lapply(kept_axes, function(position) {
+            tccq_index_expr(names_by_position[[position]], 0L)
+          })
+        )
+      } else {
+        NULL
+      }
+      return(tccq_loop_nest(
+        "loop_nest_main",
+        axes = axes,
+        body = body,
+        result_type = result_value@type,
+        output = output,
+        reducer = root_operation@reduction,
+        identity = root_operation@identity,
+        domain = domain,
+        attrs = list(result_value_id = program@result)
+      ))
+    }
+
+    if (identical(root_family, "contraction")) {
+      left <- root@inputs[[1L]]
+      right <- root@inputs[[2L]]
+      left_shape <- left@type@shape
+      right_shape <- right@type@shape
+      result_rank <- result_value@type@shape@rank
+      map_names <- vapply(seq_len(result_rank), axis_name, character(1))
+      reduce_name <- axis_name(result_rank + 1L)
+      axes <- c(
+        lapply(seq_len(result_rank), function(position) {
+          tccq_loop_axis(
+            map_names[[position]],
+            result_value@type@shape@dims[[position]],
+            role = "map"
+          )
+        }),
+        list(tccq_loop_axis(reduce_name, left_shape@dims[[2L]], role = "reduce"))
+      )
+      domain <- tccq_domain(
+        "loop_nest_main.domain",
+        tccq_shape(c(result_value@type@shape@dims, list(left_shape@dims[[2L]]))),
+        axes = c(map_names, reduce_name)
+      )
+      left_axis_names <- c(map_names[[1L]], reduce_name)
+      right_axis_names <- if (right_shape@rank == 1L) {
+        reduce_name
+      } else {
+        c(reduce_name, map_names[[2L]])
+      }
+      contraction_spec <- root_operation@contraction
+      combine_call <- str2lang(sprintf("left %s right", contraction_spec@combine_op))
+      combine_resolution <- tccq_resolve_call(
+        program@attrs$registry %||% tccq_default_op_registry(),
+        tccq_call(contraction_spec@combine_op, expr = combine_call),
+        tccq_op_context()
+      )
+      if (!combine_resolution@success) {
+        tccq_abort_diagnostic(nest_diagnostic(
+          "loop_nest.unresolved_combine",
+          "The contraction combine operation has no lowerable implementation.",
+          data = list(op = contraction_spec@combine_op)
+        ))
+      }
+      body <- tccq_expression(
+        id = sprintf("%s_combine", program@result),
+        kind = "operation",
+        value_id = program@result,
+        op = contraction_spec@combine_op,
+        inputs = list(
+          annotate(left, left_axis_names, domain),
+          annotate(right, right_axis_names, domain)
+        ),
+        type = tccq_type(result_value@type@base),
+        resolved_op = combine_resolution@value
+      )
+      output <- tccq_access(
+        program@result,
+        domain,
+        kind = "identity",
+        index_map = lapply(map_names, function(name) tccq_index_expr(name, 0L))
+      )
+      return(tccq_loop_nest(
+        "loop_nest_main",
+        axes = axes,
+        body = body,
+        result_type = result_value@type,
+        output = output,
+        reducer = contraction_spec@reducer,
+        identity = root_operation@identity,
+        domain = domain,
+        attrs = list(result_value_id = program@result)
+      ))
+    }
+
+    result_shape <- result_value@type@shape
+    names_by_position <- vapply(seq_len(result_shape@rank), axis_name, character(1))
+    axes <- lapply(seq_len(result_shape@rank), function(position) {
+      tccq_loop_axis(names_by_position[[position]], result_shape@dims[[position]], role = "map")
+    })
+    domain <- tccq_domain(
+      "loop_nest_main.domain",
+      result_shape,
+      axes = names_by_position
+    )
+    body <- annotate(root, names_by_position, domain)
+    output <- if (result_shape@rank > 0L) {
+      tccq_access(
+        program@result,
+        domain,
+        kind = "identity",
+        index_map = lapply(names_by_position, function(name) tccq_index_expr(name, 0L))
+      )
+    } else {
+      NULL
+    }
+    tccq_loop_nest(
+      "loop_nest_main",
+      axes = axes,
+      body = body,
+      result_type = result_value@type,
+      output = output,
+      domain = domain,
+      attrs = list(result_value_id = program@result)
+    )
+  }
+
+  nest <- tryCatch(build(), tccq_error = identity)
+  if (inherits(nest, "tccq_error")) {
+    return(tccq_result(
+      success = FALSE,
+      diagnostics = list(tccq_condition_diagnostic(nest))
+    ))
+  }
+  tccq_result(success = TRUE, value = nest)
 }

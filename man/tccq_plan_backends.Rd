@@ -18,5 +18,8 @@ tccq_plan_backends(
 \item{context}{Backend planning context.}
 }
 \description{
-Plan several backends for a typed program
+Every backend accounts for the program and reports constraints through its
+own plan. The plan set succeeds when at least one backend produces a working
+plan; backends that cannot lower the program contribute feasibility
+diagnostics without vetoing the suite.
 }

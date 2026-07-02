@@ -15,11 +15,11 @@ TccqBackendFunctionInterface(
   result_placement = character(0),
   result_name = character(0),
   domain = NULL,
+  extent_symbols = character(0),
   extent_names = character(0),
-  element_count_name = character(0),
-  result_extent_names = character(0),
+  index_names = character(0),
+  result_dims = list(),
   result_count_name = character(0),
-  index_name = character(0),
   accumulator_name = character(0),
   attrs = list()
 )
@@ -29,7 +29,7 @@ TccqBackendFunctionInterface(
 
 \item{source_language}{Source language consumed by the printer.}
 
-\item{kind}{Function shape: scalar, map, or reduction.}
+\item{kind}{Function shape: \code{scalar} or \code{loop_nest}.}
 
 \item{abi}{Callable ABI.}
 
@@ -43,17 +43,18 @@ TccqBackendFunctionInterface(
 
 \item{result_name}{Generated result/output variable name, or empty string.}
 
-\item{domain}{Iteration domain consumed by the callable, or \code{NULL}.}
+\item{domain}{Loop-nest iteration domain, or \code{NULL}.}
 
-\item{extent_names}{Generated per-axis extent parameter names.}
+\item{extent_symbols}{Symbolic dimension names carried by the ABI.}
 
-\item{element_count_name}{Generated total element-count parameter name, or empty string.}
+\item{extent_names}{Generated extent parameter names, one per symbol.}
 
-\item{result_extent_names}{Generated per-axis result extent names.}
+\item{index_names}{Generated per-axis loop index names.}
 
-\item{result_count_name}{Generated result element-count name, or empty string.}
+\item{result_dims}{Typed result dimensions.}
 
-\item{index_name}{Generated loop index name, or empty string.}
+\item{result_count_name}{Generated result element-count parameter name, or
+empty string for scalar results.}
 
 \item{accumulator_name}{Generated reduction accumulator name, or empty string.}
 
@@ -62,7 +63,8 @@ TccqBackendFunctionInterface(
 \description{
 A backend function interface is the source-level callable boundary consumed
 by C, Rtinycc, Fortran, and later source printers. It records the generated
-symbol, ABI, formal parameter mapping, result placement, iteration domain,
-generated extent/count/index variables, and reduction accumulator name before
-any concrete syntax is emitted.
+symbol, ABI, formal parameter mapping, result placement, the loop-nest
+iteration domain, one extent parameter per symbolic dimension, per-axis loop
+index names, typed result dimensions, and the reduction accumulator name
+before any concrete syntax is emitted.
 }

@@ -59,7 +59,8 @@ The active architecture is the small typed core:
   elementwise/reduction specs, and operation source render contracts.
 - `R/lowering.R`: typed lowering from the declared subset into values, regions,
   fusion groups, and storage plans.
-- `R/z-expression.R`: backend-neutral expression trees consumed by source
+- `R/z-expression.R`: backend-neutral expression trees, the `TccqLoopNest`
+  with-loop plan (SAC lineage), and the loop-nest planner consumed by source
   printers.
 - `R/utils.R`: small schema validation helpers.
 - `docs/root.md`: the current root direction.
@@ -248,14 +249,27 @@ For the reset core, keep these rules explicit:
   names, iteration domain, per-axis input extent parameters, total input
   element-count parameter, per-axis result extent parameters, result-count
   parameter, index variable, or reduction accumulator names.
-- Current source backends may lower contiguous rank-N elementwise maps and
-  full-domain rank-N reductions through a linear element-count/index ABI, plus
-  rank-2 single-axis sum reductions through an explicit axis-reduction
-  interface. The semantic rank and dimensions remain `TccqType`/`TccqShape`
-  facts and R boundary wrappers must validate and preserve `dim` for rank
-  greater than one. Do not add a matrix-specific backend path when shape rank,
-  layout, and axis metadata are the real concepts; further per-axis reductions
-  need real domain/layout plans rather than source-printer shortcuts.
+- Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
+  the SAC-style with-loop. It carries ordered `TccqLoopAxis` values (`map`
+  produces output positions, `reduce` folds into an accumulator), a body whose
+  references carry typed `TccqAccess`/`TccqIndexExpr` affine access maps, an
+  optional reducer with identity, and an output access. Scalar programs, maps,
+  full and per-axis reductions, `%*%` contractions, and interior stencils are
+  instances of this one value. Do not reintroduce per-family printer cases,
+  linear element-count ABIs, or string-built index arithmetic; new iteration
+  behavior must extend the loop nest and its typed accesses.
+- The generated ABI passes one `int` extent parameter per symbolic dimension
+  plus a result element-count parameter for non-scalar results. Boundary
+  wrappers and JIT callables bind each extent symbol from the first argument
+  shape declaring it and check every other occurrence; they must not assume
+  arguments share one shape. Affine dimensions (`n - 2`) are `TccqDim` facts
+  rendered by the emitters, never precomputed strings.
+- Operation families are elementwise (`TccqElementwiseSpec`), reduction
+  (`TccqReductionSpec`), and contraction (`TccqContractionSpec`, which owns a
+  signature, a reducer, and a combine operation). Reductions and contractions
+  must produce the program result under the single-nest lowerer; other
+  compositions are `lowering.unsupported_composition` diagnostics until
+  multi-nest programs are modeled.
 - Backend planning must make concrete products explicit through
   `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
   expression trees, storage plans, generated source, shared libraries, wrappers,

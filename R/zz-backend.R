@@ -46,7 +46,7 @@ TCCQ_SAFEPOINT_KINDS <- c(
   "debug_break"
 )
 TCCQ_DEBUG_SITE_KINDS <- c("value", "region", "bridge", "safepoint", "control", "call")
-TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "map", "reduction", "axis_reduction")
+TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "loop_nest")
 TCCQ_BACKEND_FUNCTION_ABIS <- c("c", "fortran_bind_c")
 TCCQ_BACKEND_RESULT_PLACEMENTS <- c("return", "output_argument")
 TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable", "native_callable")
@@ -328,25 +328,27 @@ TccqBridgePlan <- S7::new_class(
 #'
 #' A backend function interface is the source-level callable boundary consumed
 #' by C, Rtinycc, Fortran, and later source printers. It records the generated
-#' symbol, ABI, formal parameter mapping, result placement, iteration domain,
-#' generated extent/count/index variables, and reduction accumulator name before
-#' any concrete syntax is emitted.
+#' symbol, ABI, formal parameter mapping, result placement, the loop-nest
+#' iteration domain, one extent parameter per symbolic dimension, per-axis loop
+#' index names, typed result dimensions, and the reduction accumulator name
+#' before any concrete syntax is emitted.
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
-#' @param kind Function shape: scalar, map, or reduction.
+#' @param kind Function shape: `scalar` or `loop_nest`.
 #' @param abi Callable ABI.
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
 #' @param result_value_id Lowered result value id.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
-#' @param domain Iteration domain consumed by the callable, or `NULL`.
-#' @param extent_names Generated per-axis extent parameter names.
-#' @param element_count_name Generated total element-count parameter name, or empty string.
-#' @param result_extent_names Generated per-axis result extent names.
-#' @param result_count_name Generated result element-count name, or empty string.
-#' @param index_name Generated loop index name, or empty string.
+#' @param domain Loop-nest iteration domain, or `NULL`.
+#' @param extent_symbols Symbolic dimension names carried by the ABI.
+#' @param extent_names Generated extent parameter names, one per symbol.
+#' @param index_names Generated per-axis loop index names.
+#' @param result_dims Typed result dimensions.
+#' @param result_count_name Generated result element-count parameter name, or
+#'   empty string for scalar results.
 #' @param accumulator_name Generated reduction accumulator name, or empty string.
 #' @param attrs Structured interface metadata.
 #' @export
@@ -364,11 +366,11 @@ TccqBackendFunctionInterface <- S7::new_class(
     result_placement = S7::class_character,
     result_name = S7::class_character,
     domain = S7::new_union(NULL, TccqDomain),
+    extent_symbols = S7::class_character,
     extent_names = S7::class_character,
-    element_count_name = S7::class_character,
-    result_extent_names = S7::class_character,
+    index_names = S7::class_character,
+    result_dims = S7::class_list,
     result_count_name = S7::class_character,
-    index_name = S7::class_character,
     accumulator_name = S7::class_character,
     attrs = S7::class_list
   ),
@@ -382,9 +384,7 @@ TccqBackendFunctionInterface <- S7::new_class(
       result_value_id = self@result_value_id,
       result_placement = self@result_placement,
       result_name = self@result_name,
-      element_count_name = self@element_count_name,
       result_count_name = self@result_count_name,
-      index_name = self@index_name,
       accumulator_name = self@accumulator_name
     )
     for (field_name in names(scalar_strings)) {
@@ -433,76 +433,42 @@ TccqBackendFunctionInterface <- S7::new_class(
     if (anyNA(self@parameter_value_ids) || any(!nzchar(self@parameter_value_ids))) {
       problems <- c(problems, "@parameter_value_ids must contain non-empty value ids")
     }
-    if (!is.null(self@domain)) {
-      if (length(self@extent_names) != self@domain@shape@rank) {
-        problems <- c(problems, "@extent_names must match @domain rank")
+    if (length(self@extent_symbols) != length(self@extent_names)) {
+      problems <- c(problems, "@extent_symbols and @extent_names must have the same length")
+    }
+    if (anyNA(self@extent_symbols) || any(!nzchar(self@extent_symbols)) || anyDuplicated(self@extent_symbols)) {
+      problems <- c(problems, "@extent_symbols must contain unique non-empty symbols")
+    }
+    if (anyNA(self@extent_names) || any(!nzchar(self@extent_names)) || anyDuplicated(self@extent_names)) {
+      problems <- c(problems, "@extent_names must contain unique non-empty parameter names")
+    }
+    if (is.null(self@domain)) {
+      if (length(self@index_names) != 0L) {
+        problems <- c(problems, "@index_names must be empty when @domain is NULL")
       }
-      if (anyNA(self@extent_names) || any(!nzchar(self@extent_names))) {
-        problems <- c(problems, "@extent_names must contain non-empty strings")
+    } else {
+      if (length(self@index_names) != self@domain@shape@rank) {
+        problems <- c(problems, "@index_names must match @domain rank")
       }
-    } else if (length(self@extent_names) != 0L) {
-      problems <- c(problems, "@extent_names must be empty when @domain is NULL")
+      if (anyNA(self@index_names) || any(!nzchar(self@index_names))) {
+        problems <- c(problems, "@index_names must contain non-empty strings")
+      }
     }
-    kind_requires_domain <- length(self@kind) == 1L &&
-      !is.na(self@kind) &&
-      self@kind %in% c("map", "reduction", "axis_reduction")
-    if (kind_requires_domain && is.null(self@domain)) {
-      problems <- c(problems, "map and reduction interfaces must carry an iteration domain")
+    result_dims_are_typed <- vapply(self@result_dims, S7::S7_inherits, logical(1), class = TccqDim)
+    if (!all(result_dims_are_typed)) {
+      problems <- c(problems, "@result_dims must contain only <TccqDim> values")
     }
-    if (
-      kind_requires_domain &&
-        !is.null(self@domain) &&
-        self@domain@shape@rank <= 0L
-    ) {
-      problems <- c(problems, "map and reduction interfaces must carry a non-scalar iteration domain")
+    if (length(self@result_dims) > 0L && !nzchar(self@result_count_name)) {
+      problems <- c(problems, "non-scalar results must have a result-count name")
     }
-    if (kind_requires_domain && !nzchar(self@element_count_name)) {
-      problems <- c(problems, "non-scalar interfaces must have an element-count name")
+    if (length(self@result_dims) == 0L && nzchar(self@result_count_name)) {
+      problems <- c(problems, "scalar results must not have a result-count name")
     }
-    if (anyNA(self@result_extent_names) || any(!nzchar(self@result_extent_names))) {
-      problems <- c(problems, "@result_extent_names must contain non-empty strings")
+    if (identical(self@kind, "scalar") && length(self@index_names) != 0L) {
+      problems <- c(problems, "scalar interfaces must not carry iteration axes")
     }
-    kind_requires_result_count <- length(self@kind) == 1L &&
-      !is.na(self@kind) &&
-      self@kind %in% c("map", "axis_reduction")
-    if (kind_requires_result_count && !nzchar(self@result_count_name)) {
-      problems <- c(problems, "map and axis-reduction interfaces must have a result-count name")
-    }
-    if (identical(self@kind, "reduction") && nzchar(self@result_count_name)) {
-      problems <- c(problems, "full-domain reduction interfaces must not have a result-count name")
-    }
-    if (
-      identical(self@kind, "axis_reduction") &&
-        length(self@result_extent_names) == 0L
-    ) {
-      problems <- c(problems, "axis-reduction interfaces must carry result extent names")
-    }
-    if (
-      length(self@kind) == 1L &&
-        !is.na(self@kind) &&
-        self@kind %in% c("map", "reduction", "axis_reduction") &&
-        !nzchar(self@index_name)
-    ) {
-      problems <- c(problems, "non-scalar interfaces must have an index name")
-    }
-    kind_requires_accumulator <- length(self@kind) == 1L &&
-      !is.na(self@kind) &&
-      self@kind %in% c("reduction", "axis_reduction")
-    if (kind_requires_accumulator && !nzchar(self@accumulator_name)) {
-      problems <- c(problems, "reduction interfaces must have an accumulator name")
-    }
-    if (identical(self@kind, "scalar") && nzchar(self@element_count_name)) {
-      problems <- c(problems, "scalar interfaces must not have an element-count parameter")
-    }
-    if (identical(self@kind, "scalar") && nzchar(self@result_count_name)) {
-      problems <- c(problems, "scalar interfaces must not have a result-count parameter")
-    }
-    if (
-      identical(self@kind, "scalar") &&
-        !is.null(self@domain) &&
-        self@domain@shape@rank > 0L
-    ) {
-      problems <- c(problems, "scalar interfaces must not carry a non-scalar iteration domain")
+    if (identical(self@kind, "loop_nest") && (is.null(self@domain) || self@domain@shape@rank == 0L)) {
+      problems <- c(problems, "loop-nest interfaces must carry a non-scalar iteration domain")
     }
     if (identical(self@result_placement, "output_argument") && !nzchar(self@result_name)) {
       problems <- c(problems, "output-argument results must have a result name")
@@ -609,13 +575,14 @@ TccqBackendArtifact <- S7::new_class(
 #' Backend products
 #'
 #' Backend products are the typed outputs owned by a backend plan: the callable
-#' interface, expression tree consumed by the source printer, storage plan, and
-#' concrete artifacts. Runtime handles such as loaded libraries and compiled
-#' callables stay in `attrs`, but under this typed products value rather than
-#' directly on the backend plan.
+#' interface, loop nest and expression tree consumed by the source printer,
+#' storage plan, and concrete artifacts. Runtime handles such as loaded
+#' libraries and compiled callables stay in `attrs`, but under this typed
+#' products value rather than directly on the backend plan.
 #'
 #' @param function_interface Source-level callable interface, if source exists.
 #' @param expression Expression tree consumed by the backend, if source exists.
+#' @param loop_nest Loop nest consumed by the backend, if source exists.
 #' @param storage_plan Storage plan consumed by the backend, if available.
 #' @param artifacts Named backend artifacts.
 #' @param attrs Structured product metadata.
@@ -626,6 +593,7 @@ TccqBackendProducts <- S7::new_class(
   properties = list(
     function_interface = S7::new_union(NULL, TccqBackendFunctionInterface),
     expression = S7::new_union(NULL, TccqExpression),
+    loop_nest = S7::new_union(NULL, TccqLoopNest),
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
     artifacts = S7::class_list,
     attrs = S7::class_list
@@ -1237,19 +1205,20 @@ tccq_bridge_plan <- function(
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
-#' @param kind Function shape: scalar, map, or reduction.
+#' @param kind Function shape: `scalar` or `loop_nest`.
 #' @param abi Callable ABI.
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
 #' @param result_value_id Lowered result value id.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
-#' @param domain Iteration domain consumed by the callable, or `NULL`.
-#' @param extent_names Generated per-axis extent parameter names.
-#' @param element_count_name Generated total element-count parameter name, or empty string.
-#' @param result_extent_names Generated per-axis result extent names.
-#' @param result_count_name Generated result element-count name, or empty string.
-#' @param index_name Generated loop index name, or empty string.
+#' @param domain Loop-nest iteration domain, or `NULL`.
+#' @param extent_symbols Symbolic dimension names carried by the ABI.
+#' @param extent_names Generated extent parameter names, one per symbol.
+#' @param index_names Generated per-axis loop index names.
+#' @param result_dims Typed result dimensions.
+#' @param result_count_name Generated result element-count parameter name, or
+#'   empty string for scalar results.
 #' @param accumulator_name Generated reduction accumulator name, or empty string.
 #' @param attrs Structured interface metadata.
 #' @export
@@ -1264,11 +1233,11 @@ tccq_backend_function_interface <- function(
   result_placement = "return",
   result_name = "",
   domain = NULL,
+  extent_symbols = character(),
   extent_names = character(),
-  element_count_name = "",
-  result_extent_names = character(),
+  index_names = character(),
+  result_dims = list(),
   result_count_name = "",
-  index_name = "",
   accumulator_name = "",
   attrs = list()
 ) {
@@ -1355,6 +1324,14 @@ tccq_backend_function_interface <- function(
   }
   .tccq_check_character_or_empty(result_name, "result_name")
   .tccq_check_optional_s7(domain, TccqDomain, "TccqDomain", "domain")
+  if (!is.character(extent_symbols) || anyNA(extent_symbols) || any(!nzchar(extent_symbols))) {
+    tccq_abort(
+      "schema.invalid_backend_function_extents",
+      "`extent_symbols` must contain non-empty strings.",
+      phase = "schema",
+      path = "backend_function.extent_symbols"
+    )
+  }
   if (!is.character(extent_names) || anyNA(extent_names) || any(!nzchar(extent_names))) {
     tccq_abort(
       "schema.invalid_backend_function_extents",
@@ -1363,21 +1340,16 @@ tccq_backend_function_interface <- function(
       path = "backend_function.extent_names"
     )
   }
-  .tccq_check_character_or_empty(element_count_name, "element_count_name")
-  if (
-    !is.character(result_extent_names) ||
-      anyNA(result_extent_names) ||
-      any(!nzchar(result_extent_names))
-  ) {
+  if (!is.character(index_names) || anyNA(index_names) || any(!nzchar(index_names))) {
     tccq_abort(
-      "schema.invalid_backend_function_result_extents",
-      "`result_extent_names` must contain non-empty strings.",
+      "schema.invalid_backend_function_indexes",
+      "`index_names` must contain non-empty strings.",
       phase = "schema",
-      path = "backend_function.result_extent_names"
+      path = "backend_function.index_names"
     )
   }
+  .tccq_check_list_of(result_dims, TccqDim, "TccqDim", "result_dims")
   .tccq_check_character_or_empty(result_count_name, "result_count_name")
-  .tccq_check_character_or_empty(index_name, "index_name")
   .tccq_check_character_or_empty(accumulator_name, "accumulator_name")
   .tccq_check_list(attrs, "attrs")
 
@@ -1392,11 +1364,11 @@ tccq_backend_function_interface <- function(
     result_placement = result_placement,
     result_name = result_name,
     domain = domain,
+    extent_symbols = extent_symbols,
     extent_names = extent_names,
-    element_count_name = element_count_name,
-    result_extent_names = result_extent_names,
+    index_names = index_names,
+    result_dims = result_dims,
     result_count_name = result_count_name,
-    index_name = index_name,
     accumulator_name = accumulator_name,
     attrs = attrs
   )
@@ -1454,6 +1426,7 @@ tccq_backend_artifact <- function(
 #'
 #' @param function_interface Source-level callable interface, if source exists.
 #' @param expression Expression tree consumed by the backend, if source exists.
+#' @param loop_nest Loop nest consumed by the backend, if source exists.
 #' @param storage_plan Storage plan consumed by the backend, if available.
 #' @param artifacts Named backend artifacts.
 #' @param attrs Structured product metadata.
@@ -1461,6 +1434,7 @@ tccq_backend_artifact <- function(
 tccq_backend_products <- function(
   function_interface = NULL,
   expression = NULL,
+  loop_nest = NULL,
   storage_plan = NULL,
   artifacts = list(),
   attrs = list()
@@ -1472,6 +1446,7 @@ tccq_backend_products <- function(
     "function_interface"
   )
   .tccq_check_optional_s7(expression, TccqExpression, "TccqExpression", "expression")
+  .tccq_check_optional_s7(loop_nest, TccqLoopNest, "TccqLoopNest", "loop_nest")
   .tccq_check_optional_s7(storage_plan, TccqStoragePlan, "TccqStoragePlan", "storage_plan")
   .tccq_check_list_of(artifacts, TccqBackendArtifact, "TccqBackendArtifact", "artifacts")
   artifact_roles <- names(artifacts)
@@ -1492,6 +1467,7 @@ tccq_backend_products <- function(
   TccqBackendProducts(
     function_interface = function_interface,
     expression = expression,
+    loop_nest = loop_nest,
     storage_plan = storage_plan,
     artifacts = artifacts,
     attrs = attrs
@@ -1901,6 +1877,11 @@ tccq_plan_backend <- function(
 
 #' Plan several backends for a typed program
 #'
+#' Every backend accounts for the program and reports constraints through its
+#' own plan. The plan set succeeds when at least one backend produces a working
+#' plan; backends that cannot lower the program contribute feasibility
+#' diagnostics without vetoing the suite.
+#'
 #' @param program Program to plan.
 #' @param backends Backend implementation descriptors.
 #' @param context Backend planning context.
@@ -1928,9 +1909,9 @@ tccq_plan_backends <- function(
     diagnostics = diagnostics,
     attrs = list(backends = vapply(backends, function(x) x@id, character(1)))
   )
-  all_backend_plans_succeeded <- all(vapply(results, function(result) result@success, logical(1)))
+  backend_plan_succeeded <- vapply(results, function(result) result@success, logical(1))
   tccq_result(
-    success = all_backend_plans_succeeded,
+    success = any(backend_plan_succeeded),
     value = plan_set,
     diagnostics = diagnostics
   )
@@ -2087,147 +2068,143 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       NULL
     }
 
-    expression_operation <- function(expression) {
-      operation <- expression@attrs$operation
-      if (S7::S7_inherits(operation, TccqLoweredOperation)) operation else NULL
+    sanitize_extent_symbol <- function(symbol) {
+      gsub("[^A-Za-z0-9_]", "_", symbol)
     }
 
-    expression_is_reduction <- function(expression) {
-      operation <- expression_operation(expression)
-      identical(expression@kind, "operation") &&
-        !is.null(operation) &&
-        identical(operation@family, "reduction") &&
-        length(expression@inputs) == 1L
-    }
-
-    expression_is_axis_reduction <- function(expression) {
-      operation <- expression_operation(expression)
-      expression_is_reduction(expression) &&
-        identical(operation@attrs$reduction_kind, "axis")
-    }
-
-    interface_domain <- function(kind, source_expression, result) {
-      matching_fusion_groups <- unlist(lapply(program@regions, function(region) {
-        Filter(
-          function(fusion_group) {
-            result@id %in% fusion_group@outputs
-          },
-          region@fusion_groups
-        )
-      }), recursive = FALSE)
-      if (length(matching_fusion_groups) > 0L) {
-        return(matching_fusion_groups[[1L]]@domain)
+    extent_plan <- function(formals, nest) {
+      symbols <- character()
+      note_dim <- function(dim) {
+        if (dim@kind %in% c("symbol", "affine") && !dim@label %in% symbols) {
+          symbols <<- c(symbols, dim@label)
+        }
       }
-      if (identical(kind, "scalar")) {
-        return(NULL)
+      for (value in formals) {
+        for (dim in value@type@shape@dims) {
+          note_dim(dim)
+        }
       }
-      domain_shape <- if (kind %in% c("reduction", "axis_reduction")) {
-        source_expression@inputs[[1L]]@type@shape
-      } else {
-        result@type@shape
+      for (axis in nest@axes) {
+        note_dim(axis@extent)
       }
-      tccq_domain("domain_backend", domain_shape)
-    }
-
-    backend_function_interface <- function(symbol, source_expression, result, formals) {
-      parameter_names <- c_identifier("input", seq_along(formals))
-      parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
-      kind <- if (expression_is_axis_reduction(source_expression)) {
-        "axis_reduction"
-      } else if (expression_is_reduction(source_expression)) {
-        "reduction"
-      } else if (result@type@shape@rank > 0L) {
-        "map"
-      } else {
-        "scalar"
+      for (dim in nest@result_type@shape@dims) {
+        note_dim(dim)
       }
-      domain <- interface_domain(kind, source_expression, result)
-      domain_rank <- if (is.null(domain)) 0L else domain@shape@rank
-      extent_names <- if (domain_rank > 0L) c_identifier("extent", seq_len(domain_rank)) else character()
-      element_count_name <- if (domain_rank > 0L) "element_count_0001" else ""
-      result_operation <- expression_operation(source_expression)
-      kept_axes <- if (
-        identical(kind, "axis_reduction") &&
-          !is.null(result_operation) &&
-          length(result_operation@attrs$kept_axes) > 0L
-      ) {
-        as.integer(result_operation@attrs$kept_axes)
-      } else {
-        integer()
-      }
-      result_extent_names <- if (identical(kind, "map")) {
-        extent_names
-      } else if (identical(kind, "axis_reduction")) {
-        extent_names[kept_axes]
-      } else {
-        character()
-      }
-      result_count_name <- if (identical(kind, "map")) {
-        element_count_name
-      } else if (identical(kind, "axis_reduction") && length(result_extent_names) == 1L) {
-        result_extent_names[[1L]]
-      } else {
-        ""
-      }
-      result_placement <- if (identical(source_language, "fortran") && kind %in% c("map", "axis_reduction")) {
-        "output_argument"
-      } else {
-        "return"
-      }
-      result_name <- if (identical(source_language, "fortran") || kind %in% c("map", "axis_reduction")) {
-        "output"
-      } else {
-        ""
-      }
-      tccq_backend_function_interface(
-        symbol = symbol,
-        source_language = source_language,
-        kind = kind,
-        abi = if (identical(source_language, "fortran")) "fortran_bind_c" else "c",
-        parameter_names = parameter_names,
-        parameter_value_ids = parameter_value_ids,
-        result_value_id = result@id,
-        result_placement = result_placement,
-        result_name = result_name,
-        domain = domain,
-        extent_names = extent_names,
-        element_count_name = element_count_name,
-        result_extent_names = result_extent_names,
-        result_count_name = result_count_name,
-        index_name = if (domain_rank > 0L) "index_0001" else "",
-        accumulator_name = if (kind %in% c("reduction", "axis_reduction")) "accumulator_0001" else "",
-        attrs = list(result_type = result@type)
+      list(
+        symbols = symbols,
+        names = vapply(symbols, function(symbol) {
+          sprintf("extent_%s", sanitize_extent_symbol(symbol))
+        }, character(1), USE.NAMES = FALSE)
       )
     }
 
-    expression_text <- function(expression, parameter_by_value_id, index_name, language) {
+    extent_text <- function(dim, extent_by_symbol) {
+      if (identical(dim@kind, "constant")) {
+        return(sprintf("%d", dim@value))
+      }
+      extent_name <- extent_by_symbol[[dim@label]]
+      if (dim@kind %in% c("symbol", "affine") && is.null(extent_name)) {
+        tccq_abort(
+          "backend.unbound_extent_symbol",
+          "A dimension symbol is not bound to an extent parameter.",
+          phase = "backend",
+          path = sprintf("backend.%s.extents", backend@id),
+          data = list(backend = backend@id, symbol = dim@label)
+        )
+      }
+      if (identical(dim@kind, "symbol")) {
+        return(extent_name)
+      }
+      if (identical(dim@kind, "affine")) {
+        operator <- if (dim@value < 0L) "-" else "+"
+        return(sprintf("(%s %s %d)", extent_name, operator, abs(dim@value)))
+      }
+      tccq_abort(
+        "backend.unknown_extent",
+        "Source printing needs constant, symbolic, or affine extents.",
+        phase = "backend",
+        path = sprintf("backend.%s.extents", backend@id),
+        data = list(backend = backend@id, kind = dim@kind)
+      )
+    }
+
+    stride_texts <- function(dims, extent_by_symbol) {
+      strides <- character(length(dims))
+      factors <- character()
+      for (position in seq_along(dims)) {
+        strides[[position]] <- if (length(factors) == 0L) {
+          "1"
+        } else if (length(factors) == 1L) {
+          factors[[1L]]
+        } else {
+          sprintf("(%s)", paste(factors, collapse = " * "))
+        }
+        factors <- c(factors, extent_text(dims[[position]], extent_by_symbol))
+      }
+      strides
+    }
+
+    index_term_text <- function(index) {
+      if (!nzchar(index@axis)) {
+        return(sprintf("%d", index@offset))
+      }
+      if (identical(index@offset, 0L)) {
+        return(index@axis)
+      }
+      operator <- if (index@offset < 0L) "-" else "+"
+      sprintf("(%s %s %d)", index@axis, operator, abs(index@offset))
+    }
+
+    linear_index_text <- function(access, dims, extent_by_symbol) {
+      strides <- stride_texts(dims, extent_by_symbol)
+      terms <- character()
+      for (position in seq_along(access@index_map)) {
+        term <- index_term_text(access@index_map[[position]])
+        if (identical(term, "0")) {
+          next
+        }
+        terms <- c(terms, if (identical(strides[[position]], "1")) {
+          term
+        } else {
+          sprintf("%s * %s", term, strides[[position]])
+        })
+      }
+      if (length(terms) == 0L) "0" else paste(terms, collapse = " + ")
+    }
+
+    expression_text <- function(expression, emit_context) {
       if (identical(expression@kind, "reference")) {
-        parameter_name <- parameter_by_value_id[[expression@value_id]]
-        if (expression@type@shape@rank == 0L) {
+        access <- expression@attrs$access
+        if (!S7::S7_inherits(access, TccqAccess)) {
+          tccq_abort(
+            "backend.missing_access",
+            "Loop-nest references must carry a typed access.",
+            phase = "backend",
+            path = sprintf("backend.%s.access", backend@id),
+            data = list(backend = backend@id, value_id = expression@value_id)
+          )
+        }
+        parameter_name <- emit_context$parameter_by_value_id[[access@value_id]]
+        if (identical(access@kind, "scalar")) {
           return(parameter_name)
         }
-        if (identical(language, "fortran")) {
-          return(sprintf("%s(%s)", parameter_name, index_name))
+        storage_type <- emit_context$formal_type_by_id[[access@value_id]]
+        linear <- linear_index_text(access, storage_type@shape@dims, emit_context$extent_by_symbol)
+        if (identical(emit_context$language, "fortran")) {
+          return(sprintf("%s(%s + 1)", parameter_name, linear))
         }
-        return(sprintf("%s[%s]", parameter_name, index_name))
+        return(sprintf("%s[%s]", parameter_name, linear))
       }
       if (identical(expression@kind, "literal")) {
-        literal <- expression@literal
-        if (identical(expression@type@base, "integer")) {
-          return(sprintf("%d", as.integer(literal@value)))
-        }
-        return(formatC(as.numeric(literal@value), digits = 17L, format = "fg"))
+        return(literal_text(expression@literal, emit_context$language))
       }
 
-      child_expression_text <- function(child_expression) {
-        expression_text(child_expression, parameter_by_value_id, index_name, language)
-      }
-      inputs <- vapply(expression@inputs, child_expression_text, character(1))
+      inputs <- vapply(expression@inputs, expression_text, character(1), emit_context = emit_context)
       render_result <- tccq_op_render(
         expression@resolved_op@implementation,
         inputs,
         tccq_op_render_context(
-          language = language,
+          language = emit_context$language,
           backend_id = backend@id,
           attrs = list(value_id = expression@value_id, op = expression@op)
         )
@@ -2236,6 +2213,65 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         tccq_abort_diagnostic(render_result@diagnostics[[1L]])
       }
       render_result@value
+    }
+
+    backend_function_interface <- function(symbol, nest, result, formals) {
+      parameter_names <- c_identifier("input", seq_along(formals))
+      parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
+      extents <- extent_plan(formals, nest)
+      kind <- if (length(nest@axes) == 0L) "scalar" else "loop_nest"
+      roles <- vapply(nest@axes, function(axis) axis@role, character(1))
+      if (length(roles) > 1L && any(diff(match(roles, c("map", "reduce"))) < 0L)) {
+        tccq_abort(
+          "backend.unsupported_axis_order",
+          "Source printers currently require map axes to precede reduce axes.",
+          phase = "backend",
+          path = sprintf("backend.%s.axes", backend@id),
+          data = list(backend = backend@id, roles = roles)
+        )
+      }
+      result_rank <- result@type@shape@rank
+      tccq_backend_function_interface(
+        symbol = symbol,
+        source_language = source_language,
+        kind = kind,
+        abi = if (identical(source_language, "fortran")) "fortran_bind_c" else "c",
+        parameter_names = parameter_names,
+        parameter_value_ids = parameter_value_ids,
+        result_value_id = result@id,
+        result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
+          "output_argument"
+        } else {
+          "return"
+        },
+        result_name = if (identical(source_language, "fortran") || result_rank > 0L) "output" else "",
+        domain = if (identical(kind, "scalar")) NULL else nest@domain,
+        extent_symbols = extents$symbols,
+        extent_names = extents$names,
+        index_names = vapply(nest@axes, function(axis) axis@name, character(1)),
+        result_dims = result@type@shape@dims,
+        result_count_name = if (result_rank > 0L) "result_count_0001" else "",
+        accumulator_name = if (!is.null(nest@reducer)) "accumulator_0001" else "",
+        attrs = list(result_type = result@type)
+      )
+    }
+
+    new_emit_context <- function(interface, formals, language) {
+      extent_by_symbol <- as.list(stats::setNames(interface@extent_names, interface@extent_symbols))
+      parameter_by_value_id <- as.list(stats::setNames(
+        interface@parameter_names,
+        interface@parameter_value_ids
+      ))
+      formal_type_by_id <- lapply(
+        stats::setNames(formals, vapply(formals, function(value) value@id, character(1))),
+        function(value) value@type
+      )
+      list(
+        extent_by_symbol = extent_by_symbol,
+        parameter_by_value_id = parameter_by_value_id,
+        formal_type_by_id = formal_type_by_id,
+        language = language
+      )
     }
 
     literal_text <- function(literal, language) {
@@ -2277,459 +2313,289 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       combine_result@value
     }
 
-    axis_reduction_loop_plan <- function(interface, source_expression) {
-      lowered_operation <- expression_operation(source_expression)
-      reduction_spec <- if (!is.null(lowered_operation)) lowered_operation@reduction else NULL
-      if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
-        tccq_abort(
-          "backend.invalid_axis_reduction",
-          "Axis-reduction expressions must carry a <TccqReductionSpec>.",
-          phase = "backend",
-          path = sprintf("backend.%s.axis_reduction.reducer", backend@id),
-          data = list(backend = backend@id)
-        )
-      }
-      reduction_axes <- as.integer(lowered_operation@attrs$reduction_axes %||% integer())
-      kept_axes <- as.integer(lowered_operation@attrs$kept_axes %||% integer())
-      if (
-        is.null(interface@domain) ||
-          interface@domain@shape@rank != 2L ||
-          length(reduction_axes) != 1L ||
-          length(kept_axes) != 1L ||
-          !setequal(c(reduction_axes, kept_axes), c(1L, 2L))
-      ) {
-        tccq_abort(
-          "backend.unsupported_axis_reduction_domain",
-          "The current source printers support rank-2 single-axis reductions.",
-          phase = "backend",
-          path = sprintf("backend.%s.axis_reduction.domain", backend@id),
-          data = list(
-            backend = backend@id,
-            rank = if (is.null(interface@domain)) NULL else interface@domain@shape@rank,
-            reduction_axes = reduction_axes,
-            kept_axes = kept_axes
+    loop_plan <- function(interface, nest, emit_context) {
+      map_axes <- Filter(function(axis) identical(axis@role, "map"), nest@axes)
+      reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
+      body_text <- expression_text(nest@body, emit_context)
+      value_text <- body_text
+      identity_text <- ""
+      combine_text <- ""
+      if (!is.null(nest@reducer)) {
+        identity_text <- literal_text(nest@identity, emit_context$language)
+        combine_result <- tccq_reduction_combine(
+          nest@reducer,
+          interface@accumulator_name,
+          body_text,
+          tccq_op_render_context(
+            language = emit_context$language,
+            backend_id = backend@id,
+            attrs = list(reducer = nest@reducer@name)
           )
         )
+        if (!combine_result@success) {
+          tccq_abort_diagnostic(combine_result@diagnostics[[1L]])
+        }
+        combine_text <- combine_result@value
+        value_text <- interface@accumulator_name
       }
-      row_extent <- interface@extent_names[[1L]]
-      column_extent <- interface@extent_names[[2L]]
-      output_index_name <- "output_index_0001"
-      reduce_index_name <- "reduce_index_0001"
-      if (identical(reduction_axes, 1L) && identical(kept_axes, 2L)) {
-        reduce_extent_name <- row_extent
-        c_index_expression <- sprintf("%s + %s * %s", reduce_index_name, row_extent, output_index_name)
-        fortran_index_expression <- sprintf("%s + %s * (%s - 1)", reduce_index_name, row_extent, output_index_name)
+      output_index <- if (!is.null(nest@output)) {
+        linear_index_text(
+          nest@output,
+          nest@result_type@shape@dims,
+          emit_context$extent_by_symbol
+        )
       } else {
-        reduce_extent_name <- column_extent
-        c_index_expression <- sprintf("%s + %s * %s", output_index_name, row_extent, reduce_index_name)
-        fortran_index_expression <- sprintf("%s + %s * (%s - 1)", output_index_name, row_extent, reduce_index_name)
+        ""
       }
       list(
-        reduction_spec = reduction_spec,
-        reduction_axes = reduction_axes,
-        kept_axes = kept_axes,
-        output_index_name = output_index_name,
-        reduce_index_name = reduce_index_name,
-        reduce_extent_name = reduce_extent_name,
-        c_index_expression = c_index_expression,
-        fortran_index_expression = fortran_index_expression
+        map_axes = map_axes,
+        reduce_axes = reduce_axes,
+        body_text = body_text,
+        value_text = value_text,
+        identity_text = identity_text,
+        combine_text = combine_text,
+        output_index = output_index
       )
     }
 
-    emit_c_source <- function(interface, source_expression, result, formals) {
-      symbol <- interface@symbol
-      parameter_names <- interface@parameter_names
-      parameter_by_value_id <- as.list(stats::setNames(
-        parameter_names,
-        interface@parameter_value_ids
-      ))
-      scalar_parameter <- function(parameter_name) {
-        sprintf("double %s", parameter_name)
-      }
-      vector_parameter <- function(parameter_name) {
-        sprintf("const double *%s", parameter_name)
-      }
-      parameter_declarations <- Map(function(value, parameter_name) {
+    emit_c_source <- function(interface, nest, result, formals) {
+      emit_context <- new_emit_context(interface, formals, "c")
+      plan <- loop_plan(interface, nest, emit_context)
+      parameter_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
-          scalar_parameter(parameter_name)
+          sprintf("double %s", parameter_name)
         } else {
-          vector_parameter(parameter_name)
+          sprintf("const double *%s", parameter_name)
         }
-      }, formals, parameter_names)
-      domain_parameter_declarations <- c(
-        sprintf("int %s", interface@extent_names),
-        if (nzchar(interface@element_count_name)) {
-          sprintf("int %s", interface@element_count_name)
-        } else {
-          character()
-        }
+      }, formals, interface@parameter_names), use.names = FALSE)
+      signature_declarations <- c(
+        parameter_declarations,
+        if (length(interface@extent_names) > 0L) sprintf("int %s", interface@extent_names),
+        if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
       )
-      if (identical(interface@kind, "reduction")) {
-        lowered_operation <- expression_operation(source_expression)
-        reduction_spec <- if (!is.null(lowered_operation)) lowered_operation@reduction else NULL
-        if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
-          tccq_abort(
-            "backend.invalid_reduction",
-            "Reduction expressions must carry a <TccqReductionSpec>.",
-            phase = "backend",
-            path = sprintf("backend.%s.reducer", backend@id),
-            data = list(backend = backend@id)
-          )
-        }
-        element_count_name <- interface@element_count_name
-        index_name <- interface@index_name
-        accumulator_name <- interface@accumulator_name
-        identity <- reduction_identity_text(reduction_spec, result@type, "c")
-        reduced_expression <- expression_text(
-          source_expression@inputs[[1L]],
-          parameter_by_value_id,
-          index_name,
-          "c"
-        )
-        combined_expression <- reduction_combine_text(
-          reduction_spec,
-          accumulator_name,
-          reduced_expression,
-          "c"
-        )
-        signature_declarations <- c(unlist(parameter_declarations), domain_parameter_declarations)
-        return(paste(c(
-          "#include <math.h>",
-          "#include <stddef.h>",
-          "",
-          sprintf(
-            "double %s(%s) {",
-            symbol,
-            paste(signature_declarations, collapse = ", ")
-          ),
-          sprintf("  double %s = %s;", accumulator_name, identity),
-          sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, element_count_name, index_name),
-          sprintf("    %s = %s;", accumulator_name, combined_expression),
-          "  }",
-          sprintf("  return %s;", accumulator_name),
-          "}"
-        ), collapse = "\n"))
-      }
-
-      if (identical(interface@kind, "axis_reduction")) {
-        loop_plan <- axis_reduction_loop_plan(interface, source_expression)
-        element_count_name <- interface@element_count_name
-        result_count_name <- interface@result_count_name
-        index_name <- interface@index_name
-        output_index_name <- loop_plan$output_index_name
-        reduce_index_name <- loop_plan$reduce_index_name
-        accumulator_name <- interface@accumulator_name
-        result_name <- interface@result_name
-        identity <- reduction_identity_text(loop_plan$reduction_spec, tccq_type(result@type@base), "c")
-        reduced_expression <- expression_text(
-          source_expression@inputs[[1L]],
-          parameter_by_value_id,
-          index_name,
-          "c"
-        )
-        combined_expression <- reduction_combine_text(
-          loop_plan$reduction_spec,
-          accumulator_name,
-          reduced_expression,
-          "c"
-        )
-        signature_declarations <- c(unlist(parameter_declarations), domain_parameter_declarations)
-        return(paste(c(
-          "#include <math.h>",
-          "#include <stddef.h>",
-          "#include <stdlib.h>",
-          "",
-          sprintf(
-            "double *%s(%s) {",
-            symbol,
-            paste(signature_declarations, collapse = ", ")
-          ),
-          sprintf("  if (%s < 0 || %s < 0) {", element_count_name, result_count_name),
-          "    return NULL;",
-          "  }",
-          sprintf("  double *%s = (double *)malloc(sizeof(double) * (size_t)%s);", result_name, result_count_name),
-          sprintf("  if (%s == NULL) {", result_name),
-          "    return NULL;",
-          "  }",
-          sprintf(
-            "  for (int %s = 0; %s < %s; ++%s) {",
-            output_index_name,
-            output_index_name,
-            result_count_name,
-            output_index_name
-          ),
-          sprintf("    double %s = %s;", accumulator_name, identity),
-          sprintf(
-            "    for (int %s = 0; %s < %s; ++%s) {",
-            reduce_index_name,
-            reduce_index_name,
-            loop_plan$reduce_extent_name,
-            reduce_index_name
-          ),
-          sprintf("      int %s = %s;", index_name, loop_plan$c_index_expression),
-          sprintf("      %s = %s;", accumulator_name, combined_expression),
-          "    }",
-          sprintf("    %s[%s] = %s;", result_name, output_index_name, accumulator_name),
-          "  }",
-          sprintf("  return %s;", result_name),
-          "}"
-        ), collapse = "\n"))
-      }
-
-      if (identical(interface@kind, "scalar")) {
-        expression <- expression_text(source_expression, parameter_by_value_id, NULL, "c")
-        return(paste(c(
-          "#include <math.h>",
-          "",
-          sprintf("double %s(%s) {", symbol, paste(unlist(parameter_declarations), collapse = ", ")),
-          sprintf("  return %s;", expression),
-          "}"
-        ), collapse = "\n"))
-      }
-
-      element_count_name <- interface@element_count_name
-      index_name <- interface@index_name
-      result_name <- interface@result_name
-      expression <- expression_text(source_expression, parameter_by_value_id, index_name, "c")
-      signature_declarations <- c(unlist(parameter_declarations), domain_parameter_declarations)
-      paste(c(
+      returns_buffer <- result@type@shape@rank > 0L
+      lines <- c(
         "#include <math.h>",
         "#include <stddef.h>",
-        "#include <stdlib.h>",
+        if (returns_buffer) "#include <stdlib.h>",
         "",
         sprintf(
-          "double *%s(%s) {",
-          symbol,
+          "double %s%s(%s) {",
+          if (returns_buffer) "*" else "",
+          interface@symbol,
           paste(signature_declarations, collapse = ", ")
-        ),
-        sprintf("  if (%s < 0) {", element_count_name),
-        "    return NULL;",
-        "  }",
-        sprintf("  double *%s = (double *)malloc(sizeof(double) * (size_t)%s);", result_name, element_count_name),
-        sprintf("  if (%s == NULL) {", result_name),
-        "    return NULL;",
-        "  }",
-        sprintf("  for (int %s = 0; %s < %s; ++%s) {", index_name, index_name, element_count_name, index_name),
-        sprintf("    %s[%s] = %s;", result_name, index_name, expression),
-        "  }",
-        sprintf("  return %s;", result_name),
-        "}"
-      ), collapse = "\n")
+        )
+      )
+      depth <- 1L
+      push <- function(text, level = depth) {
+        lines <<- c(lines, paste0(strrep("  ", level), text))
+      }
+      open_loop <- function(axis) {
+        extent <- extent_text(axis@extent, emit_context$extent_by_symbol)
+        push(sprintf("for (int %s = 0; %s < %s; ++%s) {", axis@name, axis@name, extent, axis@name))
+        depth <<- depth + 1L
+      }
+      close_loop <- function(axis) {
+        depth <<- depth - 1L
+        push("}")
+      }
+      if (returns_buffer) {
+        push(sprintf("if (%s < 0) {", interface@result_count_name))
+        push("return NULL;", depth + 1L)
+        push("}")
+        push(sprintf(
+          "double *%s = (double *)malloc(sizeof(double) * (size_t)%s);",
+          interface@result_name,
+          interface@result_count_name
+        ))
+        push(sprintf("if (%s == NULL) {", interface@result_name))
+        push("return NULL;", depth + 1L)
+        push("}")
+      }
+      for (axis in plan$map_axes) {
+        open_loop(axis)
+      }
+      if (!is.null(nest@reducer)) {
+        push(sprintf("double %s = %s;", interface@accumulator_name, plan$identity_text))
+        for (axis in plan$reduce_axes) {
+          open_loop(axis)
+        }
+        push(sprintf("%s = %s;", interface@accumulator_name, plan$combine_text))
+        for (axis in plan$reduce_axes) {
+          close_loop(axis)
+        }
+      }
+      if (returns_buffer) {
+        push(sprintf("%s[%s] = %s;", interface@result_name, plan$output_index, plan$value_text))
+      }
+      for (axis in plan$map_axes) {
+        close_loop(axis)
+      }
+      if (returns_buffer) {
+        push(sprintf("return %s;", interface@result_name))
+      } else {
+        push(sprintf("return %s;", plan$value_text))
+      }
+      paste(c(lines, "}"), collapse = "\n")
     }
 
-    emit_fortran_source <- function(interface, source_expression, result, formals) {
-      symbol <- interface@symbol
-      parameter_names <- interface@parameter_names
+    emit_fortran_source <- function(interface, nest, result, formals) {
+      emit_context <- new_emit_context(interface, formals, "fortran")
+      plan <- loop_plan(interface, nest, emit_context)
+      returns_buffer <- result@type@shape@rank > 0L
       domain_parameter_names <- c(
         interface@extent_names,
-        if (nzchar(interface@element_count_name)) interface@element_count_name else character()
+        if (nzchar(interface@result_count_name)) interface@result_count_name
       )
-      parameter_by_value_id <- as.list(stats::setNames(
-        parameter_names,
-        interface@parameter_value_ids
-      ))
-
-      if (identical(interface@kind, "reduction")) {
-        lowered_operation <- expression_operation(source_expression)
-        reduction_spec <- if (!is.null(lowered_operation)) lowered_operation@reduction else NULL
-        if (!S7::S7_inherits(reduction_spec, TccqReductionSpec)) {
-          tccq_abort(
-            "backend.invalid_reduction",
-            "Reduction expressions must carry a <TccqReductionSpec>.",
-            phase = "backend",
-            path = sprintf("backend.%s.reducer", backend@id),
-            data = list(backend = backend@id)
-          )
-        }
-        element_count_name <- interface@element_count_name
-        index_name <- interface@index_name
-        result_name <- interface@result_name
-        declarations <- Map(function(value, parameter_name) {
-          if (value@type@shape@rank == 0L) {
-            sprintf("  real(c_double), value :: %s", parameter_name)
-          } else {
-            sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
-          }
-        }, formals, parameter_names)
-        identity <- reduction_identity_text(reduction_spec, result@type, "fortran")
-        reduced_expression <- expression_text(
-          source_expression@inputs[[1L]],
-          parameter_by_value_id,
-          index_name,
-          "fortran"
-        )
-        combined_expression <- reduction_combine_text(
-          reduction_spec,
-          result_name,
-          reduced_expression,
-          "fortran"
-        )
-        return(paste(c(
-          sprintf(
-            "function %s(%s) &",
-            symbol,
-            paste(c(parameter_names, domain_parameter_names), collapse = ", ")
-          ),
-          sprintf("  bind(c, name = \"%s\") result(%s)", symbol, result_name),
-          "  use iso_c_binding, only: c_double, c_int",
-          "  implicit none",
-          sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", ")),
-          unlist(declarations),
-          sprintf("  real(c_double) :: %s", result_name),
-          sprintf("  integer(c_int) :: %s", index_name),
-          sprintf("  %s = %s", result_name, identity),
-          sprintf("  do %s = 1, %s", index_name, element_count_name),
-          sprintf("    %s = %s", result_name, combined_expression),
-          "  end do",
-          sprintf("end function %s", symbol)
-        ), collapse = "\n"))
-      }
-
-      if (identical(interface@kind, "axis_reduction")) {
-        loop_plan <- axis_reduction_loop_plan(interface, source_expression)
-        index_name <- interface@index_name
-        output_index_name <- loop_plan$output_index_name
-        reduce_index_name <- loop_plan$reduce_index_name
-        accumulator_name <- interface@accumulator_name
-        result_name <- interface@result_name
-        declarations <- Map(function(value, parameter_name) {
-          if (value@type@shape@rank == 0L) {
-            sprintf("  real(c_double), value :: %s", parameter_name)
-          } else {
-            sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
-          }
-        }, formals, parameter_names)
-        identity <- reduction_identity_text(loop_plan$reduction_spec, tccq_type(result@type@base), "fortran")
-        reduced_expression <- expression_text(
-          source_expression@inputs[[1L]],
-          parameter_by_value_id,
-          index_name,
-          "fortran"
-        )
-        combined_expression <- reduction_combine_text(
-          loop_plan$reduction_spec,
-          accumulator_name,
-          reduced_expression,
-          "fortran"
-        )
-        return(paste(c(
-          sprintf(
-            "subroutine %s(%s) &",
-            symbol,
-            paste(c(parameter_names, domain_parameter_names, result_name), collapse = ", ")
-          ),
-          sprintf("  bind(c, name = \"%s\")", symbol),
-          "  use iso_c_binding, only: c_double, c_int",
-          "  implicit none",
-          sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", ")),
-          unlist(declarations),
-          sprintf("  real(c_double), intent(out) :: %s(*)", result_name),
-          sprintf("  real(c_double) :: %s", accumulator_name),
-          sprintf("  integer(c_int) :: %s, %s, %s", output_index_name, reduce_index_name, index_name),
-          sprintf("  do %s = 1, %s", output_index_name, interface@result_count_name),
-          sprintf("    %s = %s", accumulator_name, identity),
-          sprintf("    do %s = 1, %s", reduce_index_name, loop_plan$reduce_extent_name),
-          sprintf("      %s = %s", index_name, loop_plan$fortran_index_expression),
-          sprintf("      %s = %s", accumulator_name, combined_expression),
-          "    end do",
-          sprintf("    %s(%s) = %s", result_name, output_index_name, accumulator_name),
-          "  end do",
-          sprintf("end subroutine %s", symbol)
-        ), collapse = "\n"))
-      }
-
-      if (identical(interface@kind, "scalar")) {
-        declarations <- Map(function(value, parameter_name) {
-          sprintf("  real(c_double), value :: %s", parameter_name)
-        }, formals, parameter_names)
-        result_name <- interface@result_name
-        expression <- expression_text(source_expression, parameter_by_value_id, NULL, "fortran")
-        return(paste(c(
-          sprintf(
-            "function %s(%s) bind(c, name = \"%s\") result(%s)",
-            symbol,
-            paste(parameter_names, collapse = ", "),
-            symbol,
-            result_name
-          ),
-          "  use iso_c_binding, only: c_double",
-          "  implicit none",
-          unlist(declarations),
-          sprintf("  real(c_double) :: %s", result_name),
-          sprintf("  %s = %s", result_name, expression),
-          sprintf("end function %s", symbol)
-        ), collapse = "\n"))
-      }
-
-      element_count_name <- interface@element_count_name
-      index_name <- interface@index_name
-      result_name <- interface@result_name
-      declarations <- Map(function(value, parameter_name) {
+      value_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("  real(c_double), value :: %s", parameter_name)
         } else {
           sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
         }
-      }, formals, parameter_names)
-      expression <- expression_text(source_expression, parameter_by_value_id, index_name, "fortran")
-      paste(c(
+      }, formals, interface@parameter_names), use.names = FALSE)
+      header <- if (returns_buffer) {
+        c(
+          sprintf(
+            "subroutine %s(%s) &",
+            interface@symbol,
+            paste(
+              c(interface@parameter_names, domain_parameter_names, interface@result_name),
+              collapse = ", "
+            )
+          ),
+          sprintf("  bind(c, name = \"%s\")", interface@symbol)
+        )
+      } else if (length(domain_parameter_names) > 0L) {
+        c(
+          sprintf(
+            "function %s(%s) &",
+            interface@symbol,
+            paste(c(interface@parameter_names, domain_parameter_names), collapse = ", ")
+          ),
+          sprintf("  bind(c, name = \"%s\") result(%s)", interface@symbol, interface@result_name)
+        )
+      } else {
         sprintf(
-          "subroutine %s(%s) &",
-          symbol,
-          paste(c(parameter_names, domain_parameter_names, result_name), collapse = ", ")
-        ),
-        sprintf("  bind(c, name = \"%s\")", symbol),
+          "function %s(%s) bind(c, name = \"%s\") result(%s)",
+          interface@symbol,
+          paste(interface@parameter_names, collapse = ", "),
+          interface@symbol,
+          interface@result_name
+        )
+      }
+      lines <- c(
+        header,
         "  use iso_c_binding, only: c_double, c_int",
         "  implicit none",
-        sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", ")),
-        unlist(declarations),
-        sprintf("  real(c_double), intent(out) :: %s(*)", result_name),
-        sprintf("  integer(c_int) :: %s", index_name),
-        sprintf("  do %s = 1, %s", index_name, element_count_name),
-        sprintf("    %s(%s) = %s", result_name, index_name, expression),
-        "  end do",
-        sprintf("end subroutine %s", symbol)
-      ), collapse = "\n")
+        if (length(domain_parameter_names) > 0L) {
+          sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", "))
+        },
+        value_declarations,
+        if (returns_buffer) {
+          sprintf("  real(c_double), intent(out) :: %s(*)", interface@result_name)
+        } else {
+          sprintf("  real(c_double) :: %s", interface@result_name)
+        },
+        if (!is.null(nest@reducer)) sprintf("  real(c_double) :: %s", interface@accumulator_name),
+        if (length(interface@index_names) > 0L) {
+          sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
+        }
+      )
+      depth <- 1L
+      push <- function(text, level = depth) {
+        lines <<- c(lines, paste0(strrep("  ", level), text))
+      }
+      open_loop <- function(axis) {
+        extent <- extent_text(axis@extent, emit_context$extent_by_symbol)
+        push(sprintf("do %s = 0, %s - 1", axis@name, extent))
+        depth <<- depth + 1L
+      }
+      close_loop <- function(axis) {
+        depth <<- depth - 1L
+        push("end do")
+      }
+      for (axis in plan$map_axes) {
+        open_loop(axis)
+      }
+      if (!is.null(nest@reducer)) {
+        push(sprintf("%s = %s", interface@accumulator_name, plan$identity_text))
+        for (axis in plan$reduce_axes) {
+          open_loop(axis)
+        }
+        push(sprintf("%s = %s", interface@accumulator_name, plan$combine_text))
+        for (axis in plan$reduce_axes) {
+          close_loop(axis)
+        }
+      }
+      if (returns_buffer) {
+        push(sprintf("%s(%s + 1) = %s", interface@result_name, plan$output_index, plan$value_text))
+      }
+      for (axis in plan$map_axes) {
+        close_loop(axis)
+      }
+      if (!returns_buffer) {
+        push(sprintf("%s = %s", interface@result_name, plan$value_text))
+      }
+      lines <- c(
+        lines,
+        sprintf("end %s %s", if (returns_buffer) "subroutine" else "function", interface@symbol)
+      )
+      wrap_line <- function(line) {
+        pieces <- character()
+        while (nchar(line) > 100L) {
+          break_at <- max(gregexpr(" ", substr(line, 1L, 100L))[[1L]])
+          if (break_at <= 1L) {
+            break
+          }
+          pieces <- c(pieces, paste0(substr(line, 1L, break_at - 1L), " &"))
+          line <- paste0("    ", substr(line, break_at + 1L, nchar(line)))
+        }
+        c(pieces, line)
+      }
+      lines <- unlist(lapply(lines, wrap_line), use.names = FALSE)
+      paste(lines, collapse = "\n")
     }
 
     emit_call_wrapper_source <- function(interface, result, formals) {
       symbol <- interface@symbol
       wrapper_symbol <- paste0(symbol, "_call")
       parameter_names <- interface@parameter_names
-      domain_parameter_names <- c(
+      extent_name_by_symbol <- as.list(stats::setNames(
         interface@extent_names,
-        if (nzchar(interface@element_count_name)) interface@element_count_name else character()
-      )
-      element_count_name <- interface@element_count_name
-      result_name <- interface@result_name
-
-      c_parameter_type <- function(value) {
-        if (value@type@shape@rank == 0L) "double" else "const double *"
-      }
-      kernel_parameters <- unname(Map(function(value, parameter_name) {
-        sprintf("%s %s", c_parameter_type(value), parameter_name)
-      }, formals, parameter_names))
-      if (length(domain_parameter_names) > 0L) {
-        kernel_parameters <- c(kernel_parameters, sprintf("int %s", domain_parameter_names))
-      }
-      if (identical(interface@result_placement, "output_argument")) {
-        kernel_parameters <- c(kernel_parameters, sprintf("double *%s", result_name))
-        prototype <- sprintf("extern void %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
-      } else if (result@type@shape@rank > 0L) {
-        prototype <- sprintf("extern double *%s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
-      } else {
-        prototype <- sprintf("extern double %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
-      }
-
-      wrapper_parameters <- unname(vapply(
-        parameter_names,
-        function(parameter_name) sprintf("SEXP %s_arg", parameter_name),
-        character(1)
+        interface@extent_symbols
       ))
+      result_rank <- result@type@shape@rank
+      returns_buffer <- result_rank > 0L
+
+      kernel_parameters <- unlist(Map(function(value, parameter_name) {
+        if (value@type@shape@rank == 0L) {
+          sprintf("double %s", parameter_name)
+        } else {
+          sprintf("const double *%s", parameter_name)
+        }
+      }, formals, parameter_names), use.names = FALSE)
+      kernel_parameters <- c(
+        kernel_parameters,
+        if (length(interface@extent_names) > 0L) sprintf("int %s", interface@extent_names),
+        if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
+      )
+      prototype <- if (identical(interface@result_placement, "output_argument")) {
+        sprintf(
+          "extern void %s(%s);",
+          symbol,
+          paste(c(kernel_parameters, sprintf("double *%s", interface@result_name)), collapse = ", ")
+        )
+      } else if (returns_buffer) {
+        sprintf("extern double *%s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
+      } else {
+        sprintf("extern double %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
+      }
+
+      wrapper_parameters <- sprintf("SEXP %s_arg", parameter_names)
       lines <- c(
         "#include <R.h>",
         "#include <Rinternals.h>",
-        "#include <R_ext/Utils.h>",
         "#include <limits.h>",
         "#include <stdlib.h>",
         "#include <string.h>",
@@ -2737,173 +2603,197 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         prototype,
         "",
         sprintf("SEXP %s(%s) {", wrapper_symbol, paste(wrapper_parameters, collapse = ", ")),
-        "  int protect_count = 0;",
-        "  R_xlen_t element_count = 1;",
-        "  R_xlen_t result_element_count = 1;",
-        "  SEXP output_dim = R_NilValue;"
+        "  int protect_count = 0;"
       )
 
-      non_scalar_parameter_positions <- which(vapply(
-        formals,
-        function(value) value@type@shape@rank > 0L,
-        logical(1)
-      ))
-      non_scalar_parameter_names <- parameter_names[non_scalar_parameter_positions]
-      non_scalar_parameter_ranks <- vapply(
-        formals[non_scalar_parameter_positions],
-        function(value) value@type@shape@rank,
-        integer(1)
-      )
-      if (length(non_scalar_parameter_names) > 0L) {
-        first_non_scalar_name <- non_scalar_parameter_names[[1L]]
-        first_non_scalar_rank <- non_scalar_parameter_ranks[[1L]]
+      for (position in seq_along(formals)) {
+        value <- formals[[position]]
+        parameter_name <- parameter_names[[position]]
+        rank <- value@type@shape@rank
         lines <- c(
           lines,
           sprintf(
             "  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));",
-            first_non_scalar_name,
-            first_non_scalar_name
+            parameter_name,
+            parameter_name
           ),
-          "  ++protect_count;",
-          sprintf("  element_count = XLENGTH(%s_real);", first_non_scalar_name),
-          "  if (element_count > INT_MAX) {",
-          "    UNPROTECT(protect_count);",
-          "    Rf_error(\"generated call exceeds the current int length ABI\");",
-          "  }"
+          "  ++protect_count;"
         )
-        if (first_non_scalar_rank > 1L) {
+        if (rank == 0L) {
+          lines <- c(
+            lines,
+            sprintf("  if (XLENGTH(%s_real) < 1) {", parameter_name),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"scalar arguments must have length at least one\");",
+            "  }",
+            sprintf("  double %s = REAL(%s_real)[0];", parameter_name, parameter_name)
+          )
+          next
+        }
+        if (rank > 1L) {
           lines <- c(
             lines,
             sprintf(
               "  SEXP %s_dim = PROTECT(Rf_getAttrib(%s_arg, R_DimSymbol));",
-              first_non_scalar_name,
-              first_non_scalar_name
+              parameter_name,
+              parameter_name
             ),
             "  ++protect_count;",
             sprintf(
               "  if (TYPEOF(%s_dim) != INTSXP || XLENGTH(%s_dim) != %d) {",
-              first_non_scalar_name,
-              first_non_scalar_name,
-              first_non_scalar_rank
+              parameter_name,
+              parameter_name,
+              rank
             ),
             "    UNPROTECT(protect_count);",
             "    Rf_error(\"array arguments must have the declared rank\");",
-            "  }",
-            sprintf("  output_dim = %s_dim;", first_non_scalar_name)
-          )
-        }
-        if (length(interface@extent_names) > 0L) {
-          extent_lines <- if (first_non_scalar_rank > 1L) {
-            unname(vapply(seq_along(interface@extent_names), function(axis_index) {
-              sprintf(
-                "  int %s = INTEGER(%s_dim)[%d];",
-                interface@extent_names[[axis_index]],
-                first_non_scalar_name,
-                axis_index - 1L
-              )
-            }, character(1)))
-          } else {
-            sprintf("  int %s = (int)element_count;", interface@extent_names[[1L]])
-          }
-          lines <- c(lines, extent_lines)
-        }
-      }
-
-      parameter_setup <- unlist(Map(function(value, parameter_name) {
-        value_rank <- value@type@shape@rank
-        first_non_scalar <- length(non_scalar_parameter_names) > 0L &&
-          identical(parameter_name, non_scalar_parameter_names[[1L]])
-        if (value_rank > 0L && isTRUE(first_non_scalar)) {
-          return(c(sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)))
-        }
-        if (value_rank > 0L) {
-          setup <- c(
-            sprintf("  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));", parameter_name, parameter_name),
-            "  ++protect_count;",
-            sprintf("  if (XLENGTH(%s_real) != element_count) {", parameter_name),
-            "    UNPROTECT(protect_count);",
-            "    Rf_error(\"non-scalar arguments must have the same element count\");",
             "  }"
           )
-          if (value_rank > 1L) {
-            setup <- c(
-              setup,
-              sprintf(
-                "  SEXP %s_dim = PROTECT(Rf_getAttrib(%s_arg, R_DimSymbol));",
-                parameter_name,
-                parameter_name
-              ),
-              "  ++protect_count;",
-              sprintf(
-                "  if (TYPEOF(%s_dim) != INTSXP || XLENGTH(%s_dim) != %d) {",
-                parameter_name,
-                parameter_name,
-                value_rank
-              ),
+        }
+        lines <- c(lines, sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name))
+      }
+
+      bound_symbols <- character()
+      for (position in seq_along(formals)) {
+        value <- formals[[position]]
+        parameter_name <- parameter_names[[position]]
+        rank <- value@type@shape@rank
+        if (rank == 0L) {
+          next
+        }
+        for (axis in seq_len(rank)) {
+          dim <- value@type@shape@dims[[axis]]
+          axis_source <- if (rank == 1L) {
+            sprintf("XLENGTH(%s_real)", parameter_name)
+          } else {
+            sprintf("(R_xlen_t)INTEGER(%s_dim)[%d]", parameter_name, axis - 1L)
+          }
+          if (identical(dim@kind, "constant")) {
+            lines <- c(
+              lines,
+              sprintf("  if (%s != %d) {", axis_source, dim@value),
               "    UNPROTECT(protect_count);",
-              "    Rf_error(\"array arguments must have the declared rank\");",
+              sprintf(
+                "    Rf_error(\"argument `%s` must have declared extent %d on axis %d\");",
+                parameter_name,
+                dim@value,
+                axis
+              ),
+              "  }"
+            )
+            next
+          }
+          if (!identical(dim@kind, "symbol")) {
+            tccq_abort(
+              "backend.unsupported_formal_extent",
+              "Declared formals must have constant or symbolic extents.",
+              phase = "backend",
+              path = sprintf("backend.%s.wrapper", backend@id),
+              data = list(backend = backend@id, kind = dim@kind)
+            )
+          }
+          extent_name <- extent_name_by_symbol[[dim@label]]
+          if (!dim@label %in% bound_symbols) {
+            lines <- c(
+              lines,
+              sprintf("  if (%s > INT_MAX) {", axis_source),
+              "    UNPROTECT(protect_count);",
+              "    Rf_error(\"generated call exceeds the current int extent ABI\");",
               "  }",
-              sprintf("  for (R_xlen_t dim_index = 0; dim_index < %d; ++dim_index) {", value_rank),
-              sprintf("    if (INTEGER(%s_dim)[dim_index] != INTEGER(output_dim)[dim_index]) {", parameter_name),
-              "      UNPROTECT(protect_count);",
-              "      Rf_error(\"array arguments must have the same dimensions\");",
-              "    }",
+              sprintf("  int %s = (int)(%s);", extent_name, axis_source)
+            )
+            bound_symbols <- c(bound_symbols, dim@label)
+          } else {
+            lines <- c(
+              lines,
+              sprintf("  if ((R_xlen_t)%s != %s) {", extent_name, axis_source),
+              "    UNPROTECT(protect_count);",
+              sprintf("    Rf_error(\"arguments disagree on declared extent `%s`\");", dim@label),
               "  }"
             )
           }
-          return(c(setup, sprintf("  const double *%s = REAL(%s_real);", parameter_name, parameter_name)))
         }
-        c(
-          sprintf("  SEXP %s_real = PROTECT(Rf_coerceVector(%s_arg, REALSXP));", parameter_name, parameter_name),
-          "  ++protect_count;",
-          sprintf("  if (XLENGTH(%s_real) < 1) {", parameter_name),
-          "    UNPROTECT(protect_count);",
-          "    Rf_error(\"scalar arguments must have length at least one\");",
-          "  }",
-          sprintf("  double %s = REAL(%s_real)[0];", parameter_name, parameter_name)
+      }
+      unbound_symbols <- setdiff(interface@extent_symbols, bound_symbols)
+      if (length(unbound_symbols) > 0L) {
+        tccq_abort(
+          "backend.unbound_extent_symbol",
+          "Extent symbols must be bindable from declared formal shapes.",
+          phase = "backend",
+          path = sprintf("backend.%s.wrapper", backend@id),
+          data = list(backend = backend@id, symbols = unbound_symbols)
         )
-      }, formals, parameter_names))
-      lines <- c(lines, parameter_setup)
-
-      argument_names <- parameter_names
-      if (nzchar(element_count_name)) {
-        lines <- c(lines, sprintf("  int %s = (int)element_count;", element_count_name))
-        argument_names <- c(argument_names, domain_parameter_names)
       }
 
-      if (result@type@shape@rank > 0L) {
-        if (nzchar(interface@result_count_name)) {
-          lines <- c(lines, sprintf("  result_element_count = (R_xlen_t)%s;", interface@result_count_name))
-        } else {
-          lines <- c(lines, "  result_element_count = element_count;")
-        }
-        lines <- c(lines, "  SEXP output_sexp = PROTECT(Rf_allocVector(REALSXP, result_element_count));")
-        lines <- c(lines, "  ++protect_count;")
-        if (identical(interface@result_placement, "output_argument")) {
-          call_arguments <- c(argument_names, "REAL(output_sexp)")
-          lines <- c(lines, sprintf("  %s(%s);", symbol, paste(call_arguments, collapse = ", ")))
-        } else {
-          call_arguments <- argument_names
+      call_arguments <- c(parameter_names, interface@extent_names)
+      if (returns_buffer) {
+        lines <- c(lines, "  R_xlen_t result_element_count = 1;")
+        result_extent_vars <- sprintf("result_extent_%04d", seq_len(result_rank))
+        for (axis in seq_len(result_rank)) {
+          extent <- extent_text(interface@result_dims[[axis]], extent_name_by_symbol)
           lines <- c(
             lines,
-            sprintf("  double *%s = %s(%s);", result_name, symbol, paste(call_arguments, collapse = ", ")),
-            sprintf("  if (%s == NULL) {", result_name),
+            sprintf("  int %s = %s;", result_extent_vars[[axis]], extent),
+            sprintf("  if (%s < 0) {", result_extent_vars[[axis]]),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"result extents must be non-negative\");",
+            "  }",
+            sprintf("  result_element_count *= (R_xlen_t)%s;", result_extent_vars[[axis]])
+          )
+        }
+        lines <- c(
+          lines,
+          "  if (result_element_count > INT_MAX) {",
+          "    UNPROTECT(protect_count);",
+          "    Rf_error(\"generated call exceeds the current int length ABI\");",
+          "  }",
+          sprintf("  int %s = (int)result_element_count;", interface@result_count_name),
+          "  SEXP output_sexp = PROTECT(Rf_allocVector(REALSXP, result_element_count));",
+          "  ++protect_count;"
+        )
+        if (result_rank > 1L) {
+          lines <- c(
+            lines,
+            sprintf("  SEXP output_dim = PROTECT(Rf_allocVector(INTSXP, %d));", result_rank),
+            "  ++protect_count;",
+            vapply(seq_len(result_rank), function(axis) {
+              sprintf("  INTEGER(output_dim)[%d] = %s;", axis - 1L, result_extent_vars[[axis]])
+            }, character(1)),
+            "  Rf_setAttrib(output_sexp, R_DimSymbol, output_dim);"
+          )
+        }
+        call_arguments <- c(call_arguments, interface@result_count_name)
+        if (identical(interface@result_placement, "output_argument")) {
+          lines <- c(
+            lines,
+            sprintf(
+              "  %s(%s);",
+              symbol,
+              paste(c(call_arguments, "REAL(output_sexp)"), collapse = ", ")
+            )
+          )
+        } else {
+          lines <- c(
+            lines,
+            sprintf(
+              "  double *%s = %s(%s);",
+              interface@result_name,
+              symbol,
+              paste(call_arguments, collapse = ", ")
+            ),
+            sprintf("  if (%s == NULL) {", interface@result_name),
             "    UNPROTECT(protect_count);",
             "    Rf_error(\"generated kernel returned NULL\");",
             "  }",
             sprintf(
               "  memcpy(REAL(output_sexp), %s, sizeof(double) * (size_t)result_element_count);",
-              result_name
+              interface@result_name
             ),
-            sprintf("  free(%s);", result_name)
+            sprintf("  free(%s);", interface@result_name)
           )
-        }
-        if (result@type@shape@rank > 1L) {
-          lines <- c(lines, "  Rf_setAttrib(output_sexp, R_DimSymbol, output_dim);")
         }
         lines <- c(lines, "  UNPROTECT(protect_count);", "  return output_sexp;")
       } else {
-        call_arguments <- argument_names
         lines <- c(
           lines,
           sprintf("  double output_value = %s(%s);", symbol, paste(call_arguments, collapse = ", ")),
@@ -2929,26 +2819,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
       }
 
+      returns_buffer <- result@type@shape@rank > 0L
       ffi_arg_types <- lapply(formals, function(value) {
         if (value@type@shape@rank == 0L) "f64" else "numeric_array"
       })
-      domain_integer_argument_count <- length(interface@extent_names) +
-        as.integer(nzchar(interface@element_count_name))
-      if (domain_integer_argument_count > 0L) {
-        ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), domain_integer_argument_count))
+      if (length(interface@extent_names) > 0L) {
+        ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), length(interface@extent_names)))
       }
-      if (result@type@shape@rank > 0L) {
-        domain_argument_names <- c(
-          interface@extent_names,
-          if (nzchar(interface@element_count_name)) interface@element_count_name else character()
-        )
-        result_count_position <- match(interface@result_count_name, domain_argument_names)
-        result_length_arg <- if (!is.na(result_count_position)) {
-          length(formals) + result_count_position
-        } else {
-          length(ffi_arg_types)
-        }
-        ffi_return <- list(type = "numeric_array", length_arg = result_length_arg, free = TRUE)
+      if (returns_buffer) {
+        ffi_arg_types <- c(ffi_arg_types, list("i32"))
+        ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
       } else {
         ffi_return <- "f64"
       }
@@ -2975,6 +2855,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
       }
 
+      evaluate_result_dim <- function(dim, bound_extents) {
+        if (identical(dim@kind, "constant")) {
+          return(dim@value)
+        }
+        base <- bound_extents[[dim@label]]
+        if (is.null(base)) {
+          tccq_abort(
+            "runtime.unbound_extent",
+            "A result extent symbol is not bound by any argument shape.",
+            phase = "runtime",
+            path = "callable.extents",
+            data = list(symbol = dim@label)
+          )
+        }
+        if (identical(dim@kind, "affine")) base + dim@value else base
+      }
       callable <- function(...) {
         arguments <- list(...)
         if (length(arguments) != length(formals)) {
@@ -2986,75 +2882,89 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(expected = length(formals), actual = length(arguments))
           )
         }
-        non_scalar_argument_positions <- which(vapply(
-          formals,
-          function(value) value@type@shape@rank > 0L,
-          logical(1)
-        ))
-        non_scalar_argument_ranks <- vapply(
-          formals[non_scalar_argument_positions],
-          function(value) value@type@shape@rank,
-          integer(1)
-        )
-        element_count <- 1L
-        result_dim <- NULL
-        if (length(non_scalar_argument_positions) > 0L) {
-          non_scalar_lengths <- vapply(arguments[non_scalar_argument_positions], length, integer(1))
-          if (length(unique(non_scalar_lengths)) != 1L) {
+        bound_extents <- list()
+        for (position in seq_along(arguments)) {
+          shape <- formals[[position]]@type@shape
+          argument <- arguments[[position]]
+          if (shape@rank == 0L) {
+            next
+          }
+          actual_dims <- if (shape@rank == 1L) length(argument) else dim(argument)
+          if (length(actual_dims) != shape@rank) {
             tccq_abort(
-              "runtime.incompatible_lengths",
-              "Non-scalar arguments must have the same element count.",
+              "runtime.invalid_rank",
+              "Array arguments must have the declared rank.",
               phase = "runtime",
               path = "callable.arguments",
-              data = list(lengths = non_scalar_lengths)
+              data = list(
+                argument = position,
+                expected = shape@rank,
+                actual = length(actual_dims)
+              )
             )
           }
-          element_count <- non_scalar_lengths[[1L]]
-          for (position_index in seq_along(non_scalar_argument_positions)) {
-            argument_position <- non_scalar_argument_positions[[position_index]]
-            argument_rank <- non_scalar_argument_ranks[[position_index]]
-            if (argument_rank <= 1L) {
+          for (axis in seq_len(shape@rank)) {
+            actual_extent <- as.integer(actual_dims[[axis]])
+            declared <- shape@dims[[axis]]
+            if (identical(declared@kind, "constant")) {
+              if (actual_extent != declared@value) {
+                tccq_abort(
+                  "runtime.incompatible_dimensions",
+                  "An argument extent disagrees with its declared constant extent.",
+                  phase = "runtime",
+                  path = "callable.arguments",
+                  data = list(argument = position, axis = axis, expected = declared@value, actual = actual_extent)
+                )
+              }
               next
             }
-            argument_dim <- dim(arguments[[argument_position]])
-            if (length(argument_dim) != argument_rank) {
-              tccq_abort(
-                "runtime.invalid_rank",
-                "Array arguments must have the declared rank.",
-                phase = "runtime",
-                path = "callable.arguments",
-                data = list(argument = argument_position, expected = argument_rank, actual = length(argument_dim))
-              )
-            }
-            argument_dim <- as.integer(argument_dim)
-            if (is.null(result_dim)) {
-              result_dim <- argument_dim
-            } else if (!identical(argument_dim, result_dim)) {
+            existing <- bound_extents[[declared@label]]
+            if (is.null(existing)) {
+              bound_extents[[declared@label]] <- actual_extent
+            } else if (!identical(existing, actual_extent)) {
               tccq_abort(
                 "runtime.incompatible_dimensions",
-                "Array arguments must have the same dimensions.",
+                "Arguments disagree on a declared extent symbol.",
                 phase = "runtime",
                 path = "callable.arguments",
-                data = list(argument = argument_position, expected = result_dim, actual = argument_dim)
+                data = list(argument = position, axis = axis, symbol = declared@label, expected = existing, actual = actual_extent)
               )
             }
           }
         }
-        call_arguments <- arguments
-        if (length(interface@extent_names) > 0L) {
-          domain_extents <- if (length(interface@extent_names) == 1L) {
-            as.integer(element_count)
-          } else {
-            as.integer(result_dim)
+        extent_values <- vapply(interface@extent_symbols, function(symbol_name) {
+          value <- bound_extents[[symbol_name]]
+          if (is.null(value)) {
+            tccq_abort(
+              "runtime.unbound_extent",
+              "An extent symbol is not bound by any argument shape.",
+              phase = "runtime",
+              path = "callable.extents",
+              data = list(symbol = symbol_name)
+            )
           }
-          call_arguments <- c(call_arguments, as.list(domain_extents))
-        }
-        if (nzchar(interface@element_count_name)) {
-          call_arguments <- c(call_arguments, list(as.integer(element_count)))
+          value
+        }, integer(1), USE.NAMES = FALSE)
+        call_arguments <- c(arguments, as.list(extent_values))
+        result_dim_values <- NULL
+        if (returns_buffer) {
+          result_dim_values <- vapply(interface@result_dims, function(dim) {
+            as.integer(evaluate_result_dim(dim, bound_extents))
+          }, integer(1))
+          if (any(result_dim_values < 0L)) {
+            tccq_abort(
+              "runtime.negative_extent",
+              "Result extents must be non-negative.",
+              phase = "runtime",
+              path = "callable.extents",
+              data = list(dims = result_dim_values)
+            )
+          }
+          call_arguments <- c(call_arguments, list(as.integer(prod(result_dim_values))))
         }
         value <- do.call(compiled[[symbol]], call_arguments)
         if (result@type@shape@rank > 1L) {
-          dim(value) <- result_dim
+          dim(value) <- result_dim_values
         }
         value
       }
@@ -3241,24 +3151,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       plan <- diagnostic_plan(list(lowered_diagnostic))
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(lowered_diagnostic)))
     }
-    source_expression_result <- tccq_expression_tree(program)
-    if (!source_expression_result@success) {
-      plan <- diagnostic_plan(source_expression_result@diagnostics)
+    loop_nest_result <- tccq_program_loop_nest(program)
+    if (!loop_nest_result@success) {
+      plan <- diagnostic_plan(loop_nest_result@diagnostics)
       return(tccq_result(
         success = FALSE,
         value = plan,
-        diagnostics = source_expression_result@diagnostics
+        diagnostics = loop_nest_result@diagnostics
       ))
     }
-    source_expression <- source_expression_result@value
+    nest <- loop_nest_result@value
 
     symbol <- source_symbol()
-    function_interface <- backend_function_interface(symbol, source_expression, result, formals)
+    interface_result <- tryCatch(
+      backend_function_interface(symbol, nest, result, formals),
+      tccq_error = identity
+    )
+    if (inherits(interface_result, "tccq_error")) {
+      diagnostic <- tccq_condition_diagnostic(interface_result)
+      plan <- diagnostic_plan(list(diagnostic))
+      return(tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic)))
+    }
+    function_interface <- interface_result
     source_result <- tryCatch(
       switch(
         source_language,
-        c = emit_c_source(function_interface, source_expression, result, formals),
-        fortran = emit_fortran_source(function_interface, source_expression, result, formals),
+        c = emit_c_source(function_interface, nest, result, formals),
+        fortran = emit_fortran_source(function_interface, nest, result, formals),
         tccq_abort(
           "backend.unsupported_source_language",
           "The source printer does not support this target language.",
@@ -3314,7 +3233,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       bridges = bridges,
       products = tccq_backend_products(
         function_interface = function_interface,
-        expression = source_expression,
+        expression = nest@body,
+        loop_nest = nest,
         storage_plan = program@storage_plan,
         artifacts = list(source = source_artifact(symbol, source)),
         attrs = list(source = source)

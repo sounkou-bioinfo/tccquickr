@@ -10,3 +10,4 @@
 ^\.sync$
 ^000[0-9]+-.*\.patch$
 ^todo\.md$
+^\.claude$

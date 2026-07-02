@@ -108,7 +108,10 @@ tccq_analyze <- function(
 #' Compilation currently stops at backend planning. By default it asks the core
 #' backend suite to account for the same typed program, so C, Fortran,
 #' graph/device, Rtinycc, and R-call evaluation all report constraints through
-#' one contract instead of letting one concrete backend shape the IR.
+#' one contract instead of letting one concrete backend shape the IR. The
+#' result succeeds when at least one backend produces a working plan; backends
+#' that cannot lower the program report feasibility diagnostics in their plans
+#' without vetoing the suite.
 #'
 #' @param fn Function to compile.
 #' @param backends Backend implementation descriptors.

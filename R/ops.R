@@ -22,7 +22,7 @@ TCCQ_MATH_GROUP_CALL_NAMES <- c(
 TCCQ_SUMMARY_GROUP_CALL_NAMES <- c("all", "any", "sum", "prod", "min", "max", "range")
 
 TCCQ_OP_RENDER_LANGUAGES <- c("c", "fortran")
-TCCQ_LOWERED_OPERATION_FAMILIES <- c("elementwise", "reduction")
+TCCQ_LOWERED_OPERATION_FAMILIES <- c("elementwise", "reduction", "contraction")
 
 TCCQ_S3_PRIMITIVE_GENERIC_NAMES <- get0(
   ".S3PrimitiveGenerics",
@@ -258,6 +258,43 @@ TccqReductionSpec <- S7::new_class(
   }
 )
 
+#' Contraction implementation metadata
+#'
+#' A contraction spec is attached to an operation implementation when calls to
+#' that implementation lower to a loop nest that multiplies (or otherwise
+#' combines) aligned elements along shared reduce axes and folds them with a
+#' reducer, such as `%*%`. It carries the shared operation signature, the
+#' reducer used for the fold, and the elementwise combine operation applied
+#' before folding.
+#'
+#' @param name Human-readable contraction name.
+#' @param signature Shared operation signature.
+#' @param reducer Reduction metadata used for the contracted axes.
+#' @param combine_op Elementwise operation name combining aligned elements.
+#' @param attrs Structured contraction metadata.
+#' @export
+TccqContractionSpec <- S7::new_class(
+  "TccqContractionSpec",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    signature = TccqOpSignature,
+    reducer = TccqReductionSpec,
+    combine_op = S7::class_character,
+    attrs = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (length(self@combine_op) != 1L || is.na(self@combine_op) || !nzchar(self@combine_op)) {
+      problems <- c(problems, "@combine_op must be a single non-empty operation name")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Operation implementation descriptor
 #'
 #' @param op Operation or function name.
@@ -274,6 +311,7 @@ TccqReductionSpec <- S7::new_class(
 #'   `TccqOpRenderContext`.
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
+#' @param contraction Optional contraction metadata.
 #' @export
 TccqOpImpl <- S7::new_class(
   "TccqOpImpl",
@@ -290,7 +328,8 @@ TccqOpImpl <- S7::new_class(
     supports = S7::class_function,
     render = S7::new_union(NULL, S7::class_function),
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
-    reduction = S7::new_union(NULL, TccqReductionSpec)
+    reduction = S7::new_union(NULL, TccqReductionSpec),
+    contraction = S7::new_union(NULL, TccqContractionSpec)
   ),
   validator = function(self) {
     problems <- character()
@@ -371,6 +410,8 @@ TccqOpRegistry <- S7::new_class(
 #' @param elementwise Optional elementwise metadata supplied by the
 #'   implementation.
 #' @param reduction Optional reduction metadata supplied by the implementation.
+#' @param contraction Optional contraction metadata supplied by the
+#'   implementation.
 #' @param attrs Structured resolution metadata.
 #' @export
 TccqResolvedOp <- S7::new_class(
@@ -388,6 +429,7 @@ TccqResolvedOp <- S7::new_class(
     effect = TccqEffect,
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
+    contraction = S7::new_union(NULL, TccqContractionSpec),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -437,6 +479,7 @@ TccqResolvedOp <- S7::new_class(
 #' @param domain_policy Optional result-domain policy.
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
+#' @param contraction Optional contraction metadata.
 #' @param identity Optional reduction identity literal.
 #' @param attrs Structured metadata.
 #' @export
@@ -450,6 +493,7 @@ TccqLoweredOperation <- S7::new_class(
     domain_policy = S7::new_union(NULL, TccqDomainPolicy),
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
+    contraction = S7::new_union(NULL, TccqContractionSpec),
     identity = S7::new_union(NULL, TccqLiteral),
     attrs = S7::class_list
   ),
@@ -466,7 +510,7 @@ TccqLoweredOperation <- S7::new_class(
       if (!S7::S7_inherits(self@elementwise, TccqElementwiseSpec)) {
         problems <- c(problems, "elementwise lowered operations must carry elementwise metadata")
       }
-      if (!is.null(self@reduction) || !is.null(self@identity)) {
+      if (!is.null(self@reduction) || !is.null(self@identity) || !is.null(self@contraction)) {
         problems <- c(problems, "elementwise lowered operations cannot carry reducer metadata")
       }
       if (!S7::S7_inherits(self@resolved_op@elementwise, TccqElementwiseSpec)) {
@@ -480,11 +524,25 @@ TccqLoweredOperation <- S7::new_class(
       if (!S7::S7_inherits(self@identity, TccqLiteral)) {
         problems <- c(problems, "reduction lowered operations must carry an identity literal")
       }
-      if (!is.null(self@elementwise)) {
-        problems <- c(problems, "reduction lowered operations cannot carry elementwise metadata")
+      if (!is.null(self@elementwise) || !is.null(self@contraction)) {
+        problems <- c(problems, "reduction lowered operations cannot carry other family metadata")
       }
       if (!S7::S7_inherits(self@resolved_op@reduction, TccqReductionSpec)) {
         problems <- c(problems, "reduction lowered operations need a reduction resolved op")
+      }
+    }
+    if (identical(self@family, "contraction")) {
+      if (!S7::S7_inherits(self@contraction, TccqContractionSpec)) {
+        problems <- c(problems, "contraction lowered operations must carry contraction metadata")
+      }
+      if (!S7::S7_inherits(self@identity, TccqLiteral)) {
+        problems <- c(problems, "contraction lowered operations must carry an identity literal")
+      }
+      if (!is.null(self@elementwise) || !is.null(self@reduction)) {
+        problems <- c(problems, "contraction lowered operations cannot carry other family metadata")
+      }
+      if (!S7::S7_inherits(self@resolved_op@contraction, TccqContractionSpec)) {
+        problems <- c(problems, "contraction lowered operations need a contraction resolved op")
       }
     }
     if (length(problems) > 0L) problems
@@ -581,6 +639,12 @@ TccqFusionContract <- S7::new_class(
       self@fusion_kind %in% c("map_reduce", "axis_reduce")
     if (fusion_needs_reduction_result && !identical(self@result_operation@family, "reduction")) {
       problems <- c(problems, "reduction fusion contracts need a reduction result operation")
+    }
+    if (
+      identical(self@fusion_kind, "contract") &&
+        !identical(self@result_operation@family, "contraction")
+    ) {
+      problems <- c(problems, "contract fusion contracts need a contraction result operation")
     }
     if (length(problems) > 0L) problems
   }
@@ -771,6 +835,9 @@ tccq_elementwise_domain_policy <- function() {
           }
           if (identical(dim@kind, "symbol")) {
             return(sprintf("symbol:%s", dim@label))
+          }
+          if (identical(dim@kind, "affine")) {
+            return(sprintf("affine:%s%+d", dim@label, dim@value))
           }
           "unknown"
         }, character(1))
@@ -1054,6 +1121,36 @@ tccq_reduction_spec <- function(
     combine = combine,
     associative = associative,
     commutative = commutative,
+    attrs = attrs
+  )
+}
+
+#' Construct contraction implementation metadata
+#'
+#' @param name Human-readable contraction name.
+#' @param signature Shared operation signature.
+#' @param reducer Reduction metadata used for the contracted axes.
+#' @param combine_op Elementwise operation name combining aligned elements.
+#' @param attrs Structured contraction metadata.
+#' @export
+tccq_contraction_spec <- function(
+  name,
+  signature,
+  reducer,
+  combine_op = "*",
+  attrs = list()
+) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  .tccq_check_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
+  .tccq_check_character_scalar(combine_op, "combine_op")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqContractionSpec(
+    name = name,
+    signature = signature,
+    reducer = reducer,
+    combine_op = combine_op,
     attrs = attrs
   )
 }
@@ -1708,6 +1805,7 @@ tccq_op_render_context <- function(language, backend_id, attrs = list()) {
 #'   `TccqOpRenderContext`.
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
+#' @param contraction Optional contraction metadata.
 #' @export
 tccq_op_impl <- function(
   op,
@@ -1721,7 +1819,8 @@ tccq_op_impl <- function(
   supports = function(call, context) TRUE,
   render = NULL,
   elementwise = NULL,
-  reduction = NULL
+  reduction = NULL,
+  contraction = NULL
 ) {
   .tccq_check_character_scalar(op, "op")
   .tccq_check_character_scalar(target, "target")
@@ -1758,6 +1857,7 @@ tccq_op_impl <- function(
   }
   .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
+  .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
 
   TccqOpImpl(
     op = op,
@@ -1771,7 +1871,8 @@ tccq_op_impl <- function(
     supports = supports,
     render = render,
     elementwise = elementwise,
-    reduction = reduction
+    reduction = reduction,
+    contraction = contraction
   )
 }
 
@@ -1823,6 +1924,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
     effect = implementation@effect,
     elementwise = implementation@elementwise,
     reduction = implementation@reduction,
+    contraction = implementation@contraction,
     attrs = attrs
   )
 }
@@ -1834,6 +1936,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
 #' @param signature Optional operation signature. Defaults to the family spec.
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
+#' @param contraction Optional contraction metadata.
 #' @param identity Optional reduction identity literal.
 #' @param attrs Structured metadata.
 #' @export
@@ -1843,6 +1946,7 @@ tccq_lowered_operation <- function(
   signature = NULL,
   elementwise = NULL,
   reduction = NULL,
+  contraction = NULL,
   identity = NULL,
   attrs = list()
 ) {
@@ -1860,6 +1964,7 @@ tccq_lowered_operation <- function(
   .tccq_check_optional_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
   .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
+  .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
   .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
   .tccq_check_list(attrs, "attrs")
 
@@ -1918,6 +2023,29 @@ tccq_lowered_operation <- function(
     signature <- signature %||% reduction@signature
   }
 
+  if (identical(family, "contraction")) {
+    contraction <- contraction %||% resolved_op@contraction
+    if (!S7::S7_inherits(contraction, TccqContractionSpec)) {
+      tccq_abort(
+        "schema.lowered_operation_contraction_required",
+        "Contraction lowered operations must carry contraction metadata.",
+        phase = "schema",
+        path = "lowered_operation.contraction",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    if (!S7::S7_inherits(identity, TccqLiteral)) {
+      tccq_abort(
+        "schema.lowered_operation_identity_required",
+        "Contraction lowered operations must carry an identity literal.",
+        phase = "schema",
+        path = "lowered_operation.identity",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    signature <- signature %||% contraction@signature
+  }
+
   TccqLoweredOperation(
     family = family,
     resolved_op = resolved_op,
@@ -1925,6 +2053,7 @@ tccq_lowered_operation <- function(
     domain_policy = signature@domain_policy,
     elementwise = elementwise,
     reduction = reduction,
+    contraction = contraction,
     identity = identity,
     attrs = attrs
   )
@@ -2168,6 +2297,65 @@ tccq_default_op_registry <- function() {
     identity = sum_identity,
     combine = sum_combine
   )
+  contraction_domain_policy <- tccq_domain_policy(
+    "contract_inner_dim",
+    result_shape = function(input_types) {
+      left_shape <- input_types[[1L]]@shape
+      right_shape <- input_types[[2L]]@shape
+      if (left_shape@rank != 2L || !right_shape@rank %in% c(1L, 2L)) {
+        tccq_abort(
+          "ops.unsupported_contraction_rank",
+          "`%*%` currently contracts a rank-2 input with a rank-1 or rank-2 input.",
+          phase = "ops",
+          path = "domain_policy.result_shape",
+          data = list(left_rank = left_shape@rank, right_rank = right_shape@rank)
+        )
+      }
+      if (!tccq_dim_equal(left_shape@dims[[2L]], right_shape@dims[[1L]])) {
+        tccq_abort(
+          "ops.incompatible_contraction_dims",
+          "`%*%` inputs must agree on the contracted dimension.",
+          phase = "ops",
+          path = "domain_policy.result_shape",
+          data = list(
+            left = left_shape@dims[[2L]]@label,
+            right = right_shape@dims[[1L]]@label
+          )
+        )
+      }
+      if (right_shape@rank == 1L) {
+        return(tccq_shape(list(left_shape@dims[[1L]])))
+      }
+      tccq_shape(list(left_shape@dims[[1L]], right_shape@dims[[2L]]))
+    }
+  )
+  contraction_result_type <- function(input_types, result_shape) {
+    unsupported_bases <- setdiff(
+      unique(vapply(input_types, function(type) type@base, character(1))),
+      c("integer", "double")
+    )
+    if (length(unsupported_bases) > 0L) {
+      tccq_abort(
+        "ops.unsupported_contraction_type",
+        "`%*%` currently supports integer and double inputs.",
+        phase = "ops",
+        path = "contraction.type",
+        data = list(base = unsupported_bases)
+      )
+    }
+    tccq_type("double", result_shape)
+  }
+  matmul_contraction <- tccq_contraction_spec(
+    "%*%",
+    signature = tccq_op_signature(
+      "%*%",
+      2L,
+      result_type = contraction_result_type,
+      domain_policy = contraction_domain_policy
+    ),
+    reducer = base_sum_reduction,
+    combine_op = "*"
+  )
   column_sum_reduction <- tccq_reduction_spec(
     "sum",
     identity = sum_identity,
@@ -2195,7 +2383,7 @@ tccq_default_op_registry <- function() {
   language_ops <- c(
     "{", "(", "<-", "<<-", "->", "->>", "=",
     "if", "for", "while", "repeat", "break", "next", "switch", "function",
-    "[", "[[", "$", "@", "[<-", "[[<-", "$<-", "@<-",
+    "[", "[[", "$", "@", "[<-", "[[<-", "$<-", "@<-", ":",
     "declare", "type", TCCQ_BASE_TYPES
   )
   tccq_op_registry(c(
@@ -2232,6 +2420,13 @@ tccq_default_op_registry <- function() {
         region_kind = "kernel",
         effect = tccq_effect(reads = TRUE),
         reduction = row_sum_reduction
+      ),
+      tccq_op_impl(
+        "%*%",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        contraction = matmul_contraction
       )
     )
   ))

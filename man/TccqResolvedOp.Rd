@@ -16,6 +16,7 @@ TccqResolvedOp(
   effect = TccqEffect(),
   elementwise = NULL,
   reduction = NULL,
+  contraction = NULL,
   attrs = list()
 )
 }
@@ -42,6 +43,9 @@ TccqResolvedOp(
 implementation.}
 
 \item{reduction}{Optional reduction metadata supplied by the implementation.}
+
+\item{contraction}{Optional contraction metadata supplied by the
+implementation.}
 
 \item{attrs}{Structured resolution metadata.}
 }
