@@ -465,3 +465,15 @@ local({
   expect_equal(local_op_semantics@forcing_policy, "lazy")
   expect_true(local_op_semantics@lexical_scope)
 })
+
+empty_index_probe <- function(x) {
+  declare(type(x = double(n, p)))
+  Reduce(`+`, lapply(seq_len(p), function(j) sum(x[, j])))
+}
+empty_index_result <- tccq_analyze(empty_index_probe)
+expect_false(empty_index_result@success)
+expect_true(any(vapply(
+  empty_index_result@diagnostics,
+  function(x) identical(x@code, "frontend.unimplemented_call"),
+  logical(1)
+)))

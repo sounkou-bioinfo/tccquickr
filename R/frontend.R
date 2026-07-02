@@ -201,8 +201,12 @@ tccq_compile <- function(
         return(NULL)
       }
     }
-    for (child in as.list(node)[-1L]) {
-      walk(child)
+    children <- as.list(node)[-1L]
+    for (child_index in seq_along(children)) {
+      if (identical(children[[child_index]], quote(expr = ))) {
+        next
+      }
+      walk(children[[child_index]])
     }
     NULL
   }
