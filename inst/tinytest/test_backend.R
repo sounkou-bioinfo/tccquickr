@@ -47,6 +47,46 @@ can_build_shared_library <- function(language) {
     !grepl("not found|ERROR", compiler, ignore.case = TRUE)
 }
 
+# TinyCC's in-memory JIT can crash the whole process on platforms with strict
+# W^X code-page policies (for example macOS on ARM64), and a segfault cannot
+# be caught in-process. Probe a trivial compile-and-call in a subprocess and
+# skip JIT coverage when the subprocess dies.
+can_jit_with_rtinycc <- function() {
+  if (!requireNamespace("Rtinycc", quietly = TRUE)) {
+    return(FALSE)
+  }
+  probe_path <- tempfile("tccq_jit_probe_", fileext = ".R")
+  writeLines(c(
+    "ffi <- Rtinycc::tcc_ffi()",
+    "ffi <- Rtinycc::tcc_bind(",
+    "  ffi,",
+    "  tccq_probe_add = list(args = list(\"f64\", \"f64\"), returns = \"f64\")",
+    ")",
+    "ffi <- Rtinycc::tcc_source(",
+    "  ffi,",
+    "  \"double tccq_probe_add(double a, double b) { return a + b; }\"",
+    ")",
+    "compiled <- Rtinycc::tcc_compile(ffi)",
+    "stopifnot(identical(compiled[[\"tccq_probe_add\"]](1, 2), 3))",
+    "cat(\"tccq-jit-ok\")"
+  ), probe_path)
+  on.exit(unlink(probe_path), add = TRUE)
+  output <- tryCatch(
+    suppressWarnings(system2(
+      file.path(R.home("bin"), "Rscript"),
+      c("--vanilla", probe_path),
+      stdout = TRUE,
+      stderr = TRUE
+    )),
+    error = function(e) character()
+  )
+  status <- attr(output, "status")
+  (is.null(status) || identical(as.integer(status), 0L)) &&
+    any(grepl("tccq-jit-ok", output, fixed = TRUE))
+}
+
+rtinycc_jit_available <- can_jit_with_rtinycc()
+
 expect_true(S7::S7_inherits(runtime, TccqRuntimePolicy))
 expect_true(S7::S7_inherits(context, TccqBackendContext))
 expect_true(S7::S7_inherits(backend, TccqBackendSpec))
@@ -620,7 +660,7 @@ bound_fortran_source_plan <- tccq_plan_backend(
 expect_true(bound_fortran_source_plan@success)
 expect_true(grepl("exp(sqrt(input_0001(axis_0001 + 1)))", backend_source(bound_fortran_source_plan), fixed = TRUE))
 
-if (requireNamespace("Rtinycc", quietly = TRUE)) {
+if (rtinycc_jit_available) {
   jit_plan <- tccq_plan_backend(
     vector_program@value,
     tccq_rtinycc_backend(),
@@ -943,7 +983,7 @@ custom_c_source_plan <- tccq_plan_backend(
 expect_true(custom_c_source_plan@success)
 expect_true(grepl("accumulator_0001 = accumulator_0001 + ", backend_source(custom_c_source_plan), fixed = TRUE))
 
-if (requireNamespace("Rtinycc", quietly = TRUE)) {
+if (rtinycc_jit_available) {
   reduction_jit_plan <- tccq_plan_backend(
     reduction_program@value,
     tccq_rtinycc_backend(),
@@ -1103,7 +1143,7 @@ if (can_build_shared_library("fortran")) {
   expect_equal(backend_callable(stencil_fortran_shared_plan)(stencil_x), stencil_expected)
 }
 
-if (requireNamespace("Rtinycc", quietly = TRUE)) {
+if (rtinycc_jit_available) {
   matrix_vector_jit_plan <- tccq_plan_backend(
     matrix_vector_program@value,
     tccq_rtinycc_backend(),
