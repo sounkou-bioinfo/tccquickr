@@ -214,10 +214,10 @@ For the reset core, keep these rules explicit:
   and not invalid R. Use `frontend.unimplemented_call` style diagnostics to
   say what the current registry/context cannot implement.
 - Supported calls are contextual: an operation may be supported by an R C API
-  implementation, pure C implementation, Fortran implementation, Mojo
-  implementation, CUDA/device implementation, or explicit boundary
-  implementation. The frontend asks an operation registry rather than owning
-  the support policy.
+  implementation, pure C implementation, Fortran implementation, or explicit
+  boundary implementation. The frontend asks an operation registry rather than
+  owning the support policy. New implementation targets enter the registry
+  together with their first real implementation.
 - `TccqOpSignature` is the shared operation contract for arity, result-domain
   policy, and result type. `TccqElementwiseSpec` and `TccqReductionSpec` carry
   signatures; reductions add reducer identity and combine behavior. Do not add
@@ -232,10 +232,13 @@ For the reset core, keep these rules explicit:
   `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
   bridge/safepoint/debug metadata. `Rtinycc` is one backend descriptor for a
   C/TinyCC path; it is not the architecture.
-- Keep several backend families visible while shaping the IR: generic C,
-  Rtinycc/TinyCC C, quickr-style Fortran, anvil-style graph/StableHLO/XLA or
-  device paths, and R call evaluation. Divergence between those families should
-  produce typed capability or legality diagnostics, not target-specific hacks.
+- Backend families exist in the suite only with a real lowering behind them:
+  today generic C, Rtinycc/TinyCC C, and quickr-style Fortran. Divergence
+  between families should produce typed capability or legality diagnostics,
+  not target-specific hacks. Do not ship descriptor placeholders whose
+  capability strings promise behavior nothing implements; a new family
+  (graph/StableHLO, device, R call evaluation) enters together with its first
+  real lowering.
 - Backend planning must make representation transitions explicit through
   `TccqBridgePlan` values. The bridge kind must match the representation, so
   scalar values use scalar bridges and vector/array values use buffer bridges.

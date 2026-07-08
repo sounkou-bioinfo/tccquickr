@@ -298,8 +298,8 @@ TccqContractionSpec <- S7::new_class(
 #' Operation implementation descriptor
 #'
 #' @param op Operation or function name.
-#' @param target Implementation target, such as `r_language`, `r_api`, `pure_c`,
-#'   `fortran`, `mojo`, or `cuda`.
+#' @param target Implementation target, such as `r_language`, `pure_c`, or
+#'   `fortran`.
 #' @param region_kind Region kind the implementation can run in, or `any`.
 #' @param memory_space Memory space the implementation expects, or `any`.
 #' @param uses_rapi Whether the implementation touches the R C API.

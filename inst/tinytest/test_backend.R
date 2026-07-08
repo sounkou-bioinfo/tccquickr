@@ -110,17 +110,12 @@ bad_runtime <- tryCatch(
 expect_true(inherits(bad_runtime, "error"))
 
 fortran_backend <- tccq_fortran_backend()
-graph_backend <- tccq_anvil_graph_backend()
-object_backend <- tccq_r_object_backend()
 core_backends <- tccq_core_backends()
 
 expect_equal(fortran_backend@family, "fortran")
-expect_equal(graph_backend@family, "graph")
-expect_equal(object_backend@family, "object")
-expect_true("openmp" %in% fortran_backend@capabilities)
-expect_true("stablehlo" %in% graph_backend@capabilities)
-expect_true("object_mode" %in% object_backend@capabilities)
-expect_true(length(core_backends) >= 4L)
+expect_true("shared_library" %in% fortran_backend@capabilities)
+expect_equal(names(core_backends), c("rtinycc", "c", "fortran"))
+expect_equal(names(tccq_core_backends(include_rtinycc = FALSE)), c("c", "fortran"))
 
 span <- tccq_source_span(file = "README.Rmd", line = 1L, column = 1L)
 site <- tccq_debug_site("dbg1", "value", source = span)
@@ -279,7 +274,7 @@ missing_capability <- tccq_plan_backend(
   tccq_backend_context(
     mode = "jit",
     target = "c",
-    required_capabilities = "device_memory"
+    required_capabilities = "shared_library"
   )
 )
 expect_false(missing_capability@success)
@@ -314,18 +309,13 @@ compile_probe <- function(x) {
 compiled <- tccq_compile(compile_probe, strict = FALSE)
 expect_true(compiled@success)
 expect_true(S7::S7_inherits(compiled@value, TccqBackendPlanSet))
-expect_true(length(compiled@value@plans) >= 4L)
+expect_equal(length(compiled@value@plans), 3L)
 compiled_plan_succeeded <- vapply(
   compiled@value@plans,
   function(plan) length(plan@diagnostics) == 0L,
   logical(1)
 )
 expect_true(any(compiled_plan_succeeded))
-expect_true(any(vapply(
-  compiled@diagnostics,
-  function(x) identical(x@code, "backend.lowering_absent"),
-  logical(1)
-)))
 
 vector_add <- function(x, y) {
   declare(type(x = double(n), y = double(n)))

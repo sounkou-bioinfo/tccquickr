@@ -23,8 +23,8 @@ TccqOpImpl(
 \arguments{
 \item{op}{Operation or function name.}
 
-\item{target}{Implementation target, such as \code{r_language}, \code{r_api}, \code{pure_c},
-\code{fortran}, \code{mojo}, or \code{cuda}.}
+\item{target}{Implementation target, such as \code{r_language}, \code{pure_c}, or
+\code{fortran}.}
 
 \item{region_kind}{Region kind the implementation can run in, or \code{any}.}
 

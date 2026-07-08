@@ -2,8 +2,7 @@
 % Please edit documentation in R/zz-backend.R
 \name{tccq_core_backends}
 \alias{tccq_core_backends}
-\title{Core backend suite
-Core backend descriptors}
+\title{Core backend suite}
 \usage{
 tccq_core_backends(include_rtinycc = TRUE)
 }
@@ -11,6 +10,7 @@ tccq_core_backends(include_rtinycc = TRUE)
 \item{include_rtinycc}{Whether to include the \code{Rtinycc} TinyCC descriptor.}
 }
 \description{
-Core backend suite
-Core backend descriptors
+Every descriptor in the core suite prints from the shared loop nest and
+function interface. A backend family enters this suite together with its
+first real lowering; capability strings describe implemented behavior only.
 }

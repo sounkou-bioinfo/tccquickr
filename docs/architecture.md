@@ -72,8 +72,9 @@ implementations, and `TccqOpContext` describes the requested target, region
 kind, memory space, and whether R C API or boundary implementations are allowed.
 
 An operation can be supported by several implementations: R C API evaluation,
-pure C, Fortran, Mojo, CUDA/device code, or an explicit boundary. Those choices
-are different because they have different effects and region constraints.
+pure C, Fortran, or an explicit boundary. Those choices are different because
+they have different effects and region constraints, and new implementation
+targets enter the registry together with their first real implementation.
 
 The operation registry answers implementation questions, not grammar questions.
 If a call has no implementation in the current registry and context, analysis
@@ -259,16 +260,16 @@ capabilities, and backend attributes.
 
 Rtinycc comes for free only in the sense that it is one current driver for C
 source and TinyCC JIT modes. It should not decide the IR. The generic C
-descriptor, the Rtinycc descriptor, and the quickr-style Fortran descriptor now
+descriptor, the Rtinycc descriptor, and the quickr-style Fortran descriptor
 print source from the same `TccqLoopNest` through the same
 `TccqBackendFunctionInterface` handoff, and source, shared-library, and JIT
-products are recorded as `TccqBackendArtifact` values. The anvil-style
-graph/StableHLO/XLA descriptor and the R call-evaluation descriptor still
-report typed planning diagnostics until their corresponding lowerings exist;
-those feasibility reports do not veto the suite, so `tccq_compile()` succeeds
-when at least one backend produces a working plan. Those different families
-pressure the same typed representation from different directions, reducing the
-chance that the IR is secretly reward-hacked for one concrete backend.
+products are recorded as `TccqBackendArtifact` values. A backend that cannot
+lower a program reports typed planning diagnostics instead of vetoing the
+suite, so `tccq_compile()` succeeds when at least one backend produces a
+working plan. The C/Fortran split (return-pointer vs output-argument ABI,
+0- vs 1-based indexing) is the live cross-family pressure on the IR; a new
+backend family (graph/StableHLO, device, R call evaluation) enters the suite
+together with its first real lowering, not as a capability list ahead of one.
 
 Runtime concerns are part of backend planning. `TccqRuntimePolicy` says whether
 we are in release, checked, trace, or debug mode; whether interrupts may be

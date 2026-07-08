@@ -2,7 +2,7 @@
 #'
 #' The lowerer produces `TccqValue`, `TccqRegion`, `TccqFusionGroup`, and
 #' `TccqStoragePlan` objects. It is a middle-end pass result, not a C, Fortran,
-#' TinyCC, or CUDA lowering.
+#' or TinyCC lowering.
 #'
 #' @param fn Function to lower.
 #' @param bindings Declared formal bindings.

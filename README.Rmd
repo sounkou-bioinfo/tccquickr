@@ -112,9 +112,8 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 Reductions and contractions must produce the program result; anything needing
 more than one loop nest is a structured `lowering.unsupported_composition`
 diagnostic until multi-nest programs are modeled. Compilation succeeds when at
-least one backend produces a working plan; backends without a lowering (the
-graph and R-call descriptors) report feasibility diagnostics without vetoing
-the suite.
+least one backend produces a working plan; a backend that cannot lower a
+program reports typed feasibility diagnostics without vetoing the suite.
 
 ## Apotheosis suite
 

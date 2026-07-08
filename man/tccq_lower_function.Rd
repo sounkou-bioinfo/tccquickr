@@ -23,5 +23,5 @@ tccq_lower_function(
 \description{
 The lowerer produces \code{TccqValue}, \code{TccqRegion}, \code{TccqFusionGroup}, and
 \code{TccqStoragePlan} objects. It is a middle-end pass result, not a C, Fortran,
-TinyCC, or CUDA lowering.
+or TinyCC lowering.
 }

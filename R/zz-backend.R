@@ -1,28 +1,14 @@
-TCCQ_BACKEND_MODES <- c("source", "jit", "shared_library", "object_mode")
-TCCQ_BACKEND_FAMILIES <- c("c", "fortran", "graph", "object", "device", "analysis")
+TCCQ_BACKEND_MODES <- c("source", "jit", "shared_library")
+TCCQ_BACKEND_FAMILIES <- c("c", "fortran")
 TCCQ_BACKEND_CAPABILITIES <- c(
   "source",
   "jit",
   "shared_library",
-  "object_mode",
   "r_api",
   "native",
-  "openmp",
-  "blas",
-  "lapack",
   "host_memory",
-  "device_memory",
-  "stablehlo",
-  "xla",
-  "pjrt",
-  "graph_trace",
-  "autodiff",
-  "shape_polymorphic",
-  "raw_bytes",
   "buffer_bridge",
-  "kernel",
-  "parallel",
-  "device"
+  "kernel"
 )
 TCCQ_RUNTIME_MODES <- c("release", "checked", "trace", "debug")
 TCCQ_BRIDGE_KINDS <- c(
@@ -1759,20 +1745,16 @@ tccq_fortran_backend <- function() {
     target = "fortran",
     driver = "R-CMD-SHLIB",
     modes = c("source", "shared_library"),
-    region_kinds = c("host", "kernel", "parallel"),
+    region_kinds = c("host", "kernel"),
     memory_spaces = c("r", "host"),
     capabilities = c(
       "source",
       "shared_library",
       "native",
       "r_api",
-      "openmp",
-      "blas",
-      "lapack",
       "host_memory",
       "buffer_bridge",
-      "kernel",
-      "parallel"
+      "kernel"
     ),
     uses_rapi = TRUE,
     attrs = list(role = "quickr_fortran"),
@@ -1780,76 +1762,18 @@ tccq_fortran_backend <- function() {
   )
 }
 
-#' Anvil-style graph backend descriptor
-#'
-#' This descriptor captures graph tracing, primitive legality, StableHLO/XLA
-#' lowering, PJRT execution, and host/device movement without making those
-#' choices the core IR.
-#'
-#' @export
-tccq_anvil_graph_backend <- function() {
-  tccq_backend_spec(
-    id = "anvil_graph",
-    family = "graph",
-    target = "stablehlo",
-    driver = "anvil-xla-pjrt",
-    modes = c("source", "jit"),
-    region_kinds = c("kernel", "parallel", "device"),
-    memory_spaces = c("host", "device"),
-    capabilities = c(
-      "source",
-      "jit",
-      "stablehlo",
-      "xla",
-      "pjrt",
-      "graph_trace",
-      "autodiff",
-      "shape_polymorphic",
-      "host_memory",
-      "device_memory",
-      "buffer_bridge",
-      "kernel",
-      "parallel",
-      "device"
-    ),
-    uses_rapi = FALSE,
-    attrs = list(role = "anvil_graph")
-  )
-}
-
-#' R object-call backend descriptor
-#'
-#' This backend describes ordinary R call evaluation as a first-class backend
-#' family. It is not the meaning of opaque calls; it is one implementation
-#' family that may account for them when a host/R boundary is requested.
-#'
-#' @export
-tccq_r_object_backend <- function() {
-  tccq_backend_spec(
-    id = "r_object",
-    family = "object",
-    target = "r",
-    driver = "R",
-    modes = "object_mode",
-    region_kinds = "host",
-    memory_spaces = "r",
-    capabilities = c("object_mode", "r_api", "host_memory"),
-    uses_rapi = TRUE,
-    attrs = list(role = "r_call_evaluation")
-  )
-}
-
 #' Core backend suite
-#' Core backend descriptors
+#'
+#' Every descriptor in the core suite prints from the shared loop nest and
+#' function interface. A backend family enters this suite together with its
+#' first real lowering; capability strings describe implemented behavior only.
 #'
 #' @param include_rtinycc Whether to include the `Rtinycc` TinyCC descriptor.
 #' @export
 tccq_core_backends <- function(include_rtinycc = TRUE) {
   backends <- list(
     c = tccq_c_backend(),
-    fortran = tccq_fortran_backend(),
-    graph = tccq_anvil_graph_backend(),
-    object = tccq_r_object_backend()
+    fortran = tccq_fortran_backend()
   )
   if (isTRUE(include_rtinycc)) {
     backends <- append(list(rtinycc = tccq_rtinycc_backend()), backends)
