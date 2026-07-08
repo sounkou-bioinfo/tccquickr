@@ -148,6 +148,11 @@ all.equal(normalize_kernel(v), v / sum(v))
   body — `colSums(x) / n` is `colMeans`, `sum(x * x) / (n - 1)` is a
   variance-style estimator — reading the extent parameter the generated ABI
   already passes.
+- **Recycling**: rank-mixed elementwise operands follow R's rule with GNU-R
+  as the oracle — a shorter operand recycles over the host's column-major
+  element order through a typed modulo-linear access, accepted only when its
+  dimensions provably divide the host's; non-conformable arrays are refused
+  exactly as R refuses them.
 
 Compilation succeeds when at least one backend produces a working plan; a
 backend that cannot lower a program reports typed feasibility diagnostics
@@ -207,6 +212,14 @@ probes <- list(
     declare(type(x = double(n, p), y = double(p, q)))
     m <- x %*% y
     sqrt(exp(colSums(m) / n))
+  },
+  logistic_forward_pass = function(x, w) {
+    declare(type(x = double(n, p), w = double(p)))
+    mu <- colSums(x) / n
+    sigma <- sqrt(colSums((x - mu)^2) / (n - 1))
+    z <- (x - mu) / sigma
+    eta <- z %*% w
+    1 / (1 + exp(-eta))
   },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
@@ -284,10 +297,11 @@ knitr::kable(data.frame(
 ```
 
 The failing rows are the roadmap: every one must move deeper through the same
-typed IR — rank-mixed broadcasting as typed accesses (`x - mu` with `mu` over
-one axis of a matrix domain), general indexing and access regions, structured
-control flow, `raw`/`buffer` bridges, and apply-family folds. Failures must
-stay specific enough that the next typed concept to add is obvious.
+typed IR — transposed contraction accesses so `crossprod` and the full
+logistic gradient close, structured control flow and recurrences for Viterbi,
+general indexing and access regions, `raw`/`buffer` bridges, and apply-family
+folds. Failures must stay specific enough that the next typed concept to add
+is obvious.
 
 ## Design
 

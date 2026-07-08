@@ -567,10 +567,17 @@ tccq_program_loop_nests <- function(program) {
     "elementwise"
   }
 
+  dim_signature <- function(dim) {
+    paste(dim@kind, dim@label, dim@value, sep = ":")
+  }
+
   # Rewrite one expression subtree so every reference carries a typed access.
   # `axis_names` maps tensor-axis positions of values in this subtree to
-  # iteration-axis names.
-  annotate <- function(expression, axis_names, domain) {
+  # iteration-axis names, and `iteration_dims` carries the extent of each of
+  # those positions. A reference whose dimensions match its positions gets an
+  # identity or slice access; a shorter reference recycles over the iteration
+  # order, R-style, through a modulo-linear access.
+  annotate <- function(expression, axis_names, domain, iteration_dims) {
     if (identical(expression@kind, "literal")) {
       return(expression)
     }
@@ -590,20 +597,35 @@ tccq_program_loop_nests <- function(program) {
             data = list(value_id = expression@value_id, rank = rank)
           ))
         }
-        offsets <- as.integer(expression@attrs$slice_offsets %||% integer())
-        if (length(offsets) == 0L) {
-          offsets <- rep(0L, rank)
-        }
-        index_map <- lapply(seq_len(rank), function(position) {
-          tccq_index_expr(axis_names[[position]], offsets[[position]])
-        })
-        access_kind <- if (any(offsets != 0L)) "slice" else "identity"
-        access <- tccq_access(
-          expression@attrs$storage_value_id %||% expression@value_id,
-          domain,
-          kind = access_kind,
-          index_map = index_map
+        reference_dims <- expression@type@shape@dims
+        aligned <- rank == length(axis_names) && identical(
+          vapply(reference_dims, dim_signature, character(1)),
+          vapply(iteration_dims, dim_signature, character(1))
         )
+        if (aligned) {
+          offsets <- as.integer(expression@attrs$slice_offsets %||% integer())
+          if (length(offsets) == 0L) {
+            offsets <- rep(0L, rank)
+          }
+          index_map <- lapply(seq_len(rank), function(position) {
+            tccq_index_expr(axis_names[[position]], offsets[[position]])
+          })
+          access_kind <- if (any(offsets != 0L)) "slice" else "identity"
+          access <- tccq_access(
+            expression@attrs$storage_value_id %||% expression@value_id,
+            domain,
+            kind = access_kind,
+            index_map = index_map
+          )
+        } else {
+          access <- tccq_access(
+            expression@attrs$storage_value_id %||% expression@value_id,
+            domain,
+            kind = "recycle",
+            index_map = lapply(axis_names, function(name) tccq_index_expr(name, 0L)),
+            attrs = list(consumer_dims = iteration_dims)
+          )
+        }
       }
       expression@attrs$access <- access
       return(expression)
@@ -616,7 +638,13 @@ tccq_program_loop_nests <- function(program) {
         data = list(value_id = expression@value_id, op = expression@op, family = family)
       ))
     }
-    expression@inputs <- lapply(expression@inputs, annotate, axis_names = axis_names, domain = domain)
+    expression@inputs <- lapply(
+      expression@inputs,
+      annotate,
+      axis_names = axis_names,
+      domain = domain,
+      iteration_dims = iteration_dims
+    )
     expression
   }
 
@@ -653,7 +681,7 @@ tccq_program_loop_nests <- function(program) {
       tccq_shape(lapply(loop_order, function(position) input_shape@dims[[position]])),
       axes = names_by_position[loop_order]
     )
-    body <- annotate(expression@inputs[[1L]], names_by_position, domain)
+    body <- annotate(expression@inputs[[1L]], names_by_position, domain, input_shape@dims)
     output <- if (length(kept_axes) > 0L) {
       tccq_access(
         expression@value_id,
@@ -729,8 +757,8 @@ tccq_program_loop_nests <- function(program) {
       value_id = expression@value_id,
       op = contraction_spec@combine_op,
       inputs = list(
-        annotate(left, left_axis_names, domain),
-        annotate(right, right_axis_names, domain)
+        annotate(left, left_axis_names, domain, left_shape@dims),
+        annotate(right, right_axis_names, domain, right_shape@dims)
       ),
       type = tccq_type(expression@type@base),
       resolved_op = combine_resolution@value
@@ -783,7 +811,7 @@ tccq_program_loop_nests <- function(program) {
       result_shape,
       axes = names_by_position
     )
-    body <- annotate(root, names_by_position, domain)
+    body <- annotate(root, names_by_position, domain, result_shape@dims)
     output <- if (result_shape@rank > 0L) {
       tccq_access(
         program@result,

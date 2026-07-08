@@ -10,7 +10,7 @@ TCCQ_BASE_TYPES <- c(
 TCCQ_DIM_KINDS <- c("constant", "symbol", "affine", "unknown")
 TCCQ_AXIS_ROLES <- c("map", "reduce")
 TCCQ_LITERAL_KINDS <- c("finite", "na", "nan", "pos_inf", "neg_inf")
-TCCQ_ACCESS_KINDS <- c("identity", "scalar", "broadcast", "slice", "transpose", "custom")
+TCCQ_ACCESS_KINDS <- c("identity", "scalar", "broadcast", "slice", "recycle", "transpose", "custom")
 TCCQ_FUSION_KINDS <- c("map", "map_reduce", "axis_reduce", "contract", "stencil", "custom")
 TCCQ_REGION_KINDS <- c("host", "kernel", "parallel", "device")
 TCCQ_MEMORY_SPACES <- c("r", "host", "device", "opaque")

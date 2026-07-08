@@ -156,7 +156,14 @@ so `x / sum(x)`, `colSums(x) + 1`, `(x %*% w) + y`, and
 Extraction is keyed by value id, so a value consumed twice materializes once.
 Declared dimension symbols are scalar values in the body: `n` in
 `colSums(x) / n` lowers to a `dim_symbol` value that the emitters render from
-the extent parameter the ABI already passes, widened to double.
+the extent parameter the ABI already passes, widened to double. Rank-mixed
+elementwise operands follow R's recycling rule with GNU-R as the oracle:
+operands of rank two or more must agree exactly (non-conformable arrays are
+refusals, as in R), and a shorter operand whose dimensions provably divide
+the host's recycles over the host's column-major element order through a
+typed `recycle` access — a modulo-linear index the emitters render, which is
+also why recycled *subtrees* are correct for free: pointwise operations
+commute with recycling.
 Lowering returns a `TccqLoweringPlan`, then embeds the plan into
 `TccqProgram` as values, regions, fusion groups, and storage facts. Each
 operation value carries one `TccqLoweredOperation` payload that owns the shared

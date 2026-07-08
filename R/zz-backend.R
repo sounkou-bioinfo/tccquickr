@@ -1753,6 +1753,31 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           return(parameter_name)
         }
         storage_type <- emit_context$formal_type_by_id[[access@value_id]]
+        if (identical(access@kind, "recycle")) {
+          consumer_linear <- linear_index_text(
+            access,
+            access@attrs$consumer_dims,
+            emit_context$extent_by_symbol
+          )
+          length_text <- paste(
+            vapply(
+              storage_type@shape@dims,
+              extent_text,
+              character(1),
+              extent_by_symbol = emit_context$extent_by_symbol
+            ),
+            collapse = " * "
+          )
+          if (identical(emit_context$language, "fortran")) {
+            return(sprintf(
+              "%s(mod(%s, %s) + 1)",
+              parameter_name,
+              consumer_linear,
+              length_text
+            ))
+          }
+          return(sprintf("%s[(%s) %% (%s)]", parameter_name, consumer_linear, length_text))
+        }
         linear <- linear_index_text(access, storage_type@shape@dims, emit_context$extent_by_symbol)
         if (identical(emit_context$language, "fortran")) {
           return(sprintf("%s(%s + 1)", parameter_name, linear))

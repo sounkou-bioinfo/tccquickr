@@ -190,6 +190,11 @@ all.equal(normalize_kernel(v), v / sum(v))
   the body — `colSums(x) / n` is `colMeans`, `sum(x * x) / (n - 1)` is a
   variance-style estimator — reading the extent parameter the generated
   ABI already passes.
+- **Recycling**: rank-mixed elementwise operands follow R’s rule with
+  GNU-R as the oracle — a shorter operand recycles over the host’s
+  column-major element order through a typed modulo-linear access,
+  accepted only when its dimensions provably divide the host’s;
+  non-conformable arrays are refused exactly as R refuses them.
 
 Compilation succeeds when at least one backend produces a working plan;
 a backend that cannot lower a program reports typed feasibility
@@ -250,6 +255,14 @@ probes <- list(
     declare(type(x = double(n, p), y = double(p, q)))
     m <- x %*% y
     sqrt(exp(colSums(m) / n))
+  },
+  logistic_forward_pass = function(x, w) {
+    declare(type(x = double(n, p), w = double(p)))
+    mu <- colSums(x) / n
+    sigma <- sqrt(colSums((x - mu)^2) / (n - 1))
+    z <- (x - mu) / sigma
+    eta <- z %*% w
+    1 / (1 + exp(-eta))
   },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
@@ -326,31 +339,32 @@ knitr::kable(data.frame(
 ))
 ```
 
-| probe                | status                                      |
-|:---------------------|:--------------------------------------------|
-| map_chain            | compiles through C, Fortran, and TinyCC JIT |
-| map_reduce           | compiles through C, Fortran, and TinyCC JIT |
-| matrix_reduce        | compiles through C, Fortran, and TinyCC JIT |
-| matrix_map           | compiles through C, Fortran, and TinyCC JIT |
-| column_sums          | compiles through C, Fortran, and TinyCC JIT |
-| matrix_vector        | compiles through C, Fortran, and TinyCC JIT |
-| matrix_multiply      | compiles through C, Fortran, and TinyCC JIT |
-| tiled_stencil_1d     | compiles through C, Fortran, and TinyCC JIT |
-| scalar_composition   | compiles through C, Fortran, and TinyCC JIT |
-| array_composition    | compiles through C, Fortran, and TinyCC JIT |
-| column_means_chain   | compiles through C, Fortran, and TinyCC JIT |
-| raw_buffer_roundtrip | `backend.unsupported_type`                  |
-| control_flow_probe   | `frontend.unimplemented_call`               |
-| apply_reduce_probe   | `frontend.unimplemented_call`               |
-| logistic_gradient    | `frontend.unimplemented_call`               |
-| viterbi_decode       | `frontend.unimplemented_call`               |
+| probe                 | status                                      |
+|:----------------------|:--------------------------------------------|
+| map_chain             | compiles through C, Fortran, and TinyCC JIT |
+| map_reduce            | compiles through C, Fortran, and TinyCC JIT |
+| matrix_reduce         | compiles through C, Fortran, and TinyCC JIT |
+| matrix_map            | compiles through C, Fortran, and TinyCC JIT |
+| column_sums           | compiles through C, Fortran, and TinyCC JIT |
+| matrix_vector         | compiles through C, Fortran, and TinyCC JIT |
+| matrix_multiply       | compiles through C, Fortran, and TinyCC JIT |
+| tiled_stencil_1d      | compiles through C, Fortran, and TinyCC JIT |
+| scalar_composition    | compiles through C, Fortran, and TinyCC JIT |
+| array_composition     | compiles through C, Fortran, and TinyCC JIT |
+| column_means_chain    | compiles through C, Fortran, and TinyCC JIT |
+| logistic_forward_pass | compiles through C, Fortran, and TinyCC JIT |
+| raw_buffer_roundtrip  | `backend.unsupported_type`                  |
+| control_flow_probe    | `frontend.unimplemented_call`               |
+| apply_reduce_probe    | `frontend.unimplemented_call`               |
+| logistic_gradient     | `frontend.unimplemented_call`               |
+| viterbi_decode        | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
-same typed IR — rank-mixed broadcasting as typed accesses (`x - mu` with
-`mu` over one axis of a matrix domain), general indexing and access
-regions, structured control flow, `raw`/`buffer` bridges, and
-apply-family folds. Failures must stay specific enough that the next
-typed concept to add is obvious.
+same typed IR — transposed contraction accesses so `crossprod` and the
+full logistic gradient close, structured control flow and recurrences
+for Viterbi, general indexing and access regions, `raw`/`buffer`
+bridges, and apply-family folds. Failures must stay specific enough that
+the next typed concept to add is obvious.
 
 ## Design
 

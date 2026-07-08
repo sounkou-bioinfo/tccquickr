@@ -819,29 +819,33 @@ S7::method(tccq_domain_policy_result_shape, TccqDomainPolicy) <- function(policy
 
 #' Construct the standard elementwise domain policy
 #'
-#' The standard elementwise policy returns the shared non-scalar input shape,
-#' accepts scalar broadcasting, and rejects incompatible non-scalar shapes. It
-#' is the default for `tccq_elementwise_spec()`.
+#' The standard elementwise policy returns the shared non-scalar input shape
+#' and accepts scalar broadcasting. Following R's recycling rule, a shorter
+#' non-scalar operand is also accepted when its dimension multiset divides the
+#' longest operand's dimension multiset (so its total length provably divides
+#' the iteration size); the result takes the longest shape, and accesses to
+#' the shorter operand recycle over the iteration order. Shapes whose
+#' divisibility cannot be proven from declared dimensions are rejected.
 #'
 #' @export
 tccq_elementwise_domain_policy <- function() {
   tccq_domain_policy(
     "elementwise_common_shape",
     result_shape = function(input_types) {
-      shape_label <- function(shape) {
-        labels <- vapply(shape@dims, function(dim) {
-          if (identical(dim@kind, "constant")) {
-            return(sprintf("constant:%d", dim@value))
-          }
-          if (identical(dim@kind, "symbol")) {
-            return(sprintf("symbol:%s", dim@label))
-          }
-          if (identical(dim@kind, "affine")) {
-            return(sprintf("affine:%s%+d", dim@label, dim@value))
-          }
-          "unknown"
-        }, character(1))
-        paste(labels, collapse = "/")
+      dim_label <- function(dim) {
+        if (identical(dim@kind, "constant")) {
+          return(sprintf("constant:%d", dim@value))
+        }
+        if (identical(dim@kind, "symbol")) {
+          return(sprintf("symbol:%s", dim@label))
+        }
+        if (identical(dim@kind, "affine")) {
+          return(sprintf("affine:%s%+d", dim@label, dim@value))
+        }
+        "unknown"
+      }
+      shape_dim_labels <- function(shape) {
+        vapply(shape@dims, dim_label, character(1))
       }
 
       non_scalar_shapes <- lapply(
@@ -852,17 +856,57 @@ tccq_elementwise_domain_policy <- function() {
         return(tccq_shape())
       }
 
-      labels <- vapply(non_scalar_shapes, shape_label, character(1))
-      if (length(unique(labels)) != 1L) {
+      dim_labels <- lapply(non_scalar_shapes, shape_dim_labels)
+      shape_labels <- vapply(dim_labels, paste, character(1), collapse = "/")
+      if (length(unique(shape_labels)) == 1L) {
+        return(non_scalar_shapes[[1L]])
+      }
+
+      multiset_contains <- function(big, small) {
+        if (any(big == "unknown") || any(small == "unknown")) {
+          return(FALSE)
+        }
+        remaining <- big
+        for (item in small) {
+          hit <- match(item, remaining)
+          if (is.na(hit)) {
+            return(FALSE)
+          }
+          remaining <- remaining[-hit]
+        }
+        TRUE
+      }
+      # R's rule: operands of rank >= 2 must agree exactly (non-conformable
+      # arrays are errors, never recycled); only lower-rank operands recycle,
+      # and only when their length provably divides the host's.
+      ranks <- vapply(non_scalar_shapes, function(shape) shape@rank, integer(1))
+      array_positions <- which(ranks >= 2L)
+      if (length(unique(shape_labels[array_positions])) > 1L) {
         tccq_abort(
           "ops.incompatible_elementwise_shapes",
-          "Elementwise operation inputs must share one non-scalar shape for now.",
+          "Array operands of one elementwise operation must share one ordered shape.",
           phase = "ops",
           path = "domain_policy.result_shape",
-          data = list(shapes = labels)
+          data = list(shapes = shape_labels)
         )
       }
-      non_scalar_shapes[[1L]]
+      host_position <- if (length(array_positions) > 0L) array_positions[[1L]] else NULL
+      recycle_is_provable <- !is.null(host_position) && all(vapply(
+        dim_labels,
+        multiset_contains,
+        logical(1),
+        big = dim_labels[[host_position]]
+      ))
+      if (!recycle_is_provable) {
+        tccq_abort(
+          "ops.incompatible_elementwise_shapes",
+          "Elementwise inputs must share one shape or recycle operands whose dimensions divide the host shape.",
+          phase = "ops",
+          path = "domain_policy.result_shape",
+          data = list(shapes = shape_labels)
+        )
+      }
+      non_scalar_shapes[[host_position]]
     }
   )
 }

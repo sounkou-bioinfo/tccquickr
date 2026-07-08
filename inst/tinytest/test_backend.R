@@ -1412,3 +1412,108 @@ if (rtinycc_jit_available) {
     sqrt(exp(colSums(composed_chain_x %*% composed_chain_y) / nrow(composed_chain_x)))
   )
 }
+
+# Rank-mixed elementwise operands follow R's recycling rule: the shorter
+# operand recycles over the host's column-major element order, GNU-R being
+# the oracle for both alignments.
+recycle_center <- function(x, mu) {
+  declare(type(x = double(n, p), mu = double(p)))
+  x - mu
+}
+recycle_center_program <- tccq_analyze(recycle_center)
+expect_true(recycle_center_program@success)
+recycle_center_nests <- tccq_program_loop_nests(recycle_center_program@value)
+expect_true(recycle_center_nests@success)
+recycle_center_access <-
+  recycle_center_nests@value[[1L]]@body@inputs[[2L]]@attrs$access
+expect_equal(recycle_center_access@kind, "recycle")
+
+# R refuses non-conformable arrays; so does the domain policy.
+recycle_nonconformable <- function(x, y) {
+  declare(type(x = double(n, p), y = double(p, n)))
+  x + y
+}
+expect_false(tccq_analyze(recycle_nonconformable)@success)
+
+# Divisibility that cannot be proven from declared dimensions is refused.
+recycle_unprovable <- function(x, w) {
+  declare(type(x = double(n, p), w = double(m)))
+  x - w
+}
+expect_false(tccq_analyze(recycle_unprovable)@success)
+
+if (rtinycc_jit_available) {
+  recycle_x <- matrix(c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), nrow = 3)
+  recycle_mu <- c(0.5, -1, 2, 1)
+  recycle_v <- c(10, 20, 30)
+
+  recycle_center_jit <- tccq_plan_backend(
+    recycle_center_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(recycle_center_jit@success)
+  expect_equal(
+    backend_callable(recycle_center_jit)(recycle_x, recycle_mu),
+    recycle_x - recycle_mu
+  )
+
+  recycle_rows <- function(x, v) {
+    declare(type(x = double(n, p), v = double(n)))
+    x - v
+  }
+  recycle_rows_jit <- tccq_plan_backend(
+    tccq_analyze(recycle_rows, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(recycle_rows_jit@success)
+  expect_equal(
+    backend_callable(recycle_rows_jit)(recycle_x, recycle_v),
+    recycle_x - recycle_v
+  )
+
+  recycle_reduce <- function(x, v) {
+    declare(type(x = double(n, p), v = double(n)))
+    sum((x - v)^2)
+  }
+  recycle_reduce_jit <- tccq_plan_backend(
+    tccq_analyze(recycle_reduce, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(recycle_reduce_jit@success)
+  expect_equal(
+    backend_callable(recycle_reduce_jit)(recycle_x, recycle_v),
+    sum((recycle_x - recycle_v)^2)
+  )
+
+  # The logistic forward pass: column statistics through buffers and
+  # dimension values, standardization through recycling, a contraction,
+  # and the sigmoid — one kernel agreeing with R.
+  forward_pass <- function(x, w) {
+    declare(type(x = double(n, p), w = double(p)))
+    mu <- colSums(x) / n
+    sigma <- sqrt(colSums((x - mu)^2) / (n - 1))
+    z <- (x - mu) / sigma
+    eta <- z %*% w
+    1 / (1 + exp(-eta))
+  }
+  forward_pass_jit <- tccq_plan_backend(
+    tccq_analyze(forward_pass, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(forward_pass_jit@success)
+  forward_pass_w <- c(0.25, -0.5, 1, 0.75)
+  forward_pass_oracle <- local({
+    mu <- colSums(recycle_x) / nrow(recycle_x)
+    sigma <- sqrt(colSums((recycle_x - mu)^2) / (nrow(recycle_x) - 1))
+    z <- (recycle_x - mu) / sigma
+    drop(1 / (1 + exp(-(z %*% forward_pass_w))))
+  })
+  expect_equal(
+    backend_callable(forward_pass_jit)(recycle_x, forward_pass_w),
+    forward_pass_oracle
+  )
+}

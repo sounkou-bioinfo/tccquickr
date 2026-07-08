@@ -107,7 +107,10 @@ Rules:
 - Result-domain and shape compatibility rules belong in `TccqDomainPolicy`
   carried by `TccqOpSignature`. Do not bury scalar broadcast, common-domain,
   recycling, or scalar-result behavior inside anonymous result-type closures or
-  backend printers.
+  backend printers. Rank-mixed recycling follows R with GNU-R as the oracle:
+  rank >= 2 operands must agree exactly, shorter operands recycle over the
+  host's column-major order via typed `recycle` accesses, and divisibility
+  must be provable from declared dimensions.
 - Functions should mostly be constructors, pure transformations, generic
   methods, protocol runners, or small local helpers in service of one of those.
 - A private helper is acceptable only when it is truly local glue. It is not
