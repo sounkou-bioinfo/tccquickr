@@ -2,7 +2,7 @@
 % Please edit documentation in R/z-expression.R
 \name{tccq_program_loop_nest}
 \alias{tccq_program_loop_nest}
-\title{Plan the loop nest for a lowered program}
+\title{Plan the loop nest for a single-nest lowered program}
 \usage{
 tccq_program_loop_nest(program)
 }
@@ -10,10 +10,7 @@ tccq_program_loop_nest(program)
 \item{program}{Lowered program.}
 }
 \description{
-This is the pass that turns a lowered value graph into the single loop nest
-consumed by source printers. Elementwise maps become all-map nests, full
-reductions become all-reduce nests, per-axis reductions and contractions
-become mixed nests, and slice values disappear into affine accesses.
-Programs the single-nest planner cannot express honestly return structured
-diagnostics.
+Thin wrapper over \code{\link[=tccq_program_loop_nests]{tccq_program_loop_nests()}} for programs that plan to
+exactly one nest. Multi-nest programs return a structured diagnostic
+pointing at the plural planner.
 }

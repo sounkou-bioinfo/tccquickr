@@ -255,14 +255,17 @@ For the reset core, keep these rules explicit:
   element-count parameter, per-axis result extent parameters, result-count
   parameter, index variable, or reduction accumulator names.
 - Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
-  the SAC-style with-loop. It carries ordered `TccqLoopAxis` values (`map`
-  produces output positions, `reduce` folds into an accumulator), a body whose
-  references carry typed `TccqAccess`/`TccqIndexExpr` affine access maps, an
-  optional reducer with identity, and an output access. Scalar programs, maps,
-  full and per-axis reductions, `%*%` contractions, and interior stencils are
-  instances of this one value. Do not reintroduce per-family printer cases,
-  linear element-count ABIs, or string-built index arithmetic; new iteration
-  behavior must extend the loop nest and its typed accesses.
+  the SAC-style with-loop, planned as an ordered sequence (intermediate nests
+  first, result nest last). Each nest carries ordered `TccqLoopAxis` values
+  (`map` produces output positions, `reduce` folds into an accumulator), a
+  body whose references carry typed `TccqAccess`/`TccqIndexExpr` affine access
+  maps, an optional reducer with identity, and an output access; intermediate
+  nests name the scalar their accumulator materializes. Scalar programs, maps,
+  full and per-axis reductions, `%*%` contractions, interior stencils, and
+  scalar-intermediate compositions are sequences of this one value. Do not
+  reintroduce per-family printer cases, linear element-count ABIs, or
+  string-built index arithmetic; new iteration behavior must extend the loop
+  nest, its typed accesses, and the nest sequence.
 - The generated ABI passes one `int` extent parameter per symbolic dimension
   plus a result element-count parameter for non-scalar results. Boundary
   wrappers and JIT callables bind each extent symbol from the first argument
@@ -271,10 +274,13 @@ For the reset core, keep these rules explicit:
   rendered by the emitters, never precomputed strings.
 - Operation families are elementwise (`TccqElementwiseSpec`), reduction
   (`TccqReductionSpec`), and contraction (`TccqContractionSpec`, which owns a
-  signature, a reducer, and a combine operation). Reductions and contractions
-  must produce the program result under the single-nest lowerer; other
-  compositions are `lowering.unsupported_composition` diagnostics until
-  multi-nest programs are modeled.
+  signature, a reducer, and a combine operation). Programs plan to an ordered
+  sequence of loop nests: every non-root scalar reduction becomes its own
+  all-reduce nest whose result is a named scalar intermediate consumed by
+  later nests. Array-valued intermediates (non-root contractions and axis
+  reductions) need materialized buffers and remain
+  `lowering.unsupported_composition` diagnostics until buffer intermediates
+  are modeled.
 - Backend planning must make concrete products explicit through
   `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
   expression trees, storage plans, generated source, shared libraries, wrappers,

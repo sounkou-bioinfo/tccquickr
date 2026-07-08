@@ -474,18 +474,21 @@ tccq_loop_nest <- function(
   )
 }
 
-#' Plan the loop nest for a lowered program
+#' Plan the ordered loop nests for a lowered program
 #'
-#' This is the pass that turns a lowered value graph into the single loop nest
-#' consumed by source printers. Elementwise maps become all-map nests, full
-#' reductions become all-reduce nests, per-axis reductions and contractions
-#' become mixed nests, and slice values disappear into affine accesses.
-#' Programs the single-nest planner cannot express honestly return structured
+#' This is the pass that turns a lowered value graph into the ordered sequence
+#' of loop nests consumed by source printers. Every non-root scalar reduction
+#' becomes its own all-reduce nest whose result is a named scalar intermediate,
+#' and the program result becomes the final nest, whose body references those
+#' intermediates through scalar accesses. Elementwise maps become all-map
+#' nests, full reductions become all-reduce nests, per-axis reductions and
+#' contractions become mixed nests, and slice values disappear into affine
+#' accesses. Programs the planner cannot express honestly return structured
 #' diagnostics.
 #'
 #' @param program Lowered program.
 #' @export
-tccq_program_loop_nest <- function(program) {
+tccq_program_loop_nests <- function(program) {
   .tccq_check_s7(program, TccqProgram, "TccqProgram", "program")
 
   nest_diagnostic <- function(code, message, data = list()) {
@@ -512,18 +515,47 @@ tccq_program_loop_nest <- function(program) {
     return(tccq_result(success = FALSE, diagnostics = expression_result@diagnostics))
   }
   root <- expression_result@value
-  root_operation <- root@attrs$operation
-  root_family <- if (S7::S7_inherits(root_operation, TccqLoweredOperation)) {
-    root_operation@family
-  } else {
-    "elementwise"
-  }
 
   axis_name <- function(position) sprintf("axis_%04d", position)
 
   expression_family <- function(expression) {
     operation <- expression@attrs$operation
     if (S7::S7_inherits(operation, TccqLoweredOperation)) operation@family else NULL
+  }
+
+  # Post-order extraction: every non-root scalar reduction subtree becomes an
+  # intermediate all-reduce nest, and the consumer tree keeps a rank-0
+  # reference in its place. Inner reductions are extracted before the subtrees
+  # that consume them, so `intermediates` is already in dependency order.
+  intermediates <- list()
+  extract <- function(expression, is_root) {
+    if (!identical(expression@kind, "operation")) {
+      return(expression)
+    }
+    expression@inputs <- lapply(expression@inputs, extract, is_root = FALSE)
+    if (
+      !is_root &&
+        identical(expression_family(expression), "reduction") &&
+        expression@type@shape@rank == 0L
+    ) {
+      intermediates[[length(intermediates) + 1L]] <<- expression
+      return(tccq_expression(
+        id = expression@value_id,
+        kind = "reference",
+        value_id = expression@value_id,
+        op = "intermediate",
+        type = expression@type,
+        attrs = list(storage_value_id = expression@value_id, intermediate = TRUE)
+      ))
+    }
+    expression
+  }
+  root <- extract(root, is_root = TRUE)
+  root_operation <- root@attrs$operation
+  root_family <- if (S7::S7_inherits(root_operation, TccqLoweredOperation)) {
+    root_operation@family
+  } else {
+    "elementwise"
   }
 
   # Rewrite one expression subtree so every reference carries a typed access.
@@ -571,12 +603,42 @@ tccq_program_loop_nest <- function(program) {
     if (!identical(family, "elementwise")) {
       tccq_abort_diagnostic(nest_diagnostic(
         "loop_nest.unsupported_composition",
-        "Reductions and contractions must produce the program result in the current single-nest planner.",
+        "Contractions and array reductions must be materialized before entering another loop nest.",
         data = list(value_id = expression@value_id, op = expression@op, family = family)
       ))
     }
     expression@inputs <- lapply(expression@inputs, annotate, axis_names = axis_names, domain = domain)
     expression
+  }
+
+  reduction_nest <- function(expression, nest_index) {
+    operation <- expression@attrs$operation
+    input_shape <- expression@inputs[[1L]]@type@shape
+    nest_id <- sprintf("loop_nest_%04d", nest_index)
+    names_by_position <- vapply(seq_len(input_shape@rank), axis_name, character(1))
+    axes <- lapply(seq_len(input_shape@rank), function(position) {
+      tccq_loop_axis(names_by_position[[position]], input_shape@dims[[position]], role = "reduce")
+    })
+    domain <- tccq_domain(
+      sprintf("%s.domain", nest_id),
+      input_shape,
+      axes = names_by_position
+    )
+    body <- annotate(expression@inputs[[1L]], names_by_position, domain)
+    tccq_loop_nest(
+      nest_id,
+      axes = axes,
+      body = body,
+      result_type = expression@type,
+      output = NULL,
+      reducer = operation@reduction,
+      identity = operation@identity,
+      domain = domain,
+      attrs = list(
+        result_value_id = expression@value_id,
+        scalar_name = sprintf("scalar_%s", expression@value_id)
+      )
+    )
   }
 
   build <- function() {
@@ -732,12 +794,44 @@ tccq_program_loop_nest <- function(program) {
     )
   }
 
-  nest <- tryCatch(build(), tccq_error = identity)
-  if (inherits(nest, "tccq_error")) {
+  nests <- tryCatch(
+    c(
+      unname(Map(reduction_nest, intermediates, seq_along(intermediates))),
+      list(build())
+    ),
+    tccq_error = identity
+  )
+  if (inherits(nests, "tccq_error")) {
     return(tccq_result(
       success = FALSE,
-      diagnostics = list(tccq_condition_diagnostic(nest))
+      diagnostics = list(tccq_condition_diagnostic(nests))
     ))
   }
-  tccq_result(success = TRUE, value = nest)
+  tccq_result(success = TRUE, value = nests)
+}
+
+#' Plan the loop nest for a single-nest lowered program
+#'
+#' Thin wrapper over [tccq_program_loop_nests()] for programs that plan to
+#' exactly one nest. Multi-nest programs return a structured diagnostic
+#' pointing at the plural planner.
+#'
+#' @param program Lowered program.
+#' @export
+tccq_program_loop_nest <- function(program) {
+  nests_result <- tccq_program_loop_nests(program)
+  if (!nests_result@success) {
+    return(nests_result)
+  }
+  nests <- nests_result@value
+  if (length(nests) != 1L) {
+    return(tccq_result(success = FALSE, diagnostics = list(tccq_diagnostic(
+      "loop_nest.multi_nest_program",
+      "This program plans multiple loop nests; consume tccq_program_loop_nests().",
+      phase = "loop_nest",
+      path = "loop_nest",
+      data = list(program = program@name, nests = length(nests))
+    ))))
+  }
+  tccq_result(success = TRUE, value = nests[[1L]])
 }

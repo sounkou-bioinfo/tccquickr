@@ -8,6 +8,7 @@ tccq_backend_products(
   function_interface = NULL,
   expression = NULL,
   loop_nest = NULL,
+  loop_nests = list(),
   storage_plan = NULL,
   artifacts = list(),
   attrs = list()
@@ -18,7 +19,9 @@ tccq_backend_products(
 
 \item{expression}{Expression tree consumed by the backend, if source exists.}
 
-\item{loop_nest}{Loop nest consumed by the backend, if source exists.}
+\item{loop_nest}{Result loop nest consumed by the backend, if source exists.}
+
+\item{loop_nests}{Ordered loop nests, intermediates first, result nest last.}
 
 \item{storage_plan}{Storage plan consumed by the backend, if available.}
 

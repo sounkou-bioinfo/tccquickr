@@ -1107,14 +1107,141 @@ if (rtinycc_jit_available) {
 matvec_supported_compile <- tccq_compile(matrix_vector)
 expect_true(matvec_supported_compile@success)
 
+# Multi-nest composition: non-root scalar reductions become intermediate
+# all-reduce nests feeding the final nest through named scalars.
 nested_reduction <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
   sum(x) + sum(y)
 }
 nested_reduction_program <- tccq_analyze(nested_reduction)
-expect_false(nested_reduction_program@success)
+expect_true(nested_reduction_program@success)
+nested_reduction_nests <- tccq_program_loop_nests(nested_reduction_program@value)
+expect_true(nested_reduction_nests@success)
+expect_equal(length(nested_reduction_nests@value), 3L)
+
+normalize <- function(x) {
+  declare(type(x = double(n)))
+  s <- sum(x)
+  x / s
+}
+normalize_program <- tccq_analyze(normalize)
+expect_true(normalize_program@success)
+
+normalize_groups <- normalize_program@value@regions[[1L]]@fusion_groups
+expect_equal(length(normalize_groups), 2L)
+expect_equal(
+  vapply(normalize_groups, function(group) group@kind, character(1)),
+  c("map_reduce", "map")
+)
+expect_equal(normalize_groups[[1L]]@outputs, normalize_groups[[2L]]@values[[1L]]@inputs[[2L]])
+
+normalize_nests <- tccq_program_loop_nests(normalize_program@value)
+expect_true(normalize_nests@success)
+expect_equal(length(normalize_nests@value), 2L)
+normalize_intermediate <- normalize_nests@value[[1L]]
+normalize_final <- normalize_nests@value[[2L]]
+expect_true(S7::S7_inherits(normalize_intermediate@reducer, TccqReductionSpec))
+expect_true(all(vapply(
+  normalize_intermediate@axes,
+  function(axis) identical(axis@role, "reduce"),
+  logical(1)
+)))
+expect_true(nzchar(normalize_intermediate@attrs$scalar_name))
+expect_null(normalize_final@reducer)
+
+# The singular planner refuses multi-nest programs with a classed diagnostic.
+normalize_single <- tccq_program_loop_nest(normalize_program@value)
+expect_false(normalize_single@success)
 expect_true(any(vapply(
-  nested_reduction_program@diagnostics,
+  normalize_single@diagnostics,
+  function(x) identical(x@code, "loop_nest.multi_nest_program"),
+  logical(1)
+)))
+
+normalize_source_plan <- tccq_plan_backend(
+  normalize_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(normalize_source_plan@success)
+expect_equal(length(backend_products(normalize_source_plan)@loop_nests), 2L)
+
+normalize_fortran_plan <- tccq_plan_backend(
+  normalize_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(normalize_fortran_plan@success)
+
+if (rtinycc_jit_available) {
+  normalize_jit <- tccq_plan_backend(
+    normalize_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(normalize_jit@success)
+  normalize_x <- c(1, 2, 3, 4)
+  expect_equal(
+    backend_callable(normalize_jit)(normalize_x),
+    normalize_x / sum(normalize_x)
+  )
+
+  mean_square <- function(x) {
+    declare(type(x = double(n)))
+    s <- sum(x * x)
+    s / 2
+  }
+  mean_square_jit <- tccq_plan_backend(
+    tccq_analyze(mean_square, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(mean_square_jit@success)
+  mean_square_x <- c(1, 2, 3)
+  expect_equal(
+    backend_callable(mean_square_jit)(mean_square_x),
+    sum(mean_square_x * mean_square_x) / 2
+  )
+
+  center_scale <- function(x, y) {
+    declare(type(x = double(n), y = double(n)))
+    (x - sum(x)) / sum(y * y)
+  }
+  center_scale_jit <- tccq_plan_backend(
+    tccq_analyze(center_scale, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(center_scale_jit@success)
+  center_scale_x <- c(1, 2, 3)
+  center_scale_y <- c(2, 1, 0.5)
+  expect_equal(
+    backend_callable(center_scale_jit)(center_scale_x, center_scale_y),
+    (center_scale_x - sum(center_scale_x)) / sum(center_scale_y * center_scale_y)
+  )
+}
+
+# Array-valued intermediates still stop at a structured diagnostic.
+axis_reduction_feed <- function(x) {
+  declare(type(x = double(n, p)))
+  colSums(x) + 1
+}
+axis_reduction_feed_program <- tccq_analyze(axis_reduction_feed)
+expect_false(axis_reduction_feed_program@success)
+expect_true(any(vapply(
+  axis_reduction_feed_program@diagnostics,
+  function(x) identical(x@code, "lowering.unsupported_composition"),
+  logical(1)
+)))
+
+contraction_feed <- function(x, w) {
+  declare(type(x = double(n, p), w = double(p)))
+  (x %*% w) + 1
+}
+contraction_feed_program <- tccq_analyze(contraction_feed)
+expect_false(contraction_feed_program@success)
+expect_true(any(vapply(
+  contraction_feed_program@diagnostics,
   function(x) identical(x@code, "lowering.unsupported_composition"),
   logical(1)
 )))

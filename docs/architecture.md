@@ -147,19 +147,26 @@ such as `colSums()` and `rowSums()`, `%*%` contractions, and rank-1 interior
 slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
 symbols. Slice extents are typed affine dimensions (`n - 2` is a `TccqDim`
 fact, not a printed string), and slices themselves disappear into typed affine
-accesses rather than materializing values. Reductions and contractions must
-produce the program result; other compositions return a
-`lowering.unsupported_composition` diagnostic until multi-nest programs are
+accesses rather than materializing values. Programs compose across loop
+nests when the intermediate is a scalar: every non-root scalar reduction
+becomes its own fusion group and all-reduce nest whose result is a named
+scalar consumed by later nests, so `x / sum(x)` and `sum(x) + sum(y)` lower
+to ordered nest sequences. Array-valued intermediates — a non-root
+contraction or axis reduction — need materialized buffers and return a
+`lowering.unsupported_composition` diagnostic until buffer intermediates are
 modeled. Lowering returns a `TccqLoweringPlan`, then embeds the plan into
 `TccqProgram` as values, regions, fusion groups, and storage facts. Each
 operation value carries one `TccqLoweredOperation` payload that owns the shared
 `TccqOpSignature`, result-domain policy, selected implementation, and optional
-reducer facts used to type the call. The generated fusion group preserves
-operation signatures and domain policies, then derives its target and effect
-from the resolved operations. Later fusion, access, legality, storage, and
-backend passes should consume those contracts rather than infer operation
-behavior from names, ranks, or emitted source. This is not a general legality
-pass and it is not the place where new language coverage should sprawl.
+reducer facts used to type the call. The fusion-group partition is the typed
+record of the composition decision: one `map_reduce` group per scalar
+intermediate over its input domain, then the main group over the result
+domain, each preserving operation signatures and domain policies and deriving
+its target and effect from the resolved operations. Later fusion, access,
+legality, storage, and backend passes should consume those contracts rather
+than infer operation behavior from names, ranks, or emitted source. This is
+not a general legality pass and it is not the place where new language
+coverage should sprawl.
 
 Top-level local assignment is currently modeled as single-assignment binding.
 In `a <- expr`, the local symbol `a` becomes a name for the lowered value of
@@ -183,17 +190,19 @@ temporary slots for reuse when those typed lifetimes do not overlap. This is
 still conservative: aliasing, mutation, materialization, layout, views, and
 device memory need explicit passes before storage reuse can become aggressive.
 
-Source printers now consume a `TccqLoopNest` built from the lowered program:
-one backend-neutral with-loop in the SAC lineage. The nest carries ordered
+Source printers consume an ordered sequence of `TccqLoopNest` values built
+from the lowered program: backend-neutral with-loops in the SAC lineage,
+intermediates first, the result nest last. Each nest carries ordered
 `TccqLoopAxis` values (`map` axes produce output positions, `reduce` axes fold
 into an accumulator), a `TccqExpression` body whose references carry typed
 `TccqAccess` maps of affine `TccqIndexExpr` values, an optional reducer with
-its identity, and an output access. Scalar programs, elementwise maps, full
-and per-axis reductions, contractions, and stencils are all instances of this
-one value, so C, Fortran, and Rtinycc share a single generic loop emitter
-instead of per-family printer cases. When a printer reaches an operation node,
-it asks the resolved implementation to render through `tccq_op_render()` for a
-`TccqOpRenderContext`.
+its identity, and an output access; intermediate nests additionally name the
+scalar their accumulator materializes. Scalar programs, elementwise maps, full
+and per-axis reductions, contractions, stencils, and scalar-intermediate
+compositions are all sequences of this one value, so C, Fortran, and Rtinycc
+share a single generic per-nest emitter instead of per-family printer cases.
+When a printer reaches an operation node, it asks the resolved implementation
+to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
 The generated callable boundary is a second explicit plan value:
 `TccqBackendFunctionInterface`. It records the source symbol, scalar or

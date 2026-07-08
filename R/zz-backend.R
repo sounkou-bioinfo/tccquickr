@@ -235,13 +235,9 @@ TccqBackendFunctionInterface <- S7::new_class(
     if (anyNA(self@extent_names) || any(!nzchar(self@extent_names)) || anyDuplicated(self@extent_names)) {
       problems <- c(problems, "@extent_names must contain unique non-empty parameter names")
     }
-    if (is.null(self@domain)) {
-      if (length(self@index_names) != 0L) {
-        problems <- c(problems, "@index_names must be empty when @domain is NULL")
-      }
-    } else {
-      if (length(self@index_names) != self@domain@shape@rank) {
-        problems <- c(problems, "@index_names must match @domain rank")
+    if (!is.null(self@domain)) {
+      if (length(self@index_names) < self@domain@shape@rank) {
+        problems <- c(problems, "@index_names must cover at least the @domain rank")
       }
       if (anyNA(self@index_names) || any(!nzchar(self@index_names))) {
         problems <- c(problems, "@index_names must contain non-empty strings")
@@ -256,9 +252,6 @@ TccqBackendFunctionInterface <- S7::new_class(
     }
     if (length(self@result_dims) == 0L && nzchar(self@result_count_name)) {
       problems <- c(problems, "scalar results must not have a result-count name")
-    }
-    if (identical(self@kind, "scalar") && length(self@index_names) != 0L) {
-      problems <- c(problems, "scalar interfaces must not carry iteration axes")
     }
     if (identical(self@kind, "loop_nest") && (is.null(self@domain) || self@domain@shape@rank == 0L)) {
       problems <- c(problems, "loop-nest interfaces must carry a non-scalar iteration domain")
@@ -375,7 +368,8 @@ TccqBackendArtifact <- S7::new_class(
 #'
 #' @param function_interface Source-level callable interface, if source exists.
 #' @param expression Expression tree consumed by the backend, if source exists.
-#' @param loop_nest Loop nest consumed by the backend, if source exists.
+#' @param loop_nest Result loop nest consumed by the backend, if source exists.
+#' @param loop_nests Ordered loop nests, intermediates first, result nest last.
 #' @param storage_plan Storage plan consumed by the backend, if available.
 #' @param artifacts Named backend artifacts.
 #' @param attrs Structured product metadata.
@@ -387,12 +381,22 @@ TccqBackendProducts <- S7::new_class(
     function_interface = S7::new_union(NULL, TccqBackendFunctionInterface),
     expression = S7::new_union(NULL, TccqExpression),
     loop_nest = S7::new_union(NULL, TccqLoopNest),
+    loop_nests = S7::class_list,
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
     artifacts = S7::class_list,
     attrs = S7::class_list
   ),
   validator = function(self) {
     problems <- character()
+    nests_are_typed <- vapply(
+      self@loop_nests,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqLoopNest
+    )
+    if (!all(nests_are_typed)) {
+      problems <- c(problems, "@loop_nests must contain only <TccqLoopNest> values")
+    }
     artifacts_are_typed <- vapply(
       self@artifacts,
       S7::S7_inherits,
@@ -1053,7 +1057,8 @@ tccq_backend_artifact <- function(
 #'
 #' @param function_interface Source-level callable interface, if source exists.
 #' @param expression Expression tree consumed by the backend, if source exists.
-#' @param loop_nest Loop nest consumed by the backend, if source exists.
+#' @param loop_nest Result loop nest consumed by the backend, if source exists.
+#' @param loop_nests Ordered loop nests, intermediates first, result nest last.
 #' @param storage_plan Storage plan consumed by the backend, if available.
 #' @param artifacts Named backend artifacts.
 #' @param attrs Structured product metadata.
@@ -1062,6 +1067,7 @@ tccq_backend_products <- function(
   function_interface = NULL,
   expression = NULL,
   loop_nest = NULL,
+  loop_nests = list(),
   storage_plan = NULL,
   artifacts = list(),
   attrs = list()
@@ -1074,6 +1080,7 @@ tccq_backend_products <- function(
   )
   .tccq_check_optional_s7(expression, TccqExpression, "TccqExpression", "expression")
   .tccq_check_optional_s7(loop_nest, TccqLoopNest, "TccqLoopNest", "loop_nest")
+  .tccq_check_list_of(loop_nests, TccqLoopNest, "TccqLoopNest", "loop_nests")
   .tccq_check_optional_s7(storage_plan, TccqStoragePlan, "TccqStoragePlan", "storage_plan")
   .tccq_check_list_of(artifacts, TccqBackendArtifact, "TccqBackendArtifact", "artifacts")
   artifact_roles <- names(artifacts)
@@ -1095,6 +1102,7 @@ tccq_backend_products <- function(
     function_interface = function_interface,
     expression = expression,
     loop_nest = loop_nest,
+    loop_nests = loop_nests,
     storage_plan = storage_plan,
     artifacts = artifacts,
     attrs = attrs
@@ -1626,7 +1634,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       gsub("[^A-Za-z0-9_]", "_", symbol)
     }
 
-    extent_plan <- function(formals, nest) {
+    extent_plan <- function(formals, nests) {
       symbols <- character()
       note_dim <- function(dim) {
         if (dim@kind %in% c("symbol", "affine") && !dim@label %in% symbols) {
@@ -1638,11 +1646,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           note_dim(dim)
         }
       }
-      for (axis in nest@axes) {
-        note_dim(axis@extent)
-      }
-      for (dim in nest@result_type@shape@dims) {
-        note_dim(dim)
+      for (nest in nests) {
+        for (axis in nest@axes) {
+          note_dim(axis@extent)
+        }
+        for (dim in nest@result_type@shape@dims) {
+          note_dim(dim)
+        }
       }
       list(
         symbols = symbols,
@@ -1769,21 +1779,27 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       render_result@value
     }
 
-    backend_function_interface <- function(symbol, nest, result, formals) {
+    backend_function_interface <- function(symbol, nests, result, formals) {
+      result_nest <- nests[[length(nests)]]
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
-      extents <- extent_plan(formals, nest)
-      kind <- if (length(nest@axes) == 0L) "scalar" else "loop_nest"
-      roles <- vapply(nest@axes, function(axis) axis@role, character(1))
-      if (length(roles) > 1L && any(diff(match(roles, c("map", "reduce"))) < 0L)) {
-        tccq_abort(
-          "backend.unsupported_axis_order",
-          "Source printers currently require map axes to precede reduce axes.",
-          phase = "backend",
-          path = sprintf("backend.%s.axes", backend@id),
-          data = list(backend = backend@id, roles = roles)
-        )
+      extents <- extent_plan(formals, nests)
+      kind <- if (length(result_nest@axes) == 0L) "scalar" else "loop_nest"
+      for (nest in nests) {
+        roles <- vapply(nest@axes, function(axis) axis@role, character(1))
+        if (length(roles) > 1L && any(diff(match(roles, c("map", "reduce"))) < 0L)) {
+          tccq_abort(
+            "backend.unsupported_axis_order",
+            "Source printers currently require map axes to precede reduce axes.",
+            phase = "backend",
+            path = sprintf("backend.%s.axes", backend@id),
+            data = list(backend = backend@id, roles = roles)
+          )
+        }
       }
+      index_names <- unique(unlist(lapply(nests, function(nest) {
+        vapply(nest@axes, function(axis) axis@name, character(1))
+      }))) %||% character()
       result_rank <- result@type@shape@rank
       tccq_backend_function_interface(
         symbol = symbol,
@@ -1799,13 +1815,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           "return"
         },
         result_name = if (identical(source_language, "fortran") || result_rank > 0L) "output" else "",
-        domain = if (identical(kind, "scalar")) NULL else nest@domain,
+        domain = if (identical(kind, "scalar")) NULL else result_nest@domain,
         extent_symbols = extents$symbols,
         extent_names = extents$names,
-        index_names = vapply(nest@axes, function(axis) axis@name, character(1)),
+        index_names = index_names,
         result_dims = result@type@shape@dims,
         result_count_name = if (result_rank > 0L) "result_count_0001" else "",
-        accumulator_name = if (!is.null(nest@reducer)) "accumulator_0001" else "",
+        accumulator_name = if (!is.null(result_nest@reducer)) "accumulator_0001" else "",
         attrs = list(result_type = result@type)
       )
     }
@@ -1870,6 +1886,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     loop_plan <- function(interface, nest, emit_context) {
       map_axes <- Filter(function(axis) identical(axis@role, "map"), nest@axes)
       reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
+      accumulator_name <- nest@attrs$scalar_name %||% interface@accumulator_name
       body_text <- expression_text(nest@body, emit_context)
       value_text <- body_text
       identity_text <- ""
@@ -1878,7 +1895,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         identity_text <- literal_text(nest@identity, emit_context$language)
         combine_result <- tccq_reduction_combine(
           nest@reducer,
-          interface@accumulator_name,
+          accumulator_name,
           body_text,
           tccq_op_render_context(
             language = emit_context$language,
@@ -1890,7 +1907,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           tccq_abort_diagnostic(combine_result@diagnostics[[1L]])
         }
         combine_text <- combine_result@value
-        value_text <- interface@accumulator_name
+        value_text <- accumulator_name
       }
       output_index <- if (!is.null(nest@output)) {
         linear_index_text(
@@ -1904,6 +1921,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       list(
         map_axes = map_axes,
         reduce_axes = reduce_axes,
+        accumulator_name = accumulator_name,
         body_text = body_text,
         value_text = value_text,
         identity_text = identity_text,
@@ -1912,9 +1930,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
     }
 
-    emit_c_source <- function(interface, nest, result, formals) {
+    emit_c_source <- function(interface, nests, result, formals) {
+      result_nest <- nests[[length(nests)]]
+      intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "c")
-      plan <- loop_plan(interface, nest, emit_context)
+      for (intermediate in intermediate_nests) {
+        emit_context$parameter_by_value_id[[intermediate@attrs$result_value_id]] <-
+          intermediate@attrs$scalar_name
+      }
+      intermediate_plans <- lapply(
+        intermediate_nests,
+        loop_plan,
+        interface = interface,
+        emit_context = emit_context
+      )
+      plan <- loop_plan(interface, result_nest, emit_context)
       parameter_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("double %s", parameter_name)
@@ -1966,15 +1996,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push("return NULL;", depth + 1L)
         push("}")
       }
+      for (intermediate_plan in intermediate_plans) {
+        push(sprintf(
+          "double %s = %s;",
+          intermediate_plan$accumulator_name,
+          intermediate_plan$identity_text
+        ))
+        for (axis in intermediate_plan$reduce_axes) {
+          open_loop(axis)
+        }
+        push(sprintf(
+          "%s = %s;",
+          intermediate_plan$accumulator_name,
+          intermediate_plan$combine_text
+        ))
+        for (axis in intermediate_plan$reduce_axes) {
+          close_loop(axis)
+        }
+      }
       for (axis in plan$map_axes) {
         open_loop(axis)
       }
-      if (!is.null(nest@reducer)) {
-        push(sprintf("double %s = %s;", interface@accumulator_name, plan$identity_text))
+      if (!is.null(result_nest@reducer)) {
+        push(sprintf("double %s = %s;", plan$accumulator_name, plan$identity_text))
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
-        push(sprintf("%s = %s;", interface@accumulator_name, plan$combine_text))
+        push(sprintf("%s = %s;", plan$accumulator_name, plan$combine_text))
         for (axis in plan$reduce_axes) {
           close_loop(axis)
         }
@@ -1993,9 +2041,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       paste(c(lines, "}"), collapse = "\n")
     }
 
-    emit_fortran_source <- function(interface, nest, result, formals) {
+    emit_fortran_source <- function(interface, nests, result, formals) {
+      result_nest <- nests[[length(nests)]]
+      intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "fortran")
-      plan <- loop_plan(interface, nest, emit_context)
+      for (intermediate in intermediate_nests) {
+        emit_context$parameter_by_value_id[[intermediate@attrs$result_value_id]] <-
+          intermediate@attrs$scalar_name
+      }
+      intermediate_plans <- lapply(
+        intermediate_nests,
+        loop_plan,
+        interface = interface,
+        emit_context = emit_context
+      )
+      plan <- loop_plan(interface, result_nest, emit_context)
       returns_buffer <- result@type@shape@rank > 0L
       domain_parameter_names <- c(
         interface@extent_names,
@@ -2051,7 +2111,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           sprintf("  real(c_double) :: %s", interface@result_name)
         },
-        if (!is.null(nest@reducer)) sprintf("  real(c_double) :: %s", interface@accumulator_name),
+        if (!is.null(result_nest@reducer)) {
+          sprintf("  real(c_double) :: %s", plan$accumulator_name)
+        },
+        unlist(lapply(intermediate_plans, function(intermediate_plan) {
+          sprintf("  real(c_double) :: %s", intermediate_plan$accumulator_name)
+        })),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
         }
@@ -2069,15 +2134,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth - 1L
         push("end do")
       }
+      for (intermediate_plan in intermediate_plans) {
+        push(sprintf(
+          "%s = %s",
+          intermediate_plan$accumulator_name,
+          intermediate_plan$identity_text
+        ))
+        for (axis in intermediate_plan$reduce_axes) {
+          open_loop(axis)
+        }
+        push(sprintf(
+          "%s = %s",
+          intermediate_plan$accumulator_name,
+          intermediate_plan$combine_text
+        ))
+        for (axis in intermediate_plan$reduce_axes) {
+          close_loop(axis)
+        }
+      }
       for (axis in plan$map_axes) {
         open_loop(axis)
       }
-      if (!is.null(nest@reducer)) {
-        push(sprintf("%s = %s", interface@accumulator_name, plan$identity_text))
+      if (!is.null(result_nest@reducer)) {
+        push(sprintf("%s = %s", plan$accumulator_name, plan$identity_text))
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
-        push(sprintf("%s = %s", interface@accumulator_name, plan$combine_text))
+        push(sprintf("%s = %s", plan$accumulator_name, plan$combine_text))
         for (axis in plan$reduce_axes) {
           close_loop(axis)
         }
@@ -2705,7 +2788,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       plan <- diagnostic_plan(list(lowered_diagnostic))
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(lowered_diagnostic)))
     }
-    loop_nest_result <- tccq_program_loop_nest(program)
+    loop_nest_result <- tccq_program_loop_nests(program)
     if (!loop_nest_result@success) {
       plan <- diagnostic_plan(loop_nest_result@diagnostics)
       return(tccq_result(
@@ -2714,11 +2797,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         diagnostics = loop_nest_result@diagnostics
       ))
     }
-    nest <- loop_nest_result@value
+    nests <- loop_nest_result@value
+    nest <- nests[[length(nests)]]
 
     symbol <- source_symbol()
     interface_result <- tryCatch(
-      backend_function_interface(symbol, nest, result, formals),
+      backend_function_interface(symbol, nests, result, formals),
       tccq_error = identity
     )
     if (inherits(interface_result, "tccq_error")) {
@@ -2730,8 +2814,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     source_result <- tryCatch(
       switch(
         source_language,
-        c = emit_c_source(function_interface, nest, result, formals),
-        fortran = emit_fortran_source(function_interface, nest, result, formals),
+        c = emit_c_source(function_interface, nests, result, formals),
+        fortran = emit_fortran_source(function_interface, nests, result, formals),
         tccq_abort(
           "backend.unsupported_source_language",
           "The source printer does not support this target language.",
@@ -2789,6 +2873,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         function_interface = function_interface,
         expression = nest@body,
         loop_nest = nest,
+        loop_nests = nests,
         storage_plan = program@storage_plan,
         artifacts = list(source = source_artifact(symbol, source)),
         attrs = list(source = source)

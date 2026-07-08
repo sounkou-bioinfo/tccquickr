@@ -714,6 +714,43 @@ tccq_lower_function <- function(
       default = "any"
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
+
+    # Every non-root scalar reduction is its own fused nest over its input
+    # domain; the remaining operations fuse into the main group over the
+    # result domain. This value-level partition is the typed record of the
+    # multi-nest composition decision the loop-nest planner realizes.
+    intermediate_reductions <- Filter(function(value) {
+      value_is_reduction(value) &&
+        value@type@shape@rank == 0L &&
+        !identical(value@id, result_id)
+    }, operation_values)
+    intermediate_ids <- vapply(intermediate_reductions, function(value) value@id, character(1))
+    intermediate_groups <- unname(Map(function(value, group_index) {
+      input_shape <- values[[value@inputs[[1L]]]]@type@shape
+      group_domain <- tccq_domain(sprintf("domain_%04d", group_index), input_shape)
+      operation <- lowered_operation(value)
+      tccq_fusion_group(
+        sprintf("fusion_%04d", group_index),
+        "map_reduce",
+        domain = group_domain,
+        values = list(value),
+        outputs = value@id,
+        accesses = list(tccq_access(value@id, group_domain, kind = "scalar")),
+        region_kind = region_kind,
+        target = region_target,
+        effect = value@effect,
+        contract = tccq_fusion_contract(
+          "map_reduce",
+          operations = stats::setNames(list(operation), value@id),
+          result_operation = operation
+        )
+      )
+    }, intermediate_reductions, seq_along(intermediate_reductions)))
+
+    main_values <- Filter(
+      function(value) !value@id %in% intermediate_ids,
+      operation_values
+    )
     fusion_kind <- if (isTRUE(result_is_contraction)) {
       "contract"
     } else if (isTRUE(value_is_axis_reduction(result_value))) {
@@ -727,14 +764,14 @@ tccq_lower_function <- function(
     }
     fusion_contract <- tccq_fusion_contract(
       fusion_kind,
-      operations = lowered_operations,
+      operations = lowered_operations[setdiff(names(lowered_operations), intermediate_ids)],
       result_operation = result_operation
     )
     fusion <- tccq_fusion_group(
       "fusion_main",
       fusion_kind,
       domain = domain,
-      values = operation_values,
+      values = main_values,
       outputs = result_id,
       accesses = accesses,
       region_kind = region_kind,
@@ -746,7 +783,7 @@ tccq_lower_function <- function(
       "region_main",
       region_kind,
       values = lowered_values,
-      fusion_groups = list(fusion),
+      fusion_groups = c(intermediate_groups, list(fusion)),
       effect = region_effect,
       memory_space = "host",
       touches_rapi = FALSE,
@@ -1012,22 +1049,26 @@ tccq_lower_function <- function(
     }
   }
 
-  non_root_fused_operations <- Filter(function(value) {
+  unsupported_compositions <- Filter(function(value) {
     operation <- lowered_operation(value)
-    !is.null(operation) &&
-      operation@family %in% c("reduction", "contraction") &&
-      !identical(value@id, result$value_id)
+    if (is.null(operation) || identical(value@id, result$value_id)) {
+      return(FALSE)
+    }
+    if (identical(operation@family, "contraction")) {
+      return(TRUE)
+    }
+    identical(operation@family, "reduction") && value@type@shape@rank > 0L
   }, unname(state$values))
-  if (length(non_root_fused_operations) > 0L) {
+  if (length(unsupported_compositions) > 0L) {
     return(new_plan(
       values = state$values,
       diagnostics = list(tccq_diagnostic(
         "lowering.unsupported_composition",
-        "Reductions and contractions must produce the program result in the current single-nest lowerer.",
+        "Non-root contractions and axis reductions need materialized array intermediates; only scalar reductions may feed later loop nests.",
         phase = "lowering",
         path = "expression",
         data = list(value_ids = vapply(
-          non_root_fused_operations,
+          unsupported_compositions,
           function(value) value@id,
           character(1)
         ))

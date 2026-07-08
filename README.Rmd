@@ -93,6 +93,37 @@ v <- c(1, 2, 4, 8, 16, 32, 64)
 all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 ```
 
+Programs are no longer limited to one loop nest. A scalar reduction feeding
+later work becomes its own all-reduce nest whose result is a named scalar, and
+the final nest reads that scalar — SAC-style composition, visible in the
+emitted source:
+
+```{r multi-nest}
+normalize <- function(x) {
+  declare(type(x = double(n)))
+  s <- sum(x)
+  x / s
+}
+
+normalize_plan <- tccq_plan_backend(
+  tccq_analyze(normalize, strict = TRUE)@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+cat(normalize_plan@value@products@attrs$source)
+```
+
+```{r multi-nest-jit}
+normalize_jit <- tccq_plan_backend(
+  tccq_analyze(normalize, strict = TRUE)@value,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "jit", target = "c")
+)
+normalize_kernel <- normalize_jit@value@products@attrs$callable
+v <- c(1, 2, 3, 4)
+all.equal(normalize_kernel(v), v / sum(v))
+```
+
 ## The declared subset today
 
 - **Types**: `double` formals of any rank with symbolic or constant
@@ -108,10 +139,13 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 - **Slices**: rank-1 `x[a:b]` with bounds affine in declared dimension
   symbols.
 - **Bindings**: single-assignment locals.
+- **Composition**: non-root scalar reductions become intermediate all-reduce
+  nests feeding the final nest through named scalars, so `x / sum(x)` and
+  `sum(x) + sum(y)` compile as ordered nest sequences.
 
-Reductions and contractions must produce the program result; anything needing
-more than one loop nest is a structured `lowering.unsupported_composition`
-diagnostic until multi-nest programs are modeled. Compilation succeeds when at
+Array-valued intermediates (an axis reduction or contraction feeding later
+work) still need materialized buffers, so they remain a structured
+`lowering.unsupported_composition` diagnostic. Compilation succeeds when at
 least one backend produces a working plan; a backend that cannot lower a
 program reports typed feasibility diagnostics without vetoing the suite.
 
