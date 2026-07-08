@@ -866,6 +866,8 @@ tccq_elementwise_domain_policy <- function() {
         if (any(big == "unknown") || any(small == "unknown")) {
           return(FALSE)
         }
+        # A length-1 dimension divides everything, as in R's recycling.
+        small <- small[small != "constant:1"]
         remaining <- big
         for (item in small) {
           hit <- match(item, remaining)
@@ -890,7 +892,19 @@ tccq_elementwise_domain_policy <- function() {
           data = list(shapes = shape_labels)
         )
       }
-      host_position <- if (length(array_positions) > 0L) array_positions[[1L]] else NULL
+      host_position <- if (length(array_positions) > 0L) {
+        array_positions[[1L]]
+      } else {
+        hosts_all <- vapply(seq_along(dim_labels), function(candidate) {
+          all(vapply(
+            dim_labels,
+            multiset_contains,
+            logical(1),
+            big = dim_labels[[candidate]]
+          ))
+        }, logical(1))
+        if (any(hosts_all)) which(hosts_all)[[1L]] else NULL
+      }
       recycle_is_provable <- !is.null(host_position) && all(vapply(
         dim_labels,
         multiset_contains,

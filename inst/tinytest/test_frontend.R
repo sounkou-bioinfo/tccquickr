@@ -303,6 +303,24 @@ expect_true(any(vapply(
   logical(1)
 )))
 
+# quickr's declare dialect also allows one type() payload per formal, the
+# form anvl's graph-to-quickr lowering emits.
+per_formal_declare <- function(x, y) {
+  declare(x = type(x = double(n)), y = type(y = double(n)))
+  x + y
+}
+per_formal_result <- tccq_analyze(per_formal_declare)
+expect_true(per_formal_result@success)
+expect_equal(names(per_formal_result@value@formals), c("x", "y"))
+
+# A declared length-1 vector recycles into anything, as in R.
+length_one_recycle <- function(a, x) {
+  declare(type(a = double(1L), x = double(n)))
+  a * x + a
+}
+length_one_result <- tccq_analyze(length_one_recycle)
+expect_true(length_one_result@success)
+
 bound_chain <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
   shifted <- sqrt(x)

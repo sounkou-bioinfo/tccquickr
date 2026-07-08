@@ -141,8 +141,8 @@ tccq_compile <- function(
 }
 
 .tccq_extract_declarations <- function(fn) {
-  declaration <- .tccq_find_declare_type_call(body(fn))
-  if (is.null(declaration)) {
+  declarations <- .tccq_find_declare_type_calls(body(fn))
+  if (length(declarations) == 0L) {
     diagnostic <- tccq_diagnostic(
       "frontend.missing_declare",
       "Function body must contain `declare(type(...))`.",
@@ -152,7 +152,13 @@ tccq_compile <- function(
     return(list(bindings = list(), diagnostics = list(diagnostic)))
   }
 
-  args <- as.list(declaration)[-1L]
+  # quickr's declare dialect allows one type() payload carrying every formal
+  # as well as one type() payload per formal; merge the named arguments of
+  # every payload.
+  args <- list()
+  for (declaration in declarations) {
+    args <- c(args, as.list(declaration)[-1L])
+  }
   arg_names <- names(args)
   if (is.null(arg_names)) {
     arg_names <- rep("", length(args))
@@ -186,19 +192,22 @@ tccq_compile <- function(
   list(bindings = bindings, diagnostics = diagnostics)
 }
 
-.tccq_find_declare_type_call <- function(expr) {
-  found <- NULL
+.tccq_find_declare_type_calls <- function(expr) {
+  found <- list()
   walk <- function(node) {
-    if (!is.null(found)) {
-      return(NULL)
-    }
-    if (!is.call(node)) {
+    if (length(found) > 0L || !is.call(node)) {
       return(NULL)
     }
     if (identical(tccq_call_name(node), "declare") && length(node) >= 2L) {
-      candidate <- node[[2L]]
-      if (is.call(candidate) && identical(tccq_call_name(candidate), "type")) {
-        found <<- candidate
+      candidates <- as.list(node)[-1L]
+      type_calls <- Filter(
+        function(candidate) {
+          is.call(candidate) && identical(tccq_call_name(candidate), "type")
+        },
+        candidates
+      )
+      if (length(type_calls) > 0L) {
+        found <<- type_calls
         return(NULL)
       }
     }
