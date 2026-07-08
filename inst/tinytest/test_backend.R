@@ -1,17 +1,7 @@
 library(tinytest)
 library(tccquickr)
 
-runtime <- tccq_runtime_policy(
-  mode = "checked",
-  allow_interrupts = TRUE,
-  check_interval = 1024L,
-  emit_debug_sites = TRUE
-)
-context <- tccq_backend_context(
-  mode = "jit",
-  target = "c",
-  runtime = runtime
-)
+context <- tccq_backend_context(mode = "jit", target = "c")
 backend <- tccq_rtinycc_backend()
 
 backend_products <- function(plan_result) plan_result@value@products
@@ -87,7 +77,6 @@ can_jit_with_rtinycc <- function() {
 
 rtinycc_jit_available <- can_jit_with_rtinycc()
 
-expect_true(S7::S7_inherits(runtime, TccqRuntimePolicy))
 expect_true(S7::S7_inherits(context, TccqBackendContext))
 expect_true(S7::S7_inherits(backend, TccqBackendSpec))
 expect_true(s7contract::has_trait(backend, TccqBackend))
@@ -97,18 +86,6 @@ expect_equal(backend@target, "c")
 expect_true("jit" %in% backend@modes)
 expect_true("buffer_bridge" %in% backend@capabilities)
 
-bad_runtime <- tryCatch(
-  TccqRuntimePolicy(
-    mode = "interactive",
-    allow_interrupts = TRUE,
-    check_interval = 1024L,
-    emit_debug_sites = FALSE,
-    attrs = list()
-  ),
-  error = identity
-)
-expect_true(inherits(bad_runtime, "error"))
-
 fortran_backend <- tccq_fortran_backend()
 core_backends <- tccq_core_backends()
 
@@ -116,21 +93,6 @@ expect_equal(fortran_backend@family, "fortran")
 expect_true("shared_library" %in% fortran_backend@capabilities)
 expect_equal(names(core_backends), c("rtinycc", "c", "fortran"))
 expect_equal(names(tccq_core_backends(include_rtinycc = FALSE)), c("c", "fortran"))
-
-span <- tccq_source_span(file = "README.Rmd", line = 1L, column = 1L)
-site <- tccq_debug_site("dbg1", "value", source = span)
-safepoint <- tccq_safepoint(
-  "sp1",
-  "loop_backedge",
-  region_id = "r1",
-  requires_rapi = FALSE
-)
-
-expect_true(S7::S7_inherits(span, TccqSourceSpan))
-expect_true(S7::S7_inherits(site, TccqDebugSite))
-expect_true(S7::S7_inherits(safepoint, TccqSafepoint))
-expect_equal(site@source@file, "README.Rmd")
-expect_false(safepoint@requires_rapi)
 
 artifact <- tccq_backend_artifact(
   "artifact.source",
@@ -146,19 +108,6 @@ bad_artifact <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_artifact, "error"))
-
-bad_source_span <- tryCatch(
-  TccqSourceSpan(
-    file = "",
-    line = 10L,
-    column = 1L,
-    end_line = 9L,
-    end_column = 1L,
-    label = ""
-  ),
-  error = identity
-)
-expect_true(inherits(bad_source_span, "error"))
 
 double_n <- tccq_type("double", tccq_shape("n"))
 buffer_n <- tccq_type("buffer", tccq_shape("n"))
@@ -196,17 +145,13 @@ plan <- tccq_backend_plan(
   target = "c",
   capabilities = backend@capabilities,
   regions = list(region),
-  bridges = list(bridge),
-  safepoints = list(safepoint),
-  debug_sites = list(site)
+  bridges = list(bridge)
 )
 
 expect_true(S7::S7_inherits(plan, TccqBackendPlan))
 expect_equal(plan@backend_id, "rtinycc")
 expect_equal(plan@family, "c")
 expect_equal(length(plan@bridges), 1L)
-expect_equal(length(plan@safepoints), 1L)
-expect_equal(length(plan@debug_sites), 1L)
 
 bad_backend_plan <- tryCatch(
   TccqBackendPlan(

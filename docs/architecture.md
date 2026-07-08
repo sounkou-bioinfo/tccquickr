@@ -9,16 +9,20 @@ behind it.
 
 The compiler state is a typed value graph, not source text. `TccqType` combines
 a base type with a `TccqShape`; the shape carries rank and symbolic dimensions,
-so rank 2 is a matrix and rank N is an array. `TccqLayout` records physical
-order, strides, offset, and contiguity, while `TccqTile` records rectangular
-partition metadata. `TccqLiteral` gives finite values, typed `NA`, `NaN`,
-`Inf`, and `-Inf` their own representation. `TccqValue` is the IR value: it
-names an operation, inputs, type, effects, layout, tile, and attributes.
-`TccqProgram` collects formals, values, regions, result, and diagnostics.
+so rank 2 is a matrix and rank N is an array. `TccqLiteral` gives finite
+values, typed `NA`, `NaN`, `Inf`, and `-Inf` their own representation.
+`TccqValue` is the IR value: it names an operation, inputs, type, effects, and
+attributes. `TccqProgram` collects formals, values, regions, result, and
+diagnostics.
 
-The split is intentional. Shape says what a value means. Layout says how it is
-stored. Tile says how it is partitioned. None of those should be hidden inside
-target-specific code generation.
+Physical layout is currently a fixed convention, not a value: every array is a
+dense, contiguous, column-major R buffer, and the shared loop-nest emitter
+hardcodes that convention in its stride computation (C reads `x[linear]`,
+Fortran reads `x(linear + 1)` over the same linearization). A layout value
+returns to the schema when layout becomes a choice — row-major foreign
+buffers, transpose elision, blocked/tiled storage — and it returns as a
+consumed input to the linearizer, not as a passive annotation. The same rule
+holds for tiling metadata.
 
 ## Call root
 
@@ -244,10 +248,10 @@ device regions.
 
 Bridges are a typed backend-plan layer. They represent transitions such as
 `SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> C buffer`, `C buffer -> SEXP`,
-`host -> device`, `device -> host`, layout conversion, tile materialization,
 and explicit R call-evaluation boundaries. These are plan values, not
 target-side string glue, and their kind must match the shape of the value being
-bridged.
+bridged. Host/device transfer, layout conversion, and tile materialization
+bridges return alongside the passes that need them.
 
 ## Backend planning
 
@@ -255,8 +259,8 @@ Backends are implementation choices behind a trait. A `TccqBackendSpec`
 describes a backend family, target, driver, supported modes, region kinds,
 memory spaces, capabilities, and a planning function. The compiler calls the
 `TccqBackend` trait and receives a `TccqBackendPlan`, not emitted code. The plan
-contains assigned regions, bridges, safepoints, debug sites, diagnostics,
-capabilities, and backend attributes.
+contains assigned regions, bridges, diagnostics, capabilities, and backend
+attributes.
 
 Rtinycc comes for free only in the sense that it is one current driver for C
 source and TinyCC JIT modes. It should not decide the IR. The generic C
@@ -271,13 +275,13 @@ working plan. The C/Fortran split (return-pointer vs output-argument ABI,
 backend family (graph/StableHLO, device, R call evaluation) enters the suite
 together with its first real lowering, not as a capability list ahead of one.
 
-Runtime concerns are part of backend planning. `TccqRuntimePolicy` says whether
-we are in release, checked, trace, or debug mode; whether interrupts may be
-observed; and how often generated loops or chunks should poll. `TccqSafepoint`
-marks region entries, loop backedges, tile boundaries, reduction chunks,
-boundary calls, and debugger stops. `TccqDebugSite` keeps source and IR
-metadata attached to generated code so debugging is a backend-plan feature, not
-an afterthought in emitted C.
+Runtime instrumentation (interrupt polling policy, safepoints at loop
+backedges and reduction chunks, debug sites tying generated code back to
+source) is a real future concern, but it enters the schema only together with
+an emitter that writes polls or debug anchors into generated code. The earlier
+`TccqRuntimePolicy`/`TccqSafepoint`/`TccqDebugSite` classes were deleted
+because nothing populated or emitted them; the design intent lives here until
+the consuming pass exists.
 
 ## Fusion
 

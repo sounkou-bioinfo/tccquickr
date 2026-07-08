@@ -49,8 +49,8 @@ by exposing missing semantics, not become a shortcut around the core.
 The active architecture is the small typed core:
 
 - `R/aaa-schema.R`: S7 classes and constructors for compiler schemas.
-- `R/zz-backend.R`: generic backend descriptors, bridge plans, safepoints, debug
-  metadata, runtime policies, and backend-planning contracts.
+- `R/zz-backend.R`: generic backend descriptors, bridge plans, and
+  backend-planning contracts.
 - `R/conditions.R`: diagnostic/result values and classed compiler conditions.
 - `R/contracts.R`: `s7contract` protocol for compiler passes.
 - `R/frontend.R`: declaration extraction, `codetools`-assisted call discovery,
@@ -195,8 +195,11 @@ For the reset core, keep these rules explicit:
 - Matrix and array structure is represented by `TccqShape` rank and dimensions:
   rank 2 is a matrix, rank N is an array. Do not introduce separate matrix or
   array type families unless behavior proves shape rank is insufficient.
-- Physical representation is separate from semantic type. Use `TccqLayout` for
-  order/strides/contiguity and `TccqTile` for rectangular partition metadata.
+- Physical representation is separate from semantic type. Today layout is one
+  fixed convention — dense contiguous column-major — hardcoded in the shared
+  loop-nest linearizer for every backend. A layout or tile value re-enters the
+  schema only as a consumed input to that linearizer, when layout becomes an
+  actual choice.
 - Scalar special values use `TccqLiteral`, with distinct representations for
   finite values, typed `NA`, `NaN`, `Inf`, and `-Inf`.
 - Code sections use `TccqRegion`. `kernel`, `parallel`, and `device` regions
@@ -230,7 +233,7 @@ For the reset core, keep these rules explicit:
   behavior from operation names, value ranks, or backend-local predicates.
 - Backend support is generic. Use `TccqBackendSpec`, `TccqBackend`,
   `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
-  bridge/safepoint/debug metadata. `Rtinycc` is one backend descriptor for a
+  bridge metadata. `Rtinycc` is one backend descriptor for a
   C/TinyCC path; it is not the architecture.
 - Backend families exist in the suite only with a real lowering behind them:
   today generic C, Rtinycc/TinyCC C, and quickr-style Fortran. Divergence
@@ -243,8 +246,7 @@ For the reset core, keep these rules explicit:
   `TccqBridgePlan` values. The bridge kind must match the representation, so
   scalar values use scalar bridges and vector/array values use buffer bridges.
   Do not hide `SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> buffer`,
-  `buffer -> SEXP`, host/device transfer, layout conversion, tile
-  materialization, or object-mode boundaries inside emitted strings.
+  `buffer -> SEXP`, or object-mode boundaries inside emitted strings.
 - Backend planning must also make generated callable shape explicit through
   `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
   source printers independently infer scalar/map/reduction/axis-reduction
@@ -281,10 +283,9 @@ For the reset core, keep these rules explicit:
 - Shared-library execution from R must cross through an explicit wrapper or
   callable artifact. Do not make user-facing execution depend on ad hoc
   `dyn.load()` / `.Call()` glue outside the backend plan.
-- Interrupt and debugger support belong in runtime policy, safepoints, and debug
-  sites. Host/R-API regions may use direct R interrupt checks; pure kernel,
-  parallel, and device regions need chunking, polling, or host orchestration
-  safepoints instead.
+- Interrupt and debugger support (polling policy, safepoints, debug sites) is
+  deferred schema: it enters together with the emitter behavior that writes
+  polls or debug anchors into generated code, never as passive plan metadata.
 - The next acceptable failure point should move deeper through the typed IR,
   not sideways into compatibility glue.
 - Matrix operations, reductions, domains, views, mutation, fusion, and storage

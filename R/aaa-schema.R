@@ -10,9 +10,8 @@ TCCQ_BASE_TYPES <- c(
 TCCQ_DIM_KINDS <- c("constant", "symbol", "affine", "unknown")
 TCCQ_AXIS_ROLES <- c("map", "reduce")
 TCCQ_LITERAL_KINDS <- c("finite", "na", "nan", "pos_inf", "neg_inf")
-TCCQ_LAYOUT_ORDERS <- c("unknown", "column_major", "row_major", "strided", "opaque")
 TCCQ_ACCESS_KINDS <- c("identity", "scalar", "broadcast", "slice", "transpose", "custom")
-TCCQ_FUSION_KINDS <- c("map", "map_reduce", "axis_reduce", "contract", "stencil", "tile", "custom")
+TCCQ_FUSION_KINDS <- c("map", "map_reduce", "axis_reduce", "contract", "stencil", "custom")
 TCCQ_REGION_KINDS <- c("host", "kernel", "parallel", "device")
 TCCQ_MEMORY_SPACES <- c("r", "host", "device", "opaque")
 TCCQ_STORAGE_ROLES <- c("input", "literal", "temporary", "output")
@@ -291,78 +290,6 @@ TccqShape <- S7::new_class(
   }
 )
 
-#' Physical array layout
-#'
-#' Layout describes physical storage order and strides. Shape remains the
-#' semantic array extent; layout is only about representation.
-#'
-#' @param rank Layout rank.
-#' @param order Layout order.
-#' @param strides Per-axis strides.
-#' @param offset Storage offset.
-#' @param contiguous Whether the layout is contiguous.
-#' @export
-TccqLayout <- S7::new_class(
-  "TccqLayout",
-  package = "tccquickr",
-  properties = list(
-    rank = S7::class_integer,
-    order = S7::class_character,
-    strides = S7::class_list,
-    offset = TccqDim,
-    contiguous = S7::class_logical
-  ),
-  validator = function(self) {
-    problems <- character()
-    has_valid_rank <- length(self@rank) == 1L && !is.na(self@rank) && self@rank >= 0L
-    if (!has_valid_rank) {
-      problems <- c(problems, "@rank must be one non-negative integer")
-    }
-    if (length(self@order) != 1L || is.na(self@order) || !self@order %in% TCCQ_LAYOUT_ORDERS) {
-      problems <- c(problems, "@order must be one supported layout order")
-    }
-    strides_are_tccq_dims <- vapply(self@strides, S7::S7_inherits, logical(1), class = TccqDim)
-    if (!all(strides_are_tccq_dims)) {
-      problems <- c(problems, "@strides must contain only <TccqDim> values")
-    }
-    if (has_valid_rank && length(self@strides) != self@rank) {
-      problems <- c(problems, "@strides length must match @rank")
-    }
-    if (length(self@contiguous) != 1L || is.na(self@contiguous)) {
-      problems <- c(problems, "@contiguous must be a single TRUE/FALSE value")
-    }
-    if (length(problems) > 0L) problems
-  }
-)
-
-#' Array tile description
-#'
-#' Tile metadata describes a rectangular partition of an array domain. It does
-#' not change the value type.
-#'
-#' @param shape Tile shape.
-#' @param origin Per-axis tile origin.
-#' @export
-TccqTile <- S7::new_class(
-  "TccqTile",
-  package = "tccquickr",
-  properties = list(
-    shape = TccqShape,
-    origin = S7::class_list
-  ),
-  validator = function(self) {
-    problems <- character()
-    origins_are_tccq_dims <- vapply(self@origin, S7::S7_inherits, logical(1), class = TccqDim)
-    if (!all(origins_are_tccq_dims)) {
-      problems <- c(problems, "@origin must contain only <TccqDim> values")
-    }
-    if (length(self@origin) != self@shape@rank) {
-      problems <- c(problems, "@origin length must match @shape rank")
-    }
-    if (length(problems) > 0L) problems
-  }
-)
-
 #' Iteration domain
 #'
 #' A domain is the semantic iteration space for elementwise, reduction, stencil,
@@ -598,8 +525,6 @@ TccqBinding <- S7::new_class(
 #' @param inputs Input value ids or references.
 #' @param type Result type.
 #' @param effect Effect summary.
-#' @param layout Optional physical layout.
-#' @param tile Optional tile metadata.
 #' @param attrs Structured operation attributes.
 #' @export
 TccqValue <- S7::new_class(
@@ -611,8 +536,6 @@ TccqValue <- S7::new_class(
     inputs = S7::class_list,
     type = TccqType,
     effect = TccqEffect,
-    layout = S7::new_union(NULL, TccqLayout),
-    tile = S7::new_union(NULL, TccqTile),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -622,12 +545,6 @@ TccqValue <- S7::new_class(
     }
     if (length(self@op) != 1L || is.na(self@op) || !nzchar(self@op)) {
       problems <- c(problems, "@op must be a single non-empty string")
-    }
-    if (!is.null(self@layout) && self@layout@rank != self@type@shape@rank) {
-      problems <- c(problems, "@layout rank must match @type shape rank")
-    }
-    if (!is.null(self@tile) && self@tile@shape@rank != self@type@shape@rank) {
-      problems <- c(problems, "@tile shape rank must match @type shape rank")
     }
     if (length(problems) > 0L) problems
   }
@@ -1202,92 +1119,6 @@ tccq_shape <- function(dims = list()) {
   TccqShape(rank = as.integer(length(dims)), dims = dims)
 }
 
-#' Construct a physical array layout
-#'
-#' @param rank Layout rank.
-#' @param order Layout order.
-#' @param strides Optional per-axis strides. Defaults to unknown strides.
-#' @param offset Storage offset.
-#' @param contiguous Whether the layout is contiguous.
-#' @export
-tccq_layout <- function(
-  rank,
-  order = "unknown",
-  strides = NULL,
-  offset = tccq_dim_constant(0L),
-  contiguous = FALSE
-) {
-  if (!is.numeric(rank) || length(rank) != 1L || is.na(rank) || rank < 0) {
-    tccq_abort(
-      "schema.invalid_layout_rank",
-      "`rank` must be a non-negative integer.",
-      phase = "schema",
-      path = "layout.rank",
-      data = list(rank = rank)
-    )
-  }
-  rank <- as.integer(rank)
-  .tccq_check_character_scalar(order, "order")
-  if (!order %in% TCCQ_LAYOUT_ORDERS) {
-    tccq_abort(
-      "schema.invalid_layout_order",
-      "`order` is not supported.",
-      phase = "schema",
-      path = "layout.order",
-      data = list(order = order, supported = TCCQ_LAYOUT_ORDERS)
-    )
-  }
-  if (is.null(strides)) {
-    strides <- replicate(rank, tccq_dim_unknown(), simplify = FALSE)
-  } else {
-    strides <- .tccq_normalize_dims(strides)
-  }
-  if (length(strides) != rank) {
-    tccq_abort(
-      "schema.layout_stride_rank_mismatch",
-      "`strides` length must match `rank`.",
-      phase = "schema",
-      path = "layout.strides",
-      data = list(rank = rank, strides = length(strides))
-    )
-  }
-  offset <- .tccq_as_dim(offset, "offset")
-  .tccq_check_logical_scalar(contiguous, "contiguous")
-
-  TccqLayout(
-    rank = rank,
-    order = order,
-    strides = strides,
-    offset = offset,
-    contiguous = contiguous
-  )
-}
-
-#' Construct tile metadata
-#'
-#' @param shape Tile shape.
-#' @param origin Optional per-axis origin. Defaults to zero origin.
-#' @export
-tccq_tile <- function(shape, origin = NULL) {
-  .tccq_check_s7(shape, TccqShape, "TccqShape", "shape")
-  if (is.null(origin)) {
-    origin <- replicate(shape@rank, tccq_dim_constant(0L), simplify = FALSE)
-  } else {
-    origin <- .tccq_normalize_dims(origin)
-  }
-  if (length(origin) != shape@rank) {
-    tccq_abort(
-      "schema.tile_origin_rank_mismatch",
-      "`origin` length must match tile rank.",
-      phase = "schema",
-      path = "tile.origin",
-      data = list(rank = shape@rank, origin = length(origin))
-    )
-  }
-
-  TccqTile(shape = shape, origin = origin)
-}
-
 #' Construct an iteration domain
 #'
 #' @param id Stable domain id.
@@ -1508,8 +1339,6 @@ tccq_binding <- function(name, type, mutable = FALSE) {
 #' @param inputs Input value ids or references.
 #' @param type Result type.
 #' @param effect Effect summary.
-#' @param layout Optional physical layout.
-#' @param tile Optional tile metadata.
 #' @param attrs Structured operation attributes.
 #' @export
 tccq_value <- function(
@@ -1518,17 +1347,12 @@ tccq_value <- function(
   inputs = list(),
   type,
   effect = tccq_effect(),
-  layout = NULL,
-  tile = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_character_scalar(op, "op")
   .tccq_check_s7(type, TccqType, "TccqType", "type")
   .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
-  .tccq_check_optional_s7(layout, TccqLayout, "TccqLayout", "layout")
-  .tccq_check_optional_s7(tile, TccqTile, "TccqTile", "tile")
-  .tccq_check_value_layout_rank(type, layout, tile)
   if (!is.list(inputs)) {
     tccq_abort("schema.invalid_inputs", "`inputs` must be a list.")
   }
@@ -1542,8 +1366,6 @@ tccq_value <- function(
     inputs = inputs,
     type = type,
     effect = effect,
-    layout = layout,
-    tile = tile,
     attrs = attrs
   )
 }
@@ -2130,24 +1952,3 @@ tccq_program <- function(
   .tccq_check_s7(x, class, label, arg)
 }
 
-.tccq_check_value_layout_rank <- function(type, layout, tile) {
-  rank <- type@shape@rank
-  if (!is.null(layout) && !identical(layout@rank, rank)) {
-    tccq_abort(
-      "schema.value_layout_rank_mismatch",
-      "Value layout rank must match value type rank.",
-      phase = "schema",
-      path = "value.layout",
-      data = list(type_rank = rank, layout_rank = layout@rank)
-    )
-  }
-  if (!is.null(tile) && !identical(tile@shape@rank, rank)) {
-    tccq_abort(
-      "schema.value_tile_rank_mismatch",
-      "Value tile rank must match value type rank.",
-      phase = "schema",
-      path = "value.tile",
-      data = list(type_rank = rank, tile_rank = tile@shape@rank)
-    )
-  }
-}

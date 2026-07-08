@@ -13,8 +13,6 @@ tccq_backend_plan(
   capabilities = character(),
   regions = list(),
   bridges = list(),
-  safepoints = list(),
-  debug_sites = list(),
   diagnostics = list(),
   products = NULL,
   attrs = list()
@@ -36,10 +34,6 @@ tccq_backend_plan(
 \item{regions}{Regions assigned to the backend plan.}
 
 \item{bridges}{Representation-transition plans.}
-
-\item{safepoints}{Generated-program safepoints.}
-
-\item{debug_sites}{Debug metadata retained for generated code.}
 
 \item{diagnostics}{Diagnostics attached to this plan.}
 

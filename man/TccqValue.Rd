@@ -10,8 +10,6 @@ TccqValue(
   inputs = list(),
   type = TccqType(),
   effect = TccqEffect(),
-  layout = NULL,
-  tile = NULL,
   attrs = list()
 )
 }
@@ -25,10 +23,6 @@ TccqValue(
 \item{type}{Result type.}
 
 \item{effect}{Effect summary.}
-
-\item{layout}{Optional physical layout.}
-
-\item{tile}{Optional tile metadata.}
 
 \item{attrs}{Structured operation attributes.}
 }

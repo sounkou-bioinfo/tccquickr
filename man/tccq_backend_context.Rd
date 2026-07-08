@@ -9,7 +9,6 @@ tccq_backend_context(
   target = "any",
   allow_boundary = FALSE,
   required_capabilities = character(),
-  runtime = tccq_runtime_policy(),
   attrs = list()
 )
 }
@@ -21,8 +20,6 @@ tccq_backend_context(
 \item{allow_boundary}{Whether explicit boundary/object-mode plans are allowed.}
 
 \item{required_capabilities}{Capabilities that candidate backends must expose.}
-
-\item{runtime}{Runtime instrumentation policy.}
 
 \item{attrs}{Structured backend-context attributes.}
 }

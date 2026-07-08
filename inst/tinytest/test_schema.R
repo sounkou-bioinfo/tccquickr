@@ -53,21 +53,14 @@ value <- tccq_value(
   attrs = list(literal = finite)
 )
 matrix_type <- tccq_type("double", tccq_shape(c("n", "p")))
-matrix_layout <- tccq_layout(2L, order = "column_major", contiguous = TRUE)
-matrix_tile <- tccq_tile(tccq_shape(c(32L, 32L)))
 matrix_value <- tccq_value(
   "m1",
   "matrix_input",
-  type = matrix_type,
-  layout = matrix_layout,
-  tile = matrix_tile
+  type = matrix_type
 )
 
-expect_true(S7::S7_inherits(matrix_layout, TccqLayout))
-expect_true(S7::S7_inherits(matrix_tile, TccqTile))
 expect_equal(matrix_value@type@shape@rank, 2L)
-expect_equal(matrix_value@layout@order, "column_major")
-expect_equal(matrix_value@tile@shape@rank, 2L)
+expect_equal(matrix_value@type@shape@dims[[2L]]@label, "p")
 
 resolved_add <- tccq_resolve_call(
   tccq_default_op_registry(),
@@ -135,17 +128,6 @@ expect_equal(domain@axes, c("i", "j"))
 expect_equal(access@kind, "identity")
 expect_equal(fusion@kind, "map")
 expect_equal(fusion@region_kind, "parallel")
-
-bad_layout <- tryCatch(
-  tccq_value(
-    "bad_layout",
-    "matrix_input",
-    type = matrix_type,
-    layout = tccq_layout(1L)
-  ),
-  error = identity
-)
-expect_true(inherits(bad_layout, "tccq_error"))
 
 region <- tccq_region(
   "r1",

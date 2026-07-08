@@ -10,208 +10,17 @@ TCCQ_BACKEND_CAPABILITIES <- c(
   "buffer_bridge",
   "kernel"
 )
-TCCQ_RUNTIME_MODES <- c("release", "checked", "trace", "debug")
 TCCQ_BRIDGE_KINDS <- c(
   "sexp_to_scalar",
   "scalar_to_sexp",
   "sexp_to_buffer",
   "buffer_to_sexp",
-  "host_to_device",
-  "device_to_host",
-  "layout_convert",
-  "tile_materialize",
   "boundary"
 )
-TCCQ_SAFEPOINT_KINDS <- c(
-  "region_entry",
-  "region_exit",
-  "loop_backedge",
-  "tile_boundary",
-  "reduction_chunk",
-  "boundary_call",
-  "debug_break"
-)
-TCCQ_DEBUG_SITE_KINDS <- c("value", "region", "bridge", "safepoint", "control", "call")
 TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "loop_nest")
 TCCQ_BACKEND_FUNCTION_ABIS <- c("c", "fortran_bind_c")
 TCCQ_BACKEND_RESULT_PLACEMENTS <- c("return", "output_argument")
 TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable", "native_callable")
-
-#' Runtime instrumentation policy
-#'
-#' @param mode Runtime mode.
-#' @param allow_interrupts Whether generated execution may observe interrupts.
-#' @param check_interval Polling interval for generated loops or chunks.
-#' @param emit_debug_sites Whether backend plans should preserve debug sites.
-#' @param attrs Structured runtime-policy attributes.
-#' @export
-TccqRuntimePolicy <- S7::new_class(
-  "TccqRuntimePolicy",
-  package = "tccquickr",
-  properties = list(
-    mode = S7::class_character,
-    allow_interrupts = S7::class_logical,
-    check_interval = S7::class_integer,
-    emit_debug_sites = S7::class_logical,
-    attrs = S7::class_list
-  ),
-  validator = function(self) {
-    problems <- character()
-    if (length(self@mode) != 1L || is.na(self@mode) || !self@mode %in% TCCQ_RUNTIME_MODES) {
-      problems <- c(problems, "@mode must be one supported runtime mode")
-    }
-    if (length(self@allow_interrupts) != 1L || is.na(self@allow_interrupts)) {
-      problems <- c(problems, "@allow_interrupts must be a single TRUE/FALSE value")
-    }
-    if (
-      length(self@check_interval) != 1L ||
-        is.na(self@check_interval) ||
-        self@check_interval <= 0L
-    ) {
-      problems <- c(problems, "@check_interval must be one positive integer")
-    }
-    if (length(self@emit_debug_sites) != 1L || is.na(self@emit_debug_sites)) {
-      problems <- c(problems, "@emit_debug_sites must be a single TRUE/FALSE value")
-    }
-    if (length(problems) > 0L) problems
-  }
-)
-
-#' Source span for IR/debug metadata
-#'
-#' @param file Source file, or empty string if unknown.
-#' @param line Starting line, or `NA_integer_` if unknown.
-#' @param column Starting column, or `NA_integer_` if unknown.
-#' @param end_line Ending line, or `NA_integer_` if unknown.
-#' @param end_column Ending column, or `NA_integer_` if unknown.
-#' @param label Human-readable source label.
-#' @export
-TccqSourceSpan <- S7::new_class(
-  "TccqSourceSpan",
-  package = "tccquickr",
-  properties = list(
-    file = S7::class_character,
-    line = S7::class_integer,
-    column = S7::class_integer,
-    end_line = S7::class_integer,
-    end_column = S7::class_integer,
-    label = S7::class_character
-  ),
-  validator = function(self) {
-    problems <- character()
-    if (length(self@file) != 1L || is.na(self@file)) {
-      problems <- c(problems, "@file must be a single string")
-    }
-    if (length(self@label) != 1L || is.na(self@label)) {
-      problems <- c(problems, "@label must be a single string")
-    }
-    line_values <- list(
-      line = self@line,
-      column = self@column,
-      end_line = self@end_line,
-      end_column = self@end_column
-    )
-    for (field_name in names(line_values)) {
-      field_value <- line_values[[field_name]]
-      if (length(field_value) != 1L || (!is.na(field_value) && field_value <= 0L)) {
-        problems <- c(
-          problems,
-          sprintf("@%s must be one positive integer or NA", field_name)
-        )
-      }
-    }
-    if (!is.na(self@line) && !is.na(self@end_line) && self@end_line < self@line) {
-      problems <- c(problems, "@end_line must not precede @line")
-    }
-    if (
-      !is.na(self@line) &&
-        !is.na(self@end_line) &&
-        identical(self@line, self@end_line) &&
-        !is.na(self@column) &&
-        !is.na(self@end_column) &&
-        self@end_column < self@column
-    ) {
-      problems <- c(problems, "@end_column must not precede @column on the same line")
-    }
-    if (length(problems) > 0L) problems
-  }
-)
-
-#' Debug site in an IR or backend plan
-#'
-#' @param id Stable debug-site id.
-#' @param kind Debug-site kind.
-#' @param source Optional source span.
-#' @param attrs Structured debug-site attributes.
-#' @export
-TccqDebugSite <- S7::new_class(
-  "TccqDebugSite",
-  package = "tccquickr",
-  properties = list(
-    id = S7::class_character,
-    kind = S7::class_character,
-    source = S7::new_union(NULL, TccqSourceSpan),
-    attrs = S7::class_list
-  ),
-  validator = function(self) {
-    problems <- character()
-    if (length(self@id) != 1L || is.na(self@id) || !nzchar(self@id)) {
-      problems <- c(problems, "@id must be a single non-empty string")
-    }
-    if (
-      length(self@kind) != 1L ||
-        is.na(self@kind) ||
-        !self@kind %in% TCCQ_DEBUG_SITE_KINDS
-    ) {
-      problems <- c(problems, "@kind must be one supported debug-site kind")
-    }
-    if (length(problems) > 0L) problems
-  }
-)
-
-#' Generated-program safepoint
-#'
-#' Safepoints are backend-plan markers where long-running generated code may
-#' check interrupts, update trace state, or stop at a debugger boundary. A
-#' safepoint can require the R C API only in host/R-API-capable regions.
-#'
-#' @param id Stable safepoint id.
-#' @param kind Safepoint kind.
-#' @param region_id Region that owns the safepoint.
-#' @param requires_rapi Whether the safepoint needs the R C API.
-#' @param attrs Structured safepoint attributes.
-#' @export
-TccqSafepoint <- S7::new_class(
-  "TccqSafepoint",
-  package = "tccquickr",
-  properties = list(
-    id = S7::class_character,
-    kind = S7::class_character,
-    region_id = S7::class_character,
-    requires_rapi = S7::class_logical,
-    attrs = S7::class_list
-  ),
-  validator = function(self) {
-    problems <- character()
-    if (length(self@id) != 1L || is.na(self@id) || !nzchar(self@id)) {
-      problems <- c(problems, "@id must be a single non-empty string")
-    }
-    if (
-      length(self@kind) != 1L ||
-        is.na(self@kind) ||
-        !self@kind %in% TCCQ_SAFEPOINT_KINDS
-    ) {
-      problems <- c(problems, "@kind must be one supported safepoint kind")
-    }
-    if (length(self@region_id) != 1L || is.na(self@region_id) || !nzchar(self@region_id)) {
-      problems <- c(problems, "@region_id must be a single non-empty string")
-    }
-    if (length(self@requires_rapi) != 1L || is.na(self@requires_rapi)) {
-      problems <- c(problems, "@requires_rapi must be a single TRUE/FALSE value")
-    }
-    if (length(problems) > 0L) problems
-  }
-)
 
 #' Backend planning context
 #'
@@ -219,7 +28,6 @@ TccqSafepoint <- S7::new_class(
 #' @param target Requested target language or runtime, or `any`.
 #' @param allow_boundary Whether explicit boundary/object-mode plans are allowed.
 #' @param required_capabilities Capabilities that candidate backends must expose.
-#' @param runtime Runtime instrumentation policy.
 #' @param attrs Structured backend-context attributes.
 #' @export
 TccqBackendContext <- S7::new_class(
@@ -230,7 +38,6 @@ TccqBackendContext <- S7::new_class(
     target = S7::class_character,
     allow_boundary = S7::class_logical,
     required_capabilities = S7::class_character,
-    runtime = TccqRuntimePolicy,
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -616,8 +423,6 @@ TccqBackendProducts <- S7::new_class(
 #' @param capabilities Backend capabilities visible to this plan.
 #' @param regions Regions assigned to the backend plan.
 #' @param bridges Representation-transition plans.
-#' @param safepoints Generated-program safepoints.
-#' @param debug_sites Debug metadata retained for generated code.
 #' @param diagnostics Diagnostics attached to this plan.
 #' @param products Typed backend products.
 #' @param attrs Structured plan attributes.
@@ -634,8 +439,6 @@ TccqBackendPlan <- S7::new_class(
     capabilities = S7::class_character,
     regions = S7::class_list,
     bridges = S7::class_list,
-    safepoints = S7::class_list,
-    debug_sites = S7::class_list,
     diagnostics = S7::class_list,
     products = S7::new_union(NULL, TccqBackendProducts),
     attrs = S7::class_list
@@ -668,18 +471,6 @@ TccqBackendPlan <- S7::new_class(
       logical(1),
       class = TccqBridgePlan
     )
-    safepoints_are_tccq_safepoints <- vapply(
-      self@safepoints,
-      S7::S7_inherits,
-      logical(1),
-      class = TccqSafepoint
-    )
-    debug_sites_are_tccq_debug_sites <- vapply(
-      self@debug_sites,
-      S7::S7_inherits,
-      logical(1),
-      class = TccqDebugSite
-    )
     diagnostics_are_tccq_diagnostics <- vapply(
       self@diagnostics,
       S7::S7_inherits,
@@ -691,12 +482,6 @@ TccqBackendPlan <- S7::new_class(
     }
     if (!all(bridges_are_tccq_bridge_plans)) {
       problems <- c(problems, "@bridges must contain only <TccqBridgePlan> values")
-    }
-    if (!all(safepoints_are_tccq_safepoints)) {
-      problems <- c(problems, "@safepoints must contain only <TccqSafepoint> values")
-    }
-    if (!all(debug_sites_are_tccq_debug_sites)) {
-      problems <- c(problems, "@debug_sites must contain only <TccqDebugSite> values")
     }
     if (!all(diagnostics_are_tccq_diagnostics)) {
       problems <- c(problems, "@diagnostics must contain only <TccqDiagnostic> values")
@@ -875,10 +660,7 @@ tccq_register_backend_traits <- function() {
       target = if (identical(context@target, "any")) backend@target else context@target,
       capabilities = backend@capabilities,
       diagnostics = diagnostics,
-      attrs = list(
-        driver = backend@driver,
-        runtime = context@runtime
-      )
+      attrs = list(driver = backend@driver)
     )
   }
 
@@ -951,150 +733,12 @@ tccq_register_backend_traits <- function() {
   invisible(TRUE)
 }
 
-#' Construct a runtime instrumentation policy
-#'
-#' @param mode Runtime mode.
-#' @param allow_interrupts Whether generated execution may observe interrupts.
-#' @param check_interval Polling interval for generated loops or chunks.
-#' @param emit_debug_sites Whether backend plans should preserve debug sites.
-#' @param attrs Structured runtime-policy attributes.
-#' @export
-tccq_runtime_policy <- function(
-  mode = "release",
-  allow_interrupts = TRUE,
-  check_interval = 4096L,
-  emit_debug_sites = FALSE,
-  attrs = list()
-) {
-  .tccq_check_character_scalar(mode, "mode")
-  if (!mode %in% TCCQ_RUNTIME_MODES) {
-    tccq_abort(
-      "schema.invalid_runtime_mode",
-      "`mode` is not a supported runtime mode.",
-      phase = "schema",
-      path = "runtime.mode",
-      data = list(mode = mode, supported = TCCQ_RUNTIME_MODES)
-    )
-  }
-  .tccq_check_logical_scalar(allow_interrupts, "allow_interrupts")
-  check_interval <- .tccq_check_positive_integer(check_interval, "check_interval")
-  .tccq_check_logical_scalar(emit_debug_sites, "emit_debug_sites")
-  .tccq_check_list(attrs, "attrs")
-
-  TccqRuntimePolicy(
-    mode = mode,
-    allow_interrupts = allow_interrupts,
-    check_interval = check_interval,
-    emit_debug_sites = emit_debug_sites,
-    attrs = attrs
-  )
-}
-
-#' Construct a source span
-#'
-#' @param file Source file, or empty string if unknown.
-#' @param line Starting line, or `NA_integer_` if unknown.
-#' @param column Starting column, or `NA_integer_` if unknown.
-#' @param end_line Ending line, or `NA_integer_` if unknown.
-#' @param end_column Ending column, or `NA_integer_` if unknown.
-#' @param label Human-readable source label.
-#' @export
-tccq_source_span <- function(
-  file = "",
-  line = NA_integer_,
-  column = NA_integer_,
-  end_line = NA_integer_,
-  end_column = NA_integer_,
-  label = ""
-) {
-  .tccq_check_character_or_empty(file, "file")
-  line <- .tccq_check_optional_positive_integer(line, "line")
-  column <- .tccq_check_optional_positive_integer(column, "column")
-  end_line <- .tccq_check_optional_positive_integer(end_line, "end_line")
-  end_column <- .tccq_check_optional_positive_integer(end_column, "end_column")
-  .tccq_check_character_or_empty(label, "label")
-
-  TccqSourceSpan(
-    file = file,
-    line = line,
-    column = column,
-    end_line = end_line,
-    end_column = end_column,
-    label = label
-  )
-}
-
-#' Construct a debug site
-#'
-#' @param id Stable debug-site id.
-#' @param kind Debug-site kind.
-#' @param source Optional source span.
-#' @param attrs Structured debug-site attributes.
-#' @export
-tccq_debug_site <- function(id, kind, source = NULL, attrs = list()) {
-  .tccq_check_character_scalar(id, "id")
-  .tccq_check_character_scalar(kind, "kind")
-  if (!kind %in% TCCQ_DEBUG_SITE_KINDS) {
-    tccq_abort(
-      "schema.invalid_debug_site_kind",
-      "`kind` is not a supported debug-site kind.",
-      phase = "schema",
-      path = "debug_site.kind",
-      data = list(kind = kind, supported = TCCQ_DEBUG_SITE_KINDS)
-    )
-  }
-  .tccq_check_optional_s7(source, TccqSourceSpan, "TccqSourceSpan", "source")
-  .tccq_check_list(attrs, "attrs")
-
-  TccqDebugSite(id = id, kind = kind, source = source, attrs = attrs)
-}
-
-#' Construct a safepoint
-#'
-#' @param id Stable safepoint id.
-#' @param kind Safepoint kind.
-#' @param region_id Region that owns the safepoint.
-#' @param requires_rapi Whether the safepoint needs the R C API.
-#' @param attrs Structured safepoint attributes.
-#' @export
-tccq_safepoint <- function(
-  id,
-  kind,
-  region_id,
-  requires_rapi = FALSE,
-  attrs = list()
-) {
-  .tccq_check_character_scalar(id, "id")
-  .tccq_check_character_scalar(kind, "kind")
-  if (!kind %in% TCCQ_SAFEPOINT_KINDS) {
-    tccq_abort(
-      "schema.invalid_safepoint_kind",
-      "`kind` is not a supported safepoint kind.",
-      phase = "schema",
-      path = "safepoint.kind",
-      data = list(kind = kind, supported = TCCQ_SAFEPOINT_KINDS)
-    )
-  }
-  .tccq_check_character_scalar(region_id, "region_id")
-  .tccq_check_logical_scalar(requires_rapi, "requires_rapi")
-  .tccq_check_list(attrs, "attrs")
-
-  TccqSafepoint(
-    id = id,
-    kind = kind,
-    region_id = region_id,
-    requires_rapi = requires_rapi,
-    attrs = attrs
-  )
-}
-
 #' Construct a backend planning context
 #'
 #' @param mode Requested backend mode.
 #' @param target Requested target language or runtime, or `any`.
 #' @param allow_boundary Whether explicit boundary/object-mode plans are allowed.
 #' @param required_capabilities Capabilities that candidate backends must expose.
-#' @param runtime Runtime instrumentation policy.
 #' @param attrs Structured backend-context attributes.
 #' @export
 tccq_backend_context <- function(
@@ -1102,7 +746,6 @@ tccq_backend_context <- function(
   target = "any",
   allow_boundary = FALSE,
   required_capabilities = character(),
-  runtime = tccq_runtime_policy(),
   attrs = list()
 ) {
   .tccq_check_character_scalar(mode, "mode")
@@ -1123,7 +766,6 @@ tccq_backend_context <- function(
     "required_capabilities",
     allow_empty = TRUE
   )
-  .tccq_check_s7(runtime, TccqRuntimePolicy, "TccqRuntimePolicy", "runtime")
   .tccq_check_list(attrs, "attrs")
 
   TccqBackendContext(
@@ -1131,7 +773,6 @@ tccq_backend_context <- function(
     target = target,
     allow_boundary = allow_boundary,
     required_capabilities = required_capabilities,
-    runtime = runtime,
     attrs = attrs
   )
 }
@@ -1470,8 +1111,6 @@ tccq_backend_products <- function(
 #' @param capabilities Backend capabilities visible to this plan.
 #' @param regions Regions assigned to the backend plan.
 #' @param bridges Representation-transition plans.
-#' @param safepoints Generated-program safepoints.
-#' @param debug_sites Debug metadata retained for generated code.
 #' @param diagnostics Diagnostics attached to this plan.
 #' @param products Typed backend products.
 #' @param attrs Structured plan attributes.
@@ -1485,8 +1124,6 @@ tccq_backend_plan <- function(
   capabilities = character(),
   regions = list(),
   bridges = list(),
-  safepoints = list(),
-  debug_sites = list(),
   diagnostics = list(),
   products = NULL,
   attrs = list()
@@ -1522,8 +1159,6 @@ tccq_backend_plan <- function(
   )
   .tccq_check_list_of(regions, TccqRegion, "TccqRegion", "regions")
   .tccq_check_list_of(bridges, TccqBridgePlan, "TccqBridgePlan", "bridges")
-  .tccq_check_list_of(safepoints, TccqSafepoint, "TccqSafepoint", "safepoints")
-  .tccq_check_list_of(debug_sites, TccqDebugSite, "TccqDebugSite", "debug_sites")
   .tccq_check_list_of(diagnostics, TccqDiagnostic, "TccqDiagnostic", "diagnostics")
   .tccq_check_optional_s7(products, TccqBackendProducts, "TccqBackendProducts", "products")
   .tccq_check_list(attrs, "attrs")
@@ -1537,8 +1172,6 @@ tccq_backend_plan <- function(
     capabilities = capabilities,
     regions = regions,
     bridges = bridges,
-    safepoints = safepoints,
-    debug_sites = debug_sites,
     diagnostics = diagnostics,
     products = products,
     attrs = attrs
@@ -1642,10 +1275,7 @@ tccq_backend_spec <- function(
         target = if (identical(context@target, "any")) backend@target else context@target,
         capabilities = backend@capabilities,
         diagnostics = list(diagnostic),
-        attrs = list(
-          driver = backend@driver,
-          runtime = context@runtime
-        )
+        attrs = list(driver = backend@driver)
       )
       tccq_result(success = FALSE, value = plan, diagnostics = list(diagnostic))
     }
@@ -1902,7 +1532,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         target = if (identical(context@target, "any")) backend@target else context@target,
         capabilities = backend@capabilities,
         diagnostics = diagnostics,
-        attrs = list(driver = backend@driver, runtime = context@runtime)
+        attrs = list(driver = backend@driver)
       )
     }
 
@@ -3165,7 +2795,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       ),
       attrs = list(
         driver = backend@driver,
-        runtime = context@runtime,
         source_language = source_language,
         symbol = symbol
       )
