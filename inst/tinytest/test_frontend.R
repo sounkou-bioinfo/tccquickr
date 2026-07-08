@@ -286,6 +286,23 @@ expect_equal(custom_elementwise_value@op, "square")
 expect_true(S7::S7_inherits(custom_elementwise_value@attrs$operation, TccqLoweredOperation))
 expect_true(S7::S7_inherits(custom_elementwise_value@attrs$operation@elementwise, TccqElementwiseSpec))
 
+# A registry implementation must not be able to claim an S3 generic: the
+# method table is a runtime fact, so lowering has to stop at a typed barrier.
+square_generic_env <- new.env(parent = environment())
+square_generic_env$square <- function(x) UseMethod("square")
+s3_square_probe <- function(x) {
+  declare(type(x = double(n)))
+  square(x)
+}
+environment(s3_square_probe) <- square_generic_env
+s3_square_result <- tccq_analyze(s3_square_probe, registry = square_registry)
+expect_false(s3_square_result@success)
+expect_true(any(vapply(
+  s3_square_result@diagnostics,
+  function(x) identical(x@code, "lowering.semantics_barrier"),
+  logical(1)
+)))
+
 bound_chain <- function(x, y) {
   declare(type(x = double(n), y = double(n)))
   shifted <- sqrt(x)

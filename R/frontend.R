@@ -75,7 +75,8 @@ tccq_analyze <- function(
       fn,
       declarations$bindings,
       registry = registry,
-      context = context
+      context = context,
+      call_index = call_index
     )
     lowering_diagnostics <- lowering@diagnostics
   }

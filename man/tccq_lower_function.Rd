@@ -8,7 +8,8 @@ tccq_lower_function(
   fn,
   bindings,
   registry = tccq_default_op_registry(),
-  context = tccq_op_context()
+  context = tccq_op_context(),
+  call_index = NULL
 )
 }
 \arguments{
@@ -19,6 +20,8 @@ tccq_lower_function(
 \item{registry}{Operation registry used for operation availability.}
 
 \item{context}{Operation support context.}
+
+\item{call_index}{Typed call facts for \code{fn}, or \code{NULL} to collect them.}
 }
 \description{
 The lowerer produces \code{TccqValue}, \code{TccqRegion}, \code{TccqFusionGroup}, and

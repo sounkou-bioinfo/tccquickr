@@ -61,10 +61,17 @@ replacement dispatch; and whether lexical scope is part of the call contract.
 Frontend analysis stores both observed calls and these semantics in a
 `TccqCallIndex`, then attaches that typed index to `TccqProgram@call_index` so
 lowering has checked facts available rather than digging through untyped
-attributes. The current expression lowerer still reconstructs value
-dependencies from the function body for a very small subset, but operation
-availability is no longer a yes/no string predicate. Each lowerable call is
-resolved to a typed implementation record before a value is created.
+attributes. The lowerer consumes those facts as a kernel-entry barrier: a
+registry implementation replaces a call, so lazy closure forcing is compatible
+when arguments are pure and an unbound name is registry vocabulary rather than
+invalid R, but no implementation may claim a call whose observed dispatch is
+runtime S3 — the method table is not a compile-time fact, so that call returns
+a classed `lowering.semantics_barrier` diagnostic even when the registry has
+an implementation under its name. The current expression lowerer still
+reconstructs value dependencies from the function body for a very small
+subset, but operation availability is no longer a yes/no string predicate.
+Each lowerable call is resolved to a typed implementation record before a
+value is created.
 
 ## Operations
 

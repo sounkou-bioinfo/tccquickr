@@ -8,12 +8,14 @@
 #' @param bindings Declared formal bindings.
 #' @param registry Operation registry used for operation availability.
 #' @param context Operation support context.
+#' @param call_index Typed call facts for `fn`, or `NULL` to collect them.
 #' @export
 tccq_lower_function <- function(
   fn,
   bindings,
   registry = tccq_default_op_registry(),
-  context = tccq_op_context()
+  context = tccq_op_context(),
+  call_index = NULL
 ) {
   new_plan <- function(
     values = list(),
@@ -938,10 +940,63 @@ tccq_lower_function <- function(
   .tccq_check_list_of(bindings, TccqBinding, "TccqBinding", "bindings")
   .tccq_check_s7(registry, TccqOpRegistry, "TccqOpRegistry", "registry")
   .tccq_check_s7(context, TccqOpContext, "TccqOpContext", "context")
+  if (is.null(call_index)) {
+    call_index <- tccq_collect_call_index(
+      body(fn),
+      global_calls = codetools::findGlobals(fn, merge = FALSE)$functions,
+      env = environment(fn)
+    )
+  }
+  .tccq_check_s7(call_index, TccqCallIndex, "TccqCallIndex", "call_index")
 
   expressions <- executable_expressions(body(fn))
   if (length(expressions) == 0L) {
     return(new_plan())
+  }
+
+  # The kernel model replaces a call with a registry implementation: lazy
+  # closure forcing is compatible when arguments are pure, and a name the
+  # environment does not bind is registry vocabulary, not invalid R. The one
+  # observed fact no implementation may claim away is runtime S3 dispatch --
+  # the method table is not a compile-time fact, so the environment's generic
+  # could disagree with the registry's single implementation at run time.
+  # Declaration vocabulary inside declare(type(...)) is not an operation
+  # candidate, so the barrier only judges calls in executable statements.
+  executable_call_names <- unique(vapply(
+    unlist(lapply(expressions, tccq_collect_calls), recursive = FALSE),
+    function(call) call@name,
+    character(1)
+  ))
+  semantics_barrier <- function(semantics) {
+    call <- semantics@call
+    if (!call@name %in% executable_call_names) {
+      return(NULL)
+    }
+    if (!identical(semantics@dispatch_kind, "s3")) {
+      return(NULL)
+    }
+    tccq_diagnostic(
+      "lowering.semantics_barrier",
+      sprintf(
+        "Call `%s` cannot enter a kernel region: runtime S3 dispatch cannot be resolved to one typed implementation.",
+        call@name
+      ),
+      phase = "lowering",
+      path = sprintf("call_index.%s", call@id),
+      data = list(
+        call = call@name,
+        evaluator_kind = semantics@evaluator_kind,
+        forcing_policy = semantics@forcing_policy,
+        dispatch_kind = semantics@dispatch_kind
+      )
+    )
+  }
+  barrier_diagnostics <- Filter(
+    Negate(is.null),
+    lapply(call_index@semantics, semantics_barrier)
+  )
+  if (length(barrier_diagnostics) > 0L) {
+    return(new_plan(diagnostics = barrier_diagnostics))
   }
 
   state <- new_lowering_state()
