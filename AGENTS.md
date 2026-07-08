@@ -21,8 +21,8 @@ This repo is responsible for:
 - declared-R frontend analysis rooted in `declare(type(...))`
 - S7 schemas for compiler values: dimensions, shapes, types, effects, bindings,
   IR values, programs, diagnostics, backend plans, and phase results
-- `s7contract` interfaces for internal compiler protocols, especially pass
-  execution and backend planning
+- `s7contract` traits for internal compiler protocols that implementations
+  must opt into, today operation implementations and backend planning
 - classed diagnostics and result values instead of branching on error strings
 - symbolic shape, effect, legality, and pass-pipeline work before backend work
 - operation signatures, implementation metadata, neutral expression lowering,
@@ -52,7 +52,6 @@ The active architecture is the small typed core:
 - `R/zz-backend.R`: generic backend descriptors, bridge plans, and
   backend-planning contracts.
 - `R/conditions.R`: diagnostic/result values and classed compiler conditions.
-- `R/contracts.R`: `s7contract` protocol for compiler passes.
 - `R/frontend.R`: declaration extraction, `codetools`-assisted call discovery,
   and operation-registry diagnostics.
 - `R/ops.R`: operation signatures, implementation traits, registries,
@@ -148,7 +147,8 @@ That means:
   is an explicit operation, effect, or boundary model
 - use `codetools` for R structure inspection where it is enough; do not reach
   for source editing libraries when the task is semantic transformation
-- let `s7contract` express protocol boundaries between compiler passes
+- let `s7contract` express opt-in protocols (operation implementations,
+  backend planning); do not maintain a pass-runner framework no pass uses
 - introduce proof artifacts only for small, stable pass laws; before that, use
   executable tests and structured diagnostics
 

@@ -4,7 +4,9 @@ The compiler core starts from values with schemas:
 
 1. Parse declarations from a deliberately narrow R subset.
 2. Represent formals, values, effects, and diagnostics as S7 objects.
-3. Run passes through `s7contract` interfaces.
+3. Express opt-in protocols (operation implementations, backends) as
+   `s7contract` traits; a pass-runner protocol returns only when the pipeline
+   has more than one caller for it.
 4. Grow type, rank, symbolic-shape, effect, and legality analysis before any
    backend work.
 5. Treat unsupported R as a classed diagnostic, not as implicit fallback.
