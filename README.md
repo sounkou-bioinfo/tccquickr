@@ -112,6 +112,59 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 #> [1] TRUE
 ```
 
+Programs are no longer limited to one loop nest. A scalar reduction
+feeding later work becomes its own all-reduce nest whose result is a
+named scalar, and the final nest reads that scalar — SAC-style
+composition, visible in the emitted source:
+
+``` r
+normalize <- function(x) {
+  declare(type(x = double(n)))
+  s <- sum(x)
+  x / s
+}
+
+normalize_plan <- tccq_plan_backend(
+  tccq_analyze(normalize, strict = TRUE)@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+cat(normalize_plan@value@products@attrs$source)
+#> #include <math.h>
+#> #include <stddef.h>
+#> #include <stdlib.h>
+#> 
+#> double *tccq_c_91268277(const double *input_0001, int extent_n, int result_count_0001) {
+#>   if (result_count_0001 < 0) {
+#>     return NULL;
+#>   }
+#>   double *output = (double *)malloc(sizeof(double) * (size_t)result_count_0001);
+#>   if (output == NULL) {
+#>     return NULL;
+#>   }
+#>   double scalar_value_0001 = 0.0;
+#>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
+#>     scalar_value_0001 = scalar_value_0001 + input_0001[axis_0001];
+#>   }
+#>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
+#>     output[axis_0001] = (input_0001[axis_0001] / scalar_value_0001);
+#>   }
+#>   return output;
+#> }
+```
+
+``` r
+normalize_jit <- tccq_plan_backend(
+  tccq_analyze(normalize, strict = TRUE)@value,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "jit", target = "c")
+)
+normalize_kernel <- normalize_jit@value@products@attrs$callable
+v <- c(1, 2, 3, 4)
+all.equal(normalize_kernel(v), v / sum(v))
+#> [1] TRUE
+```
+
 ## The declared subset today
 
 - **Types**: `double` formals of any rank with symbolic or constant
@@ -128,13 +181,16 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 - **Slices**: rank-1 `x[a:b]` with bounds affine in declared dimension
   symbols.
 - **Bindings**: single-assignment locals.
+- **Composition**: non-root scalar reductions become intermediate
+  all-reduce nests feeding the final nest through named scalars, so
+  `x / sum(x)` and `sum(x) + sum(y)` compile as ordered nest sequences.
 
-Reductions and contractions must produce the program result; anything
-needing more than one loop nest is a structured
-`lowering.unsupported_composition` diagnostic until multi-nest programs
-are modeled. Compilation succeeds when at least one backend produces a
-working plan; backends without a lowering (the graph and R-call
-descriptors) report feasibility diagnostics without vetoing the suite.
+Array-valued intermediates (an axis reduction or contraction feeding
+later work) still need materialized buffers, so they remain a structured
+`lowering.unsupported_composition` diagnostic. Compilation succeeds when
+at least one backend produces a working plan; a backend that cannot
+lower a program reports typed feasibility diagnostics without vetoing
+the suite.
 
 ## Apotheosis suite
 
@@ -177,6 +233,10 @@ probes <- list(
   tiled_stencil_1d = function(x) {
     declare(type(x = double(n)))
     x[1:(n - 2L)] + x[2:(n - 1L)] + x[3:n]
+  },
+  scalar_composition = function(x, y) {
+    declare(type(x = double(n), y = double(n)))
+    (x - sum(x)) / sum(y * y)
   },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
@@ -263,6 +323,7 @@ knitr::kable(data.frame(
 | matrix_vector        | compiles through C, Fortran, and TinyCC JIT |
 | matrix_multiply      | compiles through C, Fortran, and TinyCC JIT |
 | tiled_stencil_1d     | compiles through C, Fortran, and TinyCC JIT |
+| scalar_composition   | compiles through C, Fortran, and TinyCC JIT |
 | raw_buffer_roundtrip | `backend.unsupported_type`                  |
 | control_flow_probe   | `frontend.unimplemented_call`               |
 | apply_reduce_probe   | `frontend.unimplemented_call`               |
@@ -271,9 +332,10 @@ knitr::kable(data.frame(
 
 The failing rows are the roadmap: every one must move deeper through the
 same typed IR — general indexing and access regions, structured control
-flow, `raw`/`buffer` bridges, apply-family folds, and finally multi-nest
-composition for the composite targets. Failures must stay specific
-enough that the next typed concept to add is obvious.
+flow, `raw`/`buffer` bridges, apply-family folds, and materialized array
+intermediates so axis reductions and contractions can feed later nests
+the way scalar reductions already do. Failures must stay specific enough
+that the next typed concept to add is obvious.
 
 ## Design
 

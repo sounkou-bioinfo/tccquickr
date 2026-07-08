@@ -190,6 +190,10 @@ probes <- list(
     declare(type(x = double(n)))
     x[1:(n - 2L)] + x[2:(n - 1L)] + x[3:n]
   },
+  scalar_composition = function(x, y) {
+    declare(type(x = double(n), y = double(n)))
+    (x - sum(x)) / sum(y * y)
+  },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
     bytes
@@ -267,9 +271,10 @@ knitr::kable(data.frame(
 
 The failing rows are the roadmap: every one must move deeper through the same
 typed IR — general indexing and access regions, structured control flow,
-`raw`/`buffer` bridges, apply-family folds, and finally multi-nest composition
-for the composite targets. Failures must stay specific enough that the next
-typed concept to add is obvious.
+`raw`/`buffer` bridges, apply-family folds, and materialized array
+intermediates so axis reductions and contractions can feed later nests the
+way scalar reductions already do. Failures must stay specific enough that the
+next typed concept to add is obvious.
 
 ## Design
 
