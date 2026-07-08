@@ -275,12 +275,14 @@ For the reset core, keep these rules explicit:
 - Operation families are elementwise (`TccqElementwiseSpec`), reduction
   (`TccqReductionSpec`), and contraction (`TccqContractionSpec`, which owns a
   signature, a reducer, and a combine operation). Programs plan to an ordered
-  sequence of loop nests: every non-root scalar reduction becomes its own
-  all-reduce nest whose result is a named scalar intermediate consumed by
-  later nests. Array-valued intermediates (non-root contractions and axis
-  reductions) need materialized buffers and remain
-  `lowering.unsupported_composition` diagnostics until buffer intermediates
-  are modeled.
+  sequence of loop nests: every non-root reduction or contraction becomes its
+  own nest — a named scalar for rank-0 results, a materialized temporary
+  buffer otherwise — consumed by later nests through ordinary typed accesses.
+  Extraction is keyed by value id, so a value consumed twice materializes
+  once. Buffer intermediates are storage-plan facts (`materialized`,
+  non-reusable slots), C emitters own their allocation and free discipline,
+  and Fortran uses automatic arrays; intermediates never change the callable
+  ABI.
 - Backend planning must make concrete products explicit through
   `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
   expression trees, storage plans, generated source, shared libraries, wrappers,

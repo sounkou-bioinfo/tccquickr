@@ -523,30 +523,39 @@ tccq_program_loop_nests <- function(program) {
     if (S7::S7_inherits(operation, TccqLoweredOperation)) operation@family else NULL
   }
 
-  # Post-order extraction: every non-root scalar reduction subtree becomes an
-  # intermediate all-reduce nest, and the consumer tree keeps a rank-0
-  # reference in its place. Inner reductions are extracted before the subtrees
-  # that consume them, so `intermediates` is already in dependency order.
+  # Post-order extraction: every non-root reduction or contraction subtree
+  # becomes an intermediate nest — a named scalar for rank-0 results, a
+  # materialized buffer otherwise — and the consumer tree keeps a reference in
+  # its place. Inner extractions run before the subtrees that consume them, so
+  # `intermediates` is already in dependency order, and extraction is keyed by
+  # value id so a value consumed twice materializes once.
   intermediates <- list()
+  replacements <- new.env(parent = emptyenv())
   extract <- function(expression, is_root) {
     if (!identical(expression@kind, "operation")) {
       return(expression)
     }
+    if (!is_root && !is.null(replacements[[expression@value_id]])) {
+      return(replacements[[expression@value_id]])
+    }
     expression@inputs <- lapply(expression@inputs, extract, is_root = FALSE)
+    family <- expression_family(expression)
     if (
       !is_root &&
-        identical(expression_family(expression), "reduction") &&
-        expression@type@shape@rank == 0L
+        !is.null(family) &&
+        family %in% c("reduction", "contraction")
     ) {
       intermediates[[length(intermediates) + 1L]] <<- expression
-      return(tccq_expression(
+      replacement <- tccq_expression(
         id = expression@value_id,
         kind = "reference",
         value_id = expression@value_id,
         op = "intermediate",
         type = expression@type,
         attrs = list(storage_value_id = expression@value_id, intermediate = TRUE)
-      ))
+      )
+      replacements[[expression@value_id]] <- replacement
+      return(replacement)
     }
     expression
   }
@@ -611,155 +620,157 @@ tccq_program_loop_nests <- function(program) {
     expression
   }
 
-  reduction_nest <- function(expression, nest_index) {
+  nest_role_attrs <- function(expression, role) {
+    attrs <- list(result_value_id = expression@value_id)
+    if (identical(role, "result")) {
+      return(attrs)
+    }
+    if (expression@type@shape@rank == 0L) {
+      attrs$scalar_name <- sprintf("scalar_%s", expression@value_id)
+    } else {
+      attrs$buffer_name <- sprintf("buffer_%s", expression@value_id)
+      attrs$scalar_name <- sprintf("acc_%s", expression@value_id)
+    }
+    attrs
+  }
+
+  reduction_nest <- function(expression, nest_id, role) {
     operation <- expression@attrs$operation
     input_shape <- expression@inputs[[1L]]@type@shape
-    nest_id <- sprintf("loop_nest_%04d", nest_index)
+    reduction_axes <- as.integer(operation@attrs$reduction_axes %||% seq_len(input_shape@rank))
+    kept_axes <- as.integer(operation@attrs$kept_axes %||% integer())
     names_by_position <- vapply(seq_len(input_shape@rank), axis_name, character(1))
-    axes <- lapply(seq_len(input_shape@rank), function(position) {
-      tccq_loop_axis(names_by_position[[position]], input_shape@dims[[position]], role = "reduce")
+    loop_order <- c(kept_axes, reduction_axes)
+    axes <- lapply(loop_order, function(position) {
+      tccq_loop_axis(
+        names_by_position[[position]],
+        input_shape@dims[[position]],
+        role = if (position %in% reduction_axes) "reduce" else "map"
+      )
     })
     domain <- tccq_domain(
       sprintf("%s.domain", nest_id),
-      input_shape,
-      axes = names_by_position
+      tccq_shape(lapply(loop_order, function(position) input_shape@dims[[position]])),
+      axes = names_by_position[loop_order]
     )
     body <- annotate(expression@inputs[[1L]], names_by_position, domain)
+    output <- if (length(kept_axes) > 0L) {
+      tccq_access(
+        expression@value_id,
+        domain,
+        kind = "identity",
+        index_map = lapply(kept_axes, function(position) {
+          tccq_index_expr(names_by_position[[position]], 0L)
+        })
+      )
+    } else {
+      NULL
+    }
     tccq_loop_nest(
       nest_id,
       axes = axes,
       body = body,
       result_type = expression@type,
-      output = NULL,
+      output = output,
       reducer = operation@reduction,
       identity = operation@identity,
       domain = domain,
-      attrs = list(
-        result_value_id = expression@value_id,
-        scalar_name = sprintf("scalar_%s", expression@value_id)
-      )
+      attrs = nest_role_attrs(expression, role)
     )
+  }
+
+  contraction_nest <- function(expression, nest_id, role) {
+    operation <- expression@attrs$operation
+    left <- expression@inputs[[1L]]
+    right <- expression@inputs[[2L]]
+    left_shape <- left@type@shape
+    right_shape <- right@type@shape
+    result_rank <- expression@type@shape@rank
+    map_names <- vapply(seq_len(result_rank), axis_name, character(1))
+    reduce_name <- axis_name(result_rank + 1L)
+    axes <- c(
+      lapply(seq_len(result_rank), function(position) {
+        tccq_loop_axis(
+          map_names[[position]],
+          expression@type@shape@dims[[position]],
+          role = "map"
+        )
+      }),
+      list(tccq_loop_axis(reduce_name, left_shape@dims[[2L]], role = "reduce"))
+    )
+    domain <- tccq_domain(
+      sprintf("%s.domain", nest_id),
+      tccq_shape(c(expression@type@shape@dims, list(left_shape@dims[[2L]]))),
+      axes = c(map_names, reduce_name)
+    )
+    left_axis_names <- c(map_names[[1L]], reduce_name)
+    right_axis_names <- if (right_shape@rank == 1L) {
+      reduce_name
+    } else {
+      c(reduce_name, map_names[[2L]])
+    }
+    contraction_spec <- operation@contraction
+    combine_call <- str2lang(sprintf("left %s right", contraction_spec@combine_op))
+    combine_resolution <- tccq_resolve_call(
+      program@attrs$registry %||% tccq_default_op_registry(),
+      tccq_call(contraction_spec@combine_op, expr = combine_call),
+      tccq_op_context()
+    )
+    if (!combine_resolution@success) {
+      tccq_abort_diagnostic(nest_diagnostic(
+        "loop_nest.unresolved_combine",
+        "The contraction combine operation has no lowerable implementation.",
+        data = list(op = contraction_spec@combine_op)
+      ))
+    }
+    body <- tccq_expression(
+      id = sprintf("%s_combine", expression@value_id),
+      kind = "operation",
+      value_id = expression@value_id,
+      op = contraction_spec@combine_op,
+      inputs = list(
+        annotate(left, left_axis_names, domain),
+        annotate(right, right_axis_names, domain)
+      ),
+      type = tccq_type(expression@type@base),
+      resolved_op = combine_resolution@value
+    )
+    output <- tccq_access(
+      expression@value_id,
+      domain,
+      kind = "identity",
+      index_map = lapply(map_names, function(name) tccq_index_expr(name, 0L))
+    )
+    tccq_loop_nest(
+      nest_id,
+      axes = axes,
+      body = body,
+      result_type = expression@type,
+      output = output,
+      reducer = contraction_spec@reducer,
+      identity = operation@identity,
+      domain = domain,
+      attrs = nest_role_attrs(expression, role)
+    )
+  }
+
+  intermediate_nest <- function(expression, nest_index) {
+    nest_id <- sprintf("loop_nest_%04d", nest_index)
+    if (identical(expression_family(expression), "contraction")) {
+      contraction_nest(expression, nest_id, "intermediate")
+    } else {
+      reduction_nest(expression, nest_id, "intermediate")
+    }
   }
 
   build <- function() {
     result_value <- program@values[[program@result]]
 
     if (identical(root_family, "reduction")) {
-      input_shape <- root@inputs[[1L]]@type@shape
-      reduction_axes <- as.integer(root_operation@attrs$reduction_axes %||% seq_len(input_shape@rank))
-      kept_axes <- as.integer(root_operation@attrs$kept_axes %||% integer())
-      names_by_position <- vapply(seq_len(input_shape@rank), axis_name, character(1))
-      loop_order <- c(kept_axes, reduction_axes)
-      axes <- lapply(loop_order, function(position) {
-        tccq_loop_axis(
-          names_by_position[[position]],
-          input_shape@dims[[position]],
-          role = if (position %in% reduction_axes) "reduce" else "map"
-        )
-      })
-      domain <- tccq_domain(
-        "loop_nest_main.domain",
-        tccq_shape(lapply(loop_order, function(position) input_shape@dims[[position]])),
-        axes = names_by_position[loop_order]
-      )
-      body <- annotate(root@inputs[[1L]], names_by_position, domain)
-      output <- if (length(kept_axes) > 0L) {
-        tccq_access(
-          program@result,
-          domain,
-          kind = "identity",
-          index_map = lapply(kept_axes, function(position) {
-            tccq_index_expr(names_by_position[[position]], 0L)
-          })
-        )
-      } else {
-        NULL
-      }
-      return(tccq_loop_nest(
-        "loop_nest_main",
-        axes = axes,
-        body = body,
-        result_type = result_value@type,
-        output = output,
-        reducer = root_operation@reduction,
-        identity = root_operation@identity,
-        domain = domain,
-        attrs = list(result_value_id = program@result)
-      ))
+      return(reduction_nest(root, "loop_nest_main", "result"))
     }
-
     if (identical(root_family, "contraction")) {
-      left <- root@inputs[[1L]]
-      right <- root@inputs[[2L]]
-      left_shape <- left@type@shape
-      right_shape <- right@type@shape
-      result_rank <- result_value@type@shape@rank
-      map_names <- vapply(seq_len(result_rank), axis_name, character(1))
-      reduce_name <- axis_name(result_rank + 1L)
-      axes <- c(
-        lapply(seq_len(result_rank), function(position) {
-          tccq_loop_axis(
-            map_names[[position]],
-            result_value@type@shape@dims[[position]],
-            role = "map"
-          )
-        }),
-        list(tccq_loop_axis(reduce_name, left_shape@dims[[2L]], role = "reduce"))
-      )
-      domain <- tccq_domain(
-        "loop_nest_main.domain",
-        tccq_shape(c(result_value@type@shape@dims, list(left_shape@dims[[2L]]))),
-        axes = c(map_names, reduce_name)
-      )
-      left_axis_names <- c(map_names[[1L]], reduce_name)
-      right_axis_names <- if (right_shape@rank == 1L) {
-        reduce_name
-      } else {
-        c(reduce_name, map_names[[2L]])
-      }
-      contraction_spec <- root_operation@contraction
-      combine_call <- str2lang(sprintf("left %s right", contraction_spec@combine_op))
-      combine_resolution <- tccq_resolve_call(
-        program@attrs$registry %||% tccq_default_op_registry(),
-        tccq_call(contraction_spec@combine_op, expr = combine_call),
-        tccq_op_context()
-      )
-      if (!combine_resolution@success) {
-        tccq_abort_diagnostic(nest_diagnostic(
-          "loop_nest.unresolved_combine",
-          "The contraction combine operation has no lowerable implementation.",
-          data = list(op = contraction_spec@combine_op)
-        ))
-      }
-      body <- tccq_expression(
-        id = sprintf("%s_combine", program@result),
-        kind = "operation",
-        value_id = program@result,
-        op = contraction_spec@combine_op,
-        inputs = list(
-          annotate(left, left_axis_names, domain),
-          annotate(right, right_axis_names, domain)
-        ),
-        type = tccq_type(result_value@type@base),
-        resolved_op = combine_resolution@value
-      )
-      output <- tccq_access(
-        program@result,
-        domain,
-        kind = "identity",
-        index_map = lapply(map_names, function(name) tccq_index_expr(name, 0L))
-      )
-      return(tccq_loop_nest(
-        "loop_nest_main",
-        axes = axes,
-        body = body,
-        result_type = result_value@type,
-        output = output,
-        reducer = contraction_spec@reducer,
-        identity = root_operation@identity,
-        domain = domain,
-        attrs = list(result_value_id = program@result)
-      ))
+      return(contraction_nest(root, "loop_nest_main", "result"))
     }
 
     result_shape <- result_value@type@shape
@@ -796,7 +807,7 @@ tccq_program_loop_nests <- function(program) {
 
   nests <- tryCatch(
     c(
-      unname(Map(reduction_nest, intermediates, seq_along(intermediates))),
+      unname(Map(intermediate_nest, intermediates, seq_along(intermediates))),
       list(build())
     ),
     tccq_error = identity

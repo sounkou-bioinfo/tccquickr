@@ -1930,14 +1930,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
     }
 
+    register_intermediates <- function(emit_context, intermediate_nests) {
+      for (intermediate in intermediate_nests) {
+        id <- intermediate@attrs$result_value_id
+        emit_context$parameter_by_value_id[[id]] <-
+          intermediate@attrs$buffer_name %||% intermediate@attrs$scalar_name
+        emit_context$formal_type_by_id[[id]] <- intermediate@result_type
+      }
+      emit_context
+    }
+
+    buffer_size_text <- function(nest, emit_context) {
+      paste(
+        vapply(
+          nest@result_type@shape@dims,
+          extent_text,
+          character(1),
+          extent_by_symbol = emit_context$extent_by_symbol
+        ),
+        collapse = " * "
+      )
+    }
+
     emit_c_source <- function(interface, nests, result, formals) {
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "c")
-      for (intermediate in intermediate_nests) {
-        emit_context$parameter_by_value_id[[intermediate@attrs$result_value_id]] <-
-          intermediate@attrs$scalar_name
-      }
+      emit_context <- register_intermediates(emit_context, intermediate_nests)
       intermediate_plans <- lapply(
         intermediate_nests,
         loop_plan,
@@ -1996,7 +2015,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push("return NULL;", depth + 1L)
         push("}")
       }
-      for (intermediate_plan in intermediate_plans) {
+      allocated_buffers <- character()
+      for (position in seq_along(intermediate_plans)) {
+        intermediate_plan <- intermediate_plans[[position]]
+        intermediate <- intermediate_nests[[position]]
+        buffer_name <- intermediate@attrs$buffer_name
+        if (!is.null(buffer_name)) {
+          push(sprintf(
+            "double *%s = (double *)malloc(sizeof(double) * (size_t)(%s));",
+            buffer_name,
+            buffer_size_text(intermediate, emit_context)
+          ))
+          push(sprintf("if (%s == NULL) {", buffer_name))
+          for (prior_buffer in allocated_buffers) {
+            push(sprintf("free(%s);", prior_buffer), depth + 1L)
+          }
+          if (returns_buffer) {
+            push(sprintf("free(%s);", interface@result_name), depth + 1L)
+            push("return NULL;", depth + 1L)
+          } else {
+            push("return NAN;", depth + 1L)
+          }
+          push("}")
+          allocated_buffers <- c(allocated_buffers, buffer_name)
+        }
+        for (axis in intermediate_plan$map_axes) {
+          open_loop(axis)
+        }
         push(sprintf(
           "double %s = %s;",
           intermediate_plan$accumulator_name,
@@ -2011,6 +2056,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           intermediate_plan$combine_text
         ))
         for (axis in intermediate_plan$reduce_axes) {
+          close_loop(axis)
+        }
+        if (!is.null(buffer_name)) {
+          push(sprintf(
+            "%s[%s] = %s;",
+            buffer_name,
+            intermediate_plan$output_index,
+            intermediate_plan$accumulator_name
+          ))
+        }
+        for (axis in intermediate_plan$map_axes) {
           close_loop(axis)
         }
       }
@@ -2033,6 +2089,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       for (axis in plan$map_axes) {
         close_loop(axis)
       }
+      for (buffer_name in allocated_buffers) {
+        push(sprintf("free(%s);", buffer_name))
+      }
       if (returns_buffer) {
         push(sprintf("return %s;", interface@result_name))
       } else {
@@ -2045,10 +2104,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "fortran")
-      for (intermediate in intermediate_nests) {
-        emit_context$parameter_by_value_id[[intermediate@attrs$result_value_id]] <-
-          intermediate@attrs$scalar_name
-      }
+      emit_context <- register_intermediates(emit_context, intermediate_nests)
       intermediate_plans <- lapply(
         intermediate_nests,
         loop_plan,
@@ -2117,6 +2173,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         unlist(lapply(intermediate_plans, function(intermediate_plan) {
           sprintf("  real(c_double) :: %s", intermediate_plan$accumulator_name)
         })),
+        unlist(lapply(intermediate_nests, function(intermediate) {
+          buffer_name <- intermediate@attrs$buffer_name
+          if (is.null(buffer_name)) {
+            return(character())
+          }
+          sprintf(
+            "  real(c_double) :: %s(%s)",
+            buffer_name,
+            buffer_size_text(intermediate, emit_context)
+          )
+        })),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
         }
@@ -2134,7 +2201,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth - 1L
         push("end do")
       }
-      for (intermediate_plan in intermediate_plans) {
+      for (position in seq_along(intermediate_plans)) {
+        intermediate_plan <- intermediate_plans[[position]]
+        buffer_name <- intermediate_nests[[position]]@attrs$buffer_name
+        for (axis in intermediate_plan$map_axes) {
+          open_loop(axis)
+        }
         push(sprintf(
           "%s = %s",
           intermediate_plan$accumulator_name,
@@ -2149,6 +2221,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           intermediate_plan$combine_text
         ))
         for (axis in intermediate_plan$reduce_axes) {
+          close_loop(axis)
+        }
+        if (!is.null(buffer_name)) {
+          push(sprintf(
+            "%s(%s + 1) = %s",
+            buffer_name,
+            intermediate_plan$output_index,
+            intermediate_plan$accumulator_name
+          ))
+        }
+        for (axis in intermediate_plan$map_axes) {
           close_loop(axis)
         }
       }

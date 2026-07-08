@@ -715,37 +715,45 @@ tccq_lower_function <- function(
     )
     region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
 
-    # Every non-root scalar reduction is its own fused nest over its input
-    # domain; the remaining operations fuse into the main group over the
-    # result domain. This value-level partition is the typed record of the
-    # multi-nest composition decision the loop-nest planner realizes.
-    intermediate_reductions <- Filter(function(value) {
-      value_is_reduction(value) &&
-        value@type@shape@rank == 0L &&
+    # Every non-root reduction or contraction is its own fused nest — a named
+    # scalar for rank-0 results, a materialized buffer otherwise — and the
+    # remaining operations fuse into the main group over the result domain.
+    # This value-level partition is the typed record of the multi-nest
+    # composition decision the loop-nest planner realizes.
+    intermediate_operations <- Filter(function(value) {
+      (value_is_reduction(value) || value_is_contraction(value)) &&
         !identical(value@id, result_id)
     }, operation_values)
-    intermediate_ids <- vapply(intermediate_reductions, function(value) value@id, character(1))
+    intermediate_ids <- vapply(intermediate_operations, function(value) value@id, character(1))
     intermediate_groups <- unname(Map(function(value, group_index) {
-      input_shape <- values[[value@inputs[[1L]]]]@type@shape
-      group_domain <- tccq_domain(sprintf("domain_%04d", group_index), input_shape)
       operation <- lowered_operation(value)
+      if (value_is_contraction(value)) {
+        contracted_dim <- values[[value@inputs[[1L]]]]@type@shape@dims[[2L]]
+        group_shape <- tccq_shape(c(value@type@shape@dims, list(contracted_dim)))
+        group_kind <- "contract"
+      } else {
+        group_shape <- values[[value@inputs[[1L]]]]@type@shape
+        group_kind <- if (value_is_axis_reduction(value)) "axis_reduce" else "map_reduce"
+      }
+      group_domain <- tccq_domain(sprintf("domain_%04d", group_index), group_shape)
+      access_kind <- if (value@type@shape@rank == 0L) "scalar" else "identity"
       tccq_fusion_group(
         sprintf("fusion_%04d", group_index),
-        "map_reduce",
+        group_kind,
         domain = group_domain,
         values = list(value),
         outputs = value@id,
-        accesses = list(tccq_access(value@id, group_domain, kind = "scalar")),
+        accesses = list(tccq_access(value@id, group_domain, kind = access_kind)),
         region_kind = region_kind,
         target = region_target,
         effect = value@effect,
         contract = tccq_fusion_contract(
-          "map_reduce",
+          group_kind,
           operations = stats::setNames(list(operation), value@id),
           result_operation = operation
         )
       )
-    }, intermediate_reductions, seq_along(intermediate_reductions)))
+    }, intermediate_operations, seq_along(intermediate_operations)))
 
     main_values <- Filter(
       function(value) !value@id %in% intermediate_ids,
@@ -835,7 +843,10 @@ tccq_lower_function <- function(
     lifetimes <- storage_lifetimes(lowered_values, result_id)
     slots <- Map(function(value, slot_index) {
       role <- storage_role(value, result_id)
-      materialized <- role %in% c("input", "output")
+      buffer_intermediate <- identical(role, "temporary") &&
+        value@type@shape@rank > 0L &&
+        (value_is_reduction(value) || value_is_contraction(value))
+      materialized <- role %in% c("input", "output") || buffer_intermediate
       reusable <- identical(role, "temporary") && !isTRUE(materialized)
       lifetime <- lifetimes[[value@id]]
       tccq_storage_slot(
@@ -1047,34 +1058,6 @@ tccq_lower_function <- function(
         attrs = list(local_bindings = state$local_bindings)
       ))
     }
-  }
-
-  unsupported_compositions <- Filter(function(value) {
-    operation <- lowered_operation(value)
-    if (is.null(operation) || identical(value@id, result$value_id)) {
-      return(FALSE)
-    }
-    if (identical(operation@family, "contraction")) {
-      return(TRUE)
-    }
-    identical(operation@family, "reduction") && value@type@shape@rank > 0L
-  }, unname(state$values))
-  if (length(unsupported_compositions) > 0L) {
-    return(new_plan(
-      values = state$values,
-      diagnostics = list(tccq_diagnostic(
-        "lowering.unsupported_composition",
-        "Non-root contractions and axis reductions need materialized array intermediates; only scalar reductions may feed later loop nests.",
-        phase = "lowering",
-        path = "expression",
-        data = list(value_ids = vapply(
-          unsupported_compositions,
-          function(value) value@id,
-          character(1)
-        ))
-      )),
-      attrs = list(local_bindings = state$local_bindings)
-    ))
   }
 
   storage_plan <- plan_storage(state$values, result$value_id)

@@ -1221,27 +1221,119 @@ if (rtinycc_jit_available) {
   )
 }
 
-# Array-valued intermediates still stop at a structured diagnostic.
+# Array-valued intermediates materialize as buffers: an axis reduction or
+# contraction feeding later work becomes its own nest writing a temporary.
 axis_reduction_feed <- function(x) {
   declare(type(x = double(n, p)))
   colSums(x) + 1
 }
 axis_reduction_feed_program <- tccq_analyze(axis_reduction_feed)
-expect_false(axis_reduction_feed_program@success)
-expect_true(any(vapply(
-  axis_reduction_feed_program@diagnostics,
-  function(x) identical(x@code, "lowering.unsupported_composition"),
-  logical(1)
-)))
+expect_true(axis_reduction_feed_program@success)
+axis_feed_nests <- tccq_program_loop_nests(axis_reduction_feed_program@value)
+expect_true(axis_feed_nests@success)
+expect_equal(length(axis_feed_nests@value), 2L)
+expect_true(nzchar(axis_feed_nests@value[[1L]]@attrs$buffer_name))
+expect_true(S7::S7_inherits(axis_feed_nests@value[[1L]]@output, TccqAccess))
 
-contraction_feed <- function(x, w) {
-  declare(type(x = double(n, p), w = double(p)))
-  (x %*% w) + 1
+axis_feed_groups <- axis_reduction_feed_program@value@regions[[1L]]@fusion_groups
+expect_equal(
+  vapply(axis_feed_groups, function(group) group@kind, character(1)),
+  c("axis_reduce", "map")
+)
+
+axis_feed_slots <- axis_reduction_feed_program@value@storage_plan@slots
+axis_feed_buffer_slot <- Filter(
+  function(slot) identical(slot@value_id, axis_feed_nests@value[[1L]]@attrs$result_value_id),
+  axis_feed_slots
+)[[1L]]
+expect_true(axis_feed_buffer_slot@materialized)
+expect_false(axis_feed_buffer_slot@reusable)
+
+contraction_feed <- function(x, w, y) {
+  declare(type(x = double(n, p), w = double(p), y = double(n)))
+  (x %*% w) + y
 }
 contraction_feed_program <- tccq_analyze(contraction_feed)
-expect_false(contraction_feed_program@success)
-expect_true(any(vapply(
-  contraction_feed_program@diagnostics,
-  function(x) identical(x@code, "lowering.unsupported_composition"),
-  logical(1)
-)))
+expect_true(contraction_feed_program@success)
+contraction_feed_nests <- tccq_program_loop_nests(contraction_feed_program@value)
+expect_true(contraction_feed_nests@success)
+expect_equal(length(contraction_feed_nests@value), 2L)
+expect_true(nzchar(contraction_feed_nests@value[[1L]]@attrs$buffer_name))
+
+# A value consumed twice materializes once: cs feeds both the scalar
+# reduction and the final map, so the program plans three nests, not four.
+col_normalize <- function(x) {
+  declare(type(x = double(n, p)))
+  cs <- colSums(x)
+  cs / sum(cs)
+}
+col_normalize_program <- tccq_analyze(col_normalize)
+expect_true(col_normalize_program@success)
+col_normalize_nests <- tccq_program_loop_nests(col_normalize_program@value)
+expect_true(col_normalize_nests@success)
+expect_equal(length(col_normalize_nests@value), 3L)
+
+if (rtinycc_jit_available) {
+  axis_feed_jit <- tccq_plan_backend(
+    axis_reduction_feed_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(axis_feed_jit@success)
+  axis_feed_x <- matrix(c(1, 2, 3, 4, 5, 6), nrow = 2)
+  expect_equal(
+    backend_callable(axis_feed_jit)(axis_feed_x),
+    colSums(axis_feed_x) + 1
+  )
+
+  contraction_feed_jit <- tccq_plan_backend(
+    contraction_feed_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(contraction_feed_jit@success)
+  contraction_feed_x <- matrix(c(1, 2, 3, 4, 5, 6), nrow = 2)
+  contraction_feed_w <- c(0.5, -1, 2)
+  contraction_feed_y <- c(10, 20)
+  expect_equal(
+    backend_callable(contraction_feed_jit)(
+      contraction_feed_x,
+      contraction_feed_w,
+      contraction_feed_y
+    ),
+    drop(contraction_feed_x %*% contraction_feed_w) + contraction_feed_y
+  )
+
+  col_normalize_jit <- tccq_plan_backend(
+    col_normalize_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(col_normalize_jit@success)
+  expect_equal(
+    backend_callable(col_normalize_jit)(axis_feed_x),
+    colSums(axis_feed_x) / sum(colSums(axis_feed_x))
+  )
+
+  sum_matvec <- function(x, w) {
+    declare(type(x = double(n, p), w = double(p)))
+    sum(x %*% w)
+  }
+  sum_matvec_jit <- tccq_plan_backend(
+    tccq_analyze(sum_matvec, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(sum_matvec_jit@success)
+  expect_equal(
+    backend_callable(sum_matvec_jit)(contraction_feed_x, contraction_feed_w),
+    sum(contraction_feed_x %*% contraction_feed_w)
+  )
+}
+
+axis_feed_fortran <- tccq_plan_backend(
+  axis_reduction_feed_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(axis_feed_fortran@success)

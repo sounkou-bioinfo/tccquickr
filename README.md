@@ -181,16 +181,15 @@ all.equal(normalize_kernel(v), v / sum(v))
 - **Slices**: rank-1 `x[a:b]` with bounds affine in declared dimension
   symbols.
 - **Bindings**: single-assignment locals.
-- **Composition**: non-root scalar reductions become intermediate
-  all-reduce nests feeding the final nest through named scalars, so
-  `x / sum(x)` and `sum(x) + sum(y)` compile as ordered nest sequences.
+- **Composition**: non-root reductions and contractions become
+  intermediate nests — named scalars for rank-0 results, materialized
+  temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
+  `(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` all compile as
+  ordered nest sequences, and a value consumed twice materializes once.
 
-Array-valued intermediates (an axis reduction or contraction feeding
-later work) still need materialized buffers, so they remain a structured
-`lowering.unsupported_composition` diagnostic. Compilation succeeds when
-at least one backend produces a working plan; a backend that cannot
-lower a program reports typed feasibility diagnostics without vetoing
-the suite.
+Compilation succeeds when at least one backend produces a working plan;
+a backend that cannot lower a program reports typed feasibility
+diagnostics without vetoing the suite.
 
 ## Apotheosis suite
 
@@ -237,6 +236,11 @@ probes <- list(
   scalar_composition = function(x, y) {
     declare(type(x = double(n), y = double(n)))
     (x - sum(x)) / sum(y * y)
+  },
+  array_composition = function(x, w) {
+    declare(type(x = double(n, p), w = double(p)))
+    cs <- colSums(x) * w
+    cs / sum(cs)
   },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
@@ -324,6 +328,7 @@ knitr::kable(data.frame(
 | matrix_multiply      | compiles through C, Fortran, and TinyCC JIT |
 | tiled_stencil_1d     | compiles through C, Fortran, and TinyCC JIT |
 | scalar_composition   | compiles through C, Fortran, and TinyCC JIT |
+| array_composition    | compiles through C, Fortran, and TinyCC JIT |
 | raw_buffer_roundtrip | `backend.unsupported_type`                  |
 | control_flow_probe   | `frontend.unimplemented_call`               |
 | apply_reduce_probe   | `frontend.unimplemented_call`               |
@@ -331,11 +336,12 @@ knitr::kable(data.frame(
 | viterbi_decode       | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
-same typed IR — general indexing and access regions, structured control
-flow, `raw`/`buffer` bridges, apply-family folds, and materialized array
-intermediates so axis reductions and contractions can feed later nests
-the way scalar reductions already do. Failures must stay specific enough
-that the next typed concept to add is obvious.
+same typed IR — dimension symbols as scalar values (`n` in
+`colSums(x) / n` is a `lowering.unbound_symbol` today even though
+`extent_n` already exists in the generated ABI), rank-mixed broadcasting
+as typed accesses, general indexing and access regions, structured
+control flow, `raw`/`buffer` bridges, and apply-family folds. Failures
+must stay specific enough that the next typed concept to add is obvious.
 
 ## Design
 

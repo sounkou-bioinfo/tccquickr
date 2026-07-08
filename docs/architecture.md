@@ -148,13 +148,13 @@ slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
 symbols. Slice extents are typed affine dimensions (`n - 2` is a `TccqDim`
 fact, not a printed string), and slices themselves disappear into typed affine
 accesses rather than materializing values. Programs compose across loop
-nests when the intermediate is a scalar: every non-root scalar reduction
-becomes its own fusion group and all-reduce nest whose result is a named
-scalar consumed by later nests, so `x / sum(x)` and `sum(x) + sum(y)` lower
-to ordered nest sequences. Array-valued intermediates — a non-root
-contraction or axis reduction — need materialized buffers and return a
-`lowering.unsupported_composition` diagnostic until buffer intermediates are
-modeled. Lowering returns a `TccqLoweringPlan`, then embeds the plan into
+nests: every non-root reduction or contraction becomes its own fusion group
+and nest, materializing a named scalar for rank-0 results and a temporary
+buffer otherwise, consumed by later nests through ordinary typed accesses —
+so `x / sum(x)`, `colSums(x) + 1`, `(x %*% w) + y`, and
+`cs <- colSums(x); cs / sum(cs)` all lower to ordered nest sequences.
+Extraction is keyed by value id, so a value consumed twice materializes once.
+Lowering returns a `TccqLoweringPlan`, then embeds the plan into
 `TccqProgram` as values, regions, fusion groups, and storage facts. Each
 operation value carries one `TccqLoweredOperation` payload that owns the shared
 `TccqOpSignature`, result-domain policy, selected implementation, and optional
@@ -197,10 +197,12 @@ intermediates first, the result nest last. Each nest carries ordered
 into an accumulator), a `TccqExpression` body whose references carry typed
 `TccqAccess` maps of affine `TccqIndexExpr` values, an optional reducer with
 its identity, and an output access; intermediate nests additionally name the
-scalar their accumulator materializes. Scalar programs, elementwise maps, full
-and per-axis reductions, contractions, stencils, and scalar-intermediate
-compositions are all sequences of this one value, so C, Fortran, and Rtinycc
-share a single generic per-nest emitter instead of per-family printer cases.
+scalar or temporary buffer their result materializes. Scalar programs,
+elementwise maps, full and per-axis reductions, contractions, stencils, and
+scalar- or buffer-intermediate compositions are all sequences of this one
+value, so C, Fortran, and Rtinycc share a single generic per-nest emitter
+instead of per-family printer cases; the C emitter owns buffer allocation and
+free discipline, and Fortran declares automatic arrays.
 When a printer reaches an operation node, it asks the resolved implementation
 to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
