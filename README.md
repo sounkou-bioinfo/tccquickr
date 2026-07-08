@@ -186,6 +186,10 @@ all.equal(normalize_kernel(v), v / sum(v))
   temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
   `(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` all compile as
   ordered nest sequences, and a value consumed twice materializes once.
+- **Dimensions as values**: a declared dimension symbol is a scalar in
+  the body — `colSums(x) / n` is `colMeans`, `sum(x * x) / (n - 1)` is a
+  variance-style estimator — reading the extent parameter the generated
+  ABI already passes.
 
 Compilation succeeds when at least one backend produces a working plan;
 a backend that cannot lower a program reports typed feasibility
@@ -241,6 +245,11 @@ probes <- list(
     declare(type(x = double(n, p), w = double(p)))
     cs <- colSums(x) * w
     cs / sum(cs)
+  },
+  column_means_chain = function(x, y) {
+    declare(type(x = double(n, p), y = double(p, q)))
+    m <- x %*% y
+    sqrt(exp(colSums(m) / n))
   },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
@@ -329,6 +338,7 @@ knitr::kable(data.frame(
 | tiled_stencil_1d     | compiles through C, Fortran, and TinyCC JIT |
 | scalar_composition   | compiles through C, Fortran, and TinyCC JIT |
 | array_composition    | compiles through C, Fortran, and TinyCC JIT |
+| column_means_chain   | compiles through C, Fortran, and TinyCC JIT |
 | raw_buffer_roundtrip | `backend.unsupported_type`                  |
 | control_flow_probe   | `frontend.unimplemented_call`               |
 | apply_reduce_probe   | `frontend.unimplemented_call`               |
@@ -336,12 +346,11 @@ knitr::kable(data.frame(
 | viterbi_decode       | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
-same typed IR — dimension symbols as scalar values (`n` in
-`colSums(x) / n` is a `lowering.unbound_symbol` today even though
-`extent_n` already exists in the generated ABI), rank-mixed broadcasting
-as typed accesses, general indexing and access regions, structured
-control flow, `raw`/`buffer` bridges, and apply-family folds. Failures
-must stay specific enough that the next typed concept to add is obvious.
+same typed IR — rank-mixed broadcasting as typed accesses (`x - mu` with
+`mu` over one axis of a matrix domain), general indexing and access
+regions, structured control flow, `raw`/`buffer` bridges, and
+apply-family folds. Failures must stay specific enough that the next
+typed concept to add is obvious.
 
 ## Design
 

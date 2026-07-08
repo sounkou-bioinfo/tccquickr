@@ -1940,6 +1940,32 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       emit_context
     }
 
+    register_dim_symbols <- function(emit_context) {
+      for (value in program@values) {
+        if (!identical(value@op, "dim_symbol")) {
+          next
+        }
+        extent_name <- emit_context$extent_by_symbol[[value@attrs$symbol]]
+        if (is.null(extent_name)) {
+          tccq_abort(
+            "backend.unbound_extent_symbol",
+            "A dimension symbol used as a value is not bound to an extent parameter.",
+            phase = "backend",
+            path = sprintf("backend.%s.extents", backend@id),
+            data = list(backend = backend@id, symbol = value@attrs$symbol)
+          )
+        }
+        emit_context$parameter_by_value_id[[value@id]] <- if (
+          identical(emit_context$language, "fortran")
+        ) {
+          sprintf("real(%s, c_double)", extent_name)
+        } else {
+          sprintf("(double)%s", extent_name)
+        }
+      }
+      emit_context
+    }
+
     buffer_size_text <- function(nest, emit_context) {
       paste(
         vapply(
@@ -1957,6 +1983,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "c")
       emit_context <- register_intermediates(emit_context, intermediate_nests)
+      emit_context <- register_dim_symbols(emit_context)
       intermediate_plans <- lapply(
         intermediate_nests,
         loop_plan,
@@ -2105,6 +2132,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "fortran")
       emit_context <- register_intermediates(emit_context, intermediate_nests)
+      emit_context <- register_dim_symbols(emit_context)
       intermediate_plans <- lapply(
         intermediate_nests,
         loop_plan,

@@ -154,6 +154,9 @@ buffer otherwise, consumed by later nests through ordinary typed accesses —
 so `x / sum(x)`, `colSums(x) + 1`, `(x %*% w) + y`, and
 `cs <- colSums(x); cs / sum(cs)` all lower to ordered nest sequences.
 Extraction is keyed by value id, so a value consumed twice materializes once.
+Declared dimension symbols are scalar values in the body: `n` in
+`colSums(x) / n` lowers to a `dim_symbol` value that the emitters render from
+the extent parameter the ABI already passes, widened to double.
 Lowering returns a `TccqLoweringPlan`, then embeds the plan into
 `TccqProgram` as values, regions, fusion groups, and storage facts. Each
 operation value carries one `TccqLoweredOperation` payload that owns the shared

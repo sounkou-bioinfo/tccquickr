@@ -247,6 +247,26 @@ tccq_lower_function <- function(
       value <- state$values[[value_id]]
       return(list(value_id = value_id, type = value@type, diagnostics = list()))
     }
+    # A declared dimension symbol is a scalar value in the declared subset:
+    # the generated ABI already passes one int extent per symbol, so `n` in
+    # `colSums(x) / n` reads that extent, widened to double for element math.
+    if (symbol_name %in% state$dim_symbols) {
+      dim_value_id <- next_value_id(state)
+      dim_type <- tccq_type("double")
+      add_value(
+        state,
+        tccq_value(
+          id = dim_value_id,
+          op = "dim_symbol",
+          inputs = list(),
+          type = dim_type,
+          effect = tccq_effect(reads = TRUE),
+          attrs = list(symbol = symbol_name)
+        )
+      )
+      state$symbol_value_ids[[symbol_name]] <- dim_value_id
+      return(list(value_id = dim_value_id, type = dim_type, diagnostics = list()))
+    }
     diagnostic_value(
       "lowering.unbound_symbol",
       sprintf("Symbol `%s` is not a declared binding.", symbol_name),
@@ -668,7 +688,7 @@ tccq_lower_function <- function(
     domain <- tccq_domain("domain_main", domain_shape)
     lowered_values <- unname(values)
     operation_values <- Filter(
-      function(value) !value@op %in% c("formal", "literal"),
+      function(value) !value@op %in% c("formal", "literal", "dim_symbol"),
       lowered_values
     )
     operation_value_ids <- vapply(operation_values, function(value) value@id, character(1))
@@ -953,7 +973,7 @@ tccq_lower_function <- function(
     if (identical(value@id, result_id)) {
       return("output")
     }
-    if (identical(value@op, "formal")) {
+    if (value@op %in% c("formal", "dim_symbol")) {
       return("input")
     }
     if (identical(value@op, "literal")) {

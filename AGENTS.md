@@ -271,7 +271,10 @@ For the reset core, keep these rules explicit:
   wrappers and JIT callables bind each extent symbol from the first argument
   shape declaring it and check every other occurrence; they must not assume
   arguments share one shape. Affine dimensions (`n - 2`) are `TccqDim` facts
-  rendered by the emitters, never precomputed strings.
+  rendered by the emitters, never precomputed strings. A declared dimension
+  symbol used in the body (`colSums(x) / n`) lowers to a `dim_symbol` value
+  that reads the extent parameter widened to double; it is not a new ABI
+  surface.
 - Operation families are elementwise (`TccqElementwiseSpec`), reduction
   (`TccqReductionSpec`), and contraction (`TccqContractionSpec`, which owns a
   signature, a reducer, and a combine operation). Programs plan to an ordered

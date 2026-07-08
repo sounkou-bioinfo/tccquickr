@@ -189,7 +189,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       return(NULL)
     }
 
-    if (identical(value@op, "formal")) {
+    if (value@op %in% c("formal", "dim_symbol")) {
       return(tccq_expression(
         id = current_value_id,
         kind = "reference",

@@ -1337,3 +1337,78 @@ axis_feed_fortran <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "fortran")
 )
 expect_true(axis_feed_fortran@success)
+
+# Declared dimension symbols are scalar values in the body: `n` reads the
+# extent parameter the generated ABI already passes, widened to double.
+col_means <- function(x) {
+  declare(type(x = double(n, p)))
+  colSums(x) / n
+}
+col_means_program <- tccq_analyze(col_means)
+expect_true(col_means_program@success)
+col_means_dim_values <- Filter(
+  function(value) identical(value@op, "dim_symbol"),
+  col_means_program@value@values
+)
+expect_equal(length(col_means_dim_values), 1L)
+expect_equal(col_means_dim_values[[1L]]@attrs$symbol, "n")
+
+col_means_c <- tccq_plan_backend(
+  col_means_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_true(col_means_c@success)
+col_means_fortran <- tccq_plan_backend(
+  col_means_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(col_means_fortran@success)
+
+if (rtinycc_jit_available) {
+  col_means_jit <- tccq_plan_backend(
+    col_means_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(col_means_jit@success)
+  col_means_x <- matrix(c(1, 2, 3, 4, 5, 6), nrow = 2)
+  expect_equal(backend_callable(col_means_jit)(col_means_x), colMeans(col_means_x))
+
+  variance_like <- function(x) {
+    declare(type(x = double(n)))
+    sum(x * x) / (n - 1)
+  }
+  variance_like_jit <- tccq_plan_backend(
+    tccq_analyze(variance_like, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(variance_like_jit@success)
+  variance_like_x <- c(1, 2, 3, 4)
+  expect_equal(
+    backend_callable(variance_like_jit)(variance_like_x),
+    sum(variance_like_x * variance_like_x) / (length(variance_like_x) - 1)
+  )
+
+  # Contraction buffer, axis-reduction buffer, dimension value, and an
+  # elementwise chain composed in one program.
+  composed_chain <- function(x, y) {
+    declare(type(x = double(n, p), y = double(p, q)))
+    m <- x %*% y
+    sqrt(exp(colSums(m) / n))
+  }
+  composed_chain_jit <- tccq_plan_backend(
+    tccq_analyze(composed_chain, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(composed_chain_jit@success)
+  composed_chain_x <- matrix(c(1, 2, 3, 4, 5, 6), nrow = 2)
+  composed_chain_y <- matrix(c(0.5, -1, 2, 1, 0, 1), nrow = 3)
+  expect_equal(
+    backend_callable(composed_chain_jit)(composed_chain_x, composed_chain_y),
+    sqrt(exp(colSums(composed_chain_x %*% composed_chain_y) / nrow(composed_chain_x)))
+  )
+}
