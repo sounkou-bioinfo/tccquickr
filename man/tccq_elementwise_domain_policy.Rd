@@ -7,7 +7,11 @@
 tccq_elementwise_domain_policy()
 }
 \description{
-The standard elementwise policy returns the shared non-scalar input shape,
-accepts scalar broadcasting, and rejects incompatible non-scalar shapes. It
-is the default for \code{tccq_elementwise_spec()}.
+The standard elementwise policy returns the shared non-scalar input shape
+and accepts scalar broadcasting. Following R's recycling rule, a shorter
+non-scalar operand is also accepted when its dimension multiset divides the
+longest operand's dimension multiset (so its total length provably divides
+the iteration size); the result takes the longest shape, and accesses to
+the shorter operand recycle over the iteration order. Shapes whose
+divisibility cannot be proven from declared dimensions are rejected.
 }

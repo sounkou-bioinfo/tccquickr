@@ -1917,22 +1917,40 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       identity_text <- ""
       combine_text <- ""
       if (!is.null(nest@reducer)) {
+        render_context <- tccq_op_render_context(
+          language = emit_context$language,
+          backend_id = backend@id,
+          attrs = list(reducer = nest@reducer@name)
+        )
         identity_text <- literal_text(nest@identity, emit_context$language)
         combine_result <- tccq_reduction_combine(
           nest@reducer,
           accumulator_name,
           body_text,
-          tccq_op_render_context(
-            language = emit_context$language,
-            backend_id = backend@id,
-            attrs = list(reducer = nest@reducer@name)
-          )
+          render_context
         )
         if (!combine_result@success) {
           tccq_abort_diagnostic(combine_result@diagnostics[[1L]])
         }
         combine_text <- combine_result@value
-        value_text <- accumulator_name
+        count_text <- paste(
+          vapply(
+            reduce_axes,
+            function(axis) extent_text(axis@extent, emit_context$extent_by_symbol),
+            character(1)
+          ),
+          collapse = " * "
+        )
+        finalize_result <- tccq_reduction_finalize(
+          nest@reducer,
+          accumulator_name,
+          count_text,
+          render_context
+        )
+        if (!finalize_result@success) {
+          tccq_abort_diagnostic(finalize_result@diagnostics[[1L]])
+        }
+        value_text <- finalize_result@value
       }
       output_index <- if (!is.null(nest@output)) {
         linear_index_text(
@@ -2115,7 +2133,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             "%s[%s] = %s;",
             buffer_name,
             intermediate_plan$output_index,
-            intermediate_plan$accumulator_name
+            intermediate_plan$value_text
+          ))
+        } else if (!identical(intermediate_plan$value_text, intermediate_plan$accumulator_name)) {
+          push(sprintf(
+            "%s = %s;",
+            intermediate_plan$accumulator_name,
+            intermediate_plan$value_text
           ))
         }
         for (axis in intermediate_plan$map_axes) {
@@ -2281,7 +2305,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             "%s(%s + 1) = %s",
             buffer_name,
             intermediate_plan$output_index,
-            intermediate_plan$accumulator_name
+            intermediate_plan$value_text
+          ))
+        } else if (!identical(intermediate_plan$value_text, intermediate_plan$accumulator_name)) {
+          push(sprintf(
+            "%s = %s",
+            intermediate_plan$accumulator_name,
+            intermediate_plan$value_text
           ))
         }
         for (axis in intermediate_plan$map_axes) {

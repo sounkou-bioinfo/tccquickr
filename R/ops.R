@@ -217,6 +217,9 @@ TccqElementwiseSpec <- S7::new_class(
 #' @param name Human-readable reduction name.
 #' @param signature Shared operation signature.
 #' @param identity Function from result `TccqType` to identity `TccqLiteral`.
+#' @param finalize Optional function from accumulator/count source strings and
+#'   render context to the stored-value source string (e.g. `mean` divides the
+#'   folded accumulator by the reduced element count).
 #' @param combine Function from accumulator/source strings and render context
 #'   to a target-source combine expression.
 #' @param associative Whether the reducer is associative under its declared
@@ -233,6 +236,7 @@ TccqReductionSpec <- S7::new_class(
     signature = TccqOpSignature,
     identity = S7::class_function,
     combine = S7::class_function,
+    finalize = S7::new_union(NULL, S7::class_function),
     associative = S7::class_logical,
     commutative = S7::class_logical,
     attrs = S7::class_list
@@ -1117,6 +1121,9 @@ S7::method(tccq_elementwise_result_type, TccqElementwiseSpec) <- function(spec, 
 #'
 #' @param name Human-readable reduction name.
 #' @param identity Function from result `TccqType` to identity `TccqLiteral`.
+#' @param finalize Optional function from accumulator/count source strings and
+#'   render context to the stored-value source string (e.g. `mean` divides the
+#'   folded accumulator by the reduced element count).
 #' @param combine Function from accumulator/source strings and render context
 #'   to a target-source combine expression.
 #' @param associative Whether the reducer is associative.
@@ -1129,6 +1136,7 @@ tccq_reduction_spec <- function(
   name,
   identity,
   combine,
+  finalize = NULL,
   associative = TRUE,
   commutative = TRUE,
   attrs = list(),
@@ -1149,6 +1157,14 @@ tccq_reduction_spec <- function(
       "`combine` must be a function.",
       phase = "schema",
       path = "reduction.combine"
+    )
+  }
+  if (!is.null(finalize) && !is.function(finalize)) {
+    tccq_abort(
+      "schema.invalid_reduction_finalize",
+      "`finalize` must be NULL or a function.",
+      phase = "schema",
+      path = "reduction.finalize"
     )
   }
   .tccq_check_logical_scalar(associative, "associative")
@@ -1177,6 +1193,7 @@ tccq_reduction_spec <- function(
     signature = signature,
     identity = identity,
     combine = combine,
+    finalize = finalize,
     associative = associative,
     commutative = commutative,
     attrs = attrs
@@ -1317,6 +1334,57 @@ S7::method(tccq_reduction_combine, TccqReductionSpec) <- function(spec, accumula
     return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
   }
   tccq_result(success = TRUE, value = combined)
+}
+
+#' Render a reducer's finalization expression
+#'
+#' Some reducers transform the folded accumulator once after the reduce loops
+#' close — `mean` and `colMeans` divide by the reduced element count. The
+#' finalizer receives the accumulator source string, the reduced-count source
+#' string, and the render context, and returns the stored-value source string.
+#' Reducers without a finalizer return the accumulator unchanged.
+#'
+#' @param spec Reduction metadata.
+#' @param accumulator Accumulator source string.
+#' @param count Reduced element-count source string.
+#' @param context Render context.
+#' @export
+tccq_reduction_finalize <- S7::new_generic(
+  "tccq_reduction_finalize",
+  dispatch_args = "spec",
+  function(spec, accumulator, count, context) S7::S7_dispatch()
+)
+
+S7::method(tccq_reduction_finalize, TccqReductionSpec) <- function(spec, accumulator, count, context) {
+  if (is.null(spec@finalize)) {
+    return(tccq_result(success = TRUE, value = accumulator))
+  }
+  .tccq_check_s7(context, TccqOpRenderContext, "TccqOpRenderContext", "context")
+  finalized <- tryCatch(
+    spec@finalize(accumulator, count, context),
+    error = identity
+  )
+  if (inherits(finalized, "error")) {
+    diagnostic <- tccq_diagnostic(
+      "ops.reduction_finalize_failed",
+      conditionMessage(finalized),
+      phase = "ops",
+      path = "reduction.finalize",
+      data = list(reducer = spec@name, language = context@language)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  if (!is.character(finalized) || length(finalized) != 1L || is.na(finalized) || !nzchar(finalized)) {
+    diagnostic <- tccq_diagnostic(
+      "ops.invalid_reduction_finalize",
+      "Reduction finalize functions must return one non-empty source string.",
+      phase = "ops",
+      path = "reduction.finalize",
+      data = list(reducer = spec@name, language = context@language)
+    )
+    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
+  }
+  tccq_result(success = TRUE, value = finalized)
 }
 
 #' Operation implementation trait
@@ -1630,17 +1698,24 @@ tccq_call_semantics <- function(
 
   function_object <- function_from_env(call@name)
   inferred_evaluator_kind <- evaluator_kind_from_function(function_object)
+  inferred_dispatch_kind <- dispatch_kind_from_function(function_object, inferred_evaluator_kind)
+  s3_default_exists <- identical(inferred_dispatch_kind, "s3") &&
+    !is.null(tryCatch(
+      utils::getS3method(call@name, "default", optional = TRUE, envir = env),
+      error = function(err) NULL
+    ))
   facts <- list(
     evaluator_kind = inferred_evaluator_kind,
     forcing_policy = forcing_policy_from_evaluator(inferred_evaluator_kind),
-    dispatch_kind = dispatch_kind_from_function(function_object, inferred_evaluator_kind),
+    dispatch_kind = inferred_dispatch_kind,
     lexical_scope = identical(inferred_evaluator_kind, "closure") ||
       identical(call@kind, "function_definition"),
     replacement = identical(call@kind, "replacement"),
     control = identical(call@kind, "control"),
     attrs = list(
       resolved = !is.null(function_object),
-      primitive = is.function(function_object) && is.primitive(function_object)
+      primitive = is.function(function_object) && is.primitive(function_object),
+      s3_default_exists = s3_default_exists
     )
   )
   evaluator_kind <- evaluator_kind %||% facts$evaluator_kind
@@ -2359,38 +2434,85 @@ tccq_default_op_registry <- function() {
     identity = sum_identity,
     combine = sum_combine
   )
-  contraction_domain_policy <- tccq_domain_policy(
-    "contract_inner_dim",
-    result_shape = function(input_types) {
-      left_shape <- input_types[[1L]]@shape
-      right_shape <- input_types[[2L]]@shape
-      if (left_shape@rank != 2L || !right_shape@rank %in% c(1L, 2L)) {
-        tccq_abort(
-          "ops.unsupported_contraction_rank",
-          "`%*%` currently contracts a rank-2 input with a rank-1 or rank-2 input.",
-          phase = "ops",
-          path = "domain_policy.result_shape",
-          data = list(left_rank = left_shape@rank, right_rank = right_shape@rank)
-        )
-      }
-      if (!tccq_dim_equal(left_shape@dims[[2L]], right_shape@dims[[1L]])) {
-        tccq_abort(
-          "ops.incompatible_contraction_dims",
-          "`%*%` inputs must agree on the contracted dimension.",
-          phase = "ops",
-          path = "domain_policy.result_shape",
-          data = list(
-            left = left_shape@dims[[2L]]@label,
-            right = right_shape@dims[[1L]]@label
-          )
-        )
-      }
-      if (right_shape@rank == 1L) {
-        return(tccq_shape(list(left_shape@dims[[1L]])))
-      }
-      tccq_shape(list(left_shape@dims[[1L]], right_shape@dims[[2L]]))
-    }
+  mean_finalize <- function(accumulator, count, context) {
+    sprintf("(%s / %s)", accumulator, count)
+  }
+  base_mean_reduction <- tccq_reduction_spec(
+    "mean",
+    identity = sum_identity,
+    combine = sum_combine,
+    finalize = mean_finalize
   )
+  column_mean_reduction <- tccq_reduction_spec(
+    "mean",
+    identity = sum_identity,
+    combine = sum_combine,
+    finalize = mean_finalize,
+    signature = tccq_op_signature(
+      "colMeans",
+      1L,
+      result_type = numeric_axis_reduction_type,
+      domain_policy = axis_reduction_domain_policy("axis_reduce_columns_mean", kept_axis = 2L)
+    ),
+    attrs = list(reduction_axes = 1L, kept_axes = 2L, axis_kind = "columns")
+  )
+  row_mean_reduction <- tccq_reduction_spec(
+    "mean",
+    identity = sum_identity,
+    combine = sum_combine,
+    finalize = mean_finalize,
+    signature = tccq_op_signature(
+      "rowMeans",
+      1L,
+      result_type = numeric_axis_reduction_type,
+      domain_policy = axis_reduction_domain_policy("axis_reduce_rows_mean", kept_axis = 1L)
+    ),
+    attrs = list(reduction_axes = 2L, kept_axes = 1L, axis_kind = "rows")
+  )
+  contraction_domain_policy <- function(name, op_name, contract_dims) {
+    left_contract <- as.integer(contract_dims[[1L]])
+    right_contract <- as.integer(contract_dims[[2L]])
+    tccq_domain_policy(
+      name,
+      result_shape = function(input_types) {
+        left_shape <- input_types[[1L]]@shape
+        right_shape <- input_types[[2L]]@shape
+        rank_supported <- left_shape@rank == 2L &&
+          right_shape@rank %in% c(1L, 2L) &&
+          !(right_shape@rank == 1L && right_contract != 1L)
+        if (!rank_supported) {
+          tccq_abort(
+            "ops.unsupported_contraction_rank",
+            sprintf(
+              "`%s` currently contracts a rank-2 input with a rank-1 or rank-2 input.",
+              op_name
+            ),
+            phase = "ops",
+            path = "domain_policy.result_shape",
+            data = list(left_rank = left_shape@rank, right_rank = right_shape@rank)
+          )
+        }
+        if (!tccq_dim_equal(left_shape@dims[[left_contract]], right_shape@dims[[right_contract]])) {
+          tccq_abort(
+            "ops.incompatible_contraction_dims",
+            sprintf("`%s` inputs must agree on the contracted dimension.", op_name),
+            phase = "ops",
+            path = "domain_policy.result_shape",
+            data = list(
+              left = left_shape@dims[[left_contract]]@label,
+              right = right_shape@dims[[right_contract]]@label
+            )
+          )
+        }
+        left_free <- setdiff(1:2, left_contract)
+        if (right_shape@rank == 1L) {
+          return(tccq_shape(list(left_shape@dims[[left_free]])))
+        }
+        right_free <- setdiff(1:2, right_contract)
+        tccq_shape(list(left_shape@dims[[left_free]], right_shape@dims[[right_free]]))
+      }
+    )
+  }
   contraction_result_type <- function(input_types, result_shape) {
     unsupported_bases <- setdiff(
       unique(vapply(input_types, function(type) type@base, character(1))),
@@ -2399,7 +2521,7 @@ tccq_default_op_registry <- function() {
     if (length(unsupported_bases) > 0L) {
       tccq_abort(
         "ops.unsupported_contraction_type",
-        "`%*%` currently supports integer and double inputs.",
+        "Contractions currently support integer and double inputs.",
         phase = "ops",
         path = "contraction.type",
         data = list(base = unsupported_bases)
@@ -2407,17 +2529,23 @@ tccq_default_op_registry <- function() {
     }
     tccq_type("double", result_shape)
   }
-  matmul_contraction <- tccq_contraction_spec(
-    "%*%",
-    signature = tccq_op_signature(
-      "%*%",
-      2L,
-      result_type = contraction_result_type,
-      domain_policy = contraction_domain_policy
-    ),
-    reducer = base_sum_reduction,
-    combine_op = "*"
-  )
+  new_contraction <- function(op_name, policy_name, contract_dims) {
+    tccq_contraction_spec(
+      op_name,
+      signature = tccq_op_signature(
+        op_name,
+        2L,
+        result_type = contraction_result_type,
+        domain_policy = contraction_domain_policy(policy_name, op_name, contract_dims)
+      ),
+      reducer = base_sum_reduction,
+      combine_op = "*",
+      attrs = list(contract_dims = as.integer(contract_dims))
+    )
+  }
+  matmul_contraction <- new_contraction("%*%", "contract_inner_dim", c(2L, 1L))
+  crossprod_contraction <- new_contraction("crossprod", "contract_first_dims", c(1L, 1L))
+  tcrossprod_contraction <- new_contraction("tcrossprod", "contract_second_dims", c(2L, 2L))
   column_sum_reduction <- tccq_reduction_spec(
     "sum",
     identity = sum_identity,
@@ -2484,11 +2612,46 @@ tccq_default_op_registry <- function() {
         reduction = row_sum_reduction
       ),
       tccq_op_impl(
+        "mean",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        reduction = base_mean_reduction
+      ),
+      tccq_op_impl(
+        "colMeans",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        reduction = column_mean_reduction
+      ),
+      tccq_op_impl(
+        "rowMeans",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        reduction = row_mean_reduction
+      ),
+      tccq_op_impl(
         "%*%",
         target = "pure_c",
         region_kind = "kernel",
         effect = tccq_effect(reads = TRUE),
         contraction = matmul_contraction
+      ),
+      tccq_op_impl(
+        "crossprod",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        contraction = crossprod_contraction
+      ),
+      tccq_op_impl(
+        "tcrossprod",
+        target = "pure_c",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        contraction = tcrossprod_contraction
       )
     )
   ))

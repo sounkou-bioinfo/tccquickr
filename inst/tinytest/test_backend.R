@@ -1516,4 +1516,129 @@ if (rtinycc_jit_available) {
     backend_callable(forward_pass_jit)(recycle_x, forward_pass_w),
     forward_pass_oracle
   )
+
+  # Contraction dims generalize past %*%: crossprod contracts (1, 1) and
+  # tcrossprod contracts (2, 2), each one nest with reordered operand axes.
+  crossprod_matmat <- function(x, y) {
+    declare(type(x = double(n, p), y = double(n, q)))
+    crossprod(x, y)
+  }
+  crossprod_y <- matrix(c(2, 1, 0.5, -1, 3, 0), nrow = 3)
+  crossprod_jit <- tccq_plan_backend(
+    tccq_analyze(crossprod_matmat, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(crossprod_jit@success)
+  expect_equal(
+    as.numeric(backend_callable(crossprod_jit)(recycle_x, crossprod_y)),
+    as.numeric(crossprod(recycle_x, crossprod_y))
+  )
+
+  crossprod_matvec <- function(x, v) {
+    declare(type(x = double(n, p), v = double(n)))
+    crossprod(x, v)
+  }
+  crossprod_matvec_jit <- tccq_plan_backend(
+    tccq_analyze(crossprod_matvec, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(crossprod_matvec_jit@success)
+  expect_equal(
+    backend_callable(crossprod_matvec_jit)(recycle_x, recycle_v),
+    as.numeric(crossprod(recycle_x, recycle_v))
+  )
+
+  tcrossprod_matmat <- function(x, q) {
+    declare(type(x = double(n, p), q = double(m, p)))
+    tcrossprod(x, q)
+  }
+  tcrossprod_q <- matrix(c(1, 0.5, -1, 2, 0, 1, 3, -2), nrow = 2)
+  tcrossprod_jit <- tccq_plan_backend(
+    tccq_analyze(tcrossprod_matmat, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(tcrossprod_jit@success)
+  expect_equal(
+    as.numeric(backend_callable(tcrossprod_jit)(recycle_x, tcrossprod_q)),
+    as.numeric(tcrossprod(recycle_x, tcrossprod_q))
+  )
+
+  # Reducers with finalizers: mean-family reductions divide the folded
+  # accumulator by the reduced count, in scalar, buffer, and result nests.
+  mean_probe <- function(x) {
+    declare(type(x = double(n)))
+    mean(x * x) / 2
+  }
+  mean_jit <- tccq_plan_backend(
+    tccq_analyze(mean_probe, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(mean_jit@success)
+  mean_x <- c(1, 2, 3, 4)
+  expect_equal(backend_callable(mean_jit)(mean_x), mean(mean_x * mean_x) / 2)
+
+  col_means_probe <- function(x) {
+    declare(type(x = double(n, p)))
+    colMeans(x)
+  }
+  col_means_jit <- tccq_plan_backend(
+    tccq_analyze(col_means_probe, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(col_means_jit@success)
+  expect_equal(backend_callable(col_means_jit)(recycle_x), colMeans(recycle_x))
+
+  row_means_probe <- function(x) {
+    declare(type(x = double(n, p)))
+    rowMeans(x) + 1
+  }
+  row_means_jit <- tccq_plan_backend(
+    tccq_analyze(row_means_probe, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(row_means_jit@success)
+  expect_equal(backend_callable(row_means_jit)(recycle_x), rowMeans(recycle_x) + 1)
+
+  # The original apotheosis composite, end to end against R.
+  logistic_gradient <- function(x, y, w, lambda) {
+    declare(type(
+      x = double(n, p),
+      y = double(n),
+      w = double(p),
+      lambda = double()
+    ))
+    mu <- colMeans(x)
+    sigma <- sqrt(colSums((x - mu)^2) / (n - 1L))
+    z <- (x - mu) / sigma
+    eta <- z %*% w
+    prob <- 1 / (1 + exp(-eta))
+    grad <- crossprod(z, prob - y) / n + lambda * w
+    w - 0.01 * grad
+  }
+  logistic_gradient_jit <- tccq_plan_backend(
+    tccq_analyze(logistic_gradient, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(logistic_gradient_jit@success)
+  logistic_y <- c(0.2, 0.7, 0.4)
+  logistic_w <- c(0.25, -0.5, 1, 0.75)
+  logistic_oracle <- local({
+    mu <- colMeans(recycle_x)
+    sigma <- sqrt(colSums((recycle_x - mu)^2) / (nrow(recycle_x) - 1L))
+    z <- (recycle_x - mu) / sigma
+    prob <- 1 / (1 + exp(-(z %*% logistic_w)))
+    grad <- crossprod(z, drop(prob) - logistic_y) / nrow(recycle_x) + 0.5 * logistic_w
+    logistic_w - 0.01 * drop(grad)
+  })
+  expect_equal(
+    backend_callable(logistic_gradient_jit)(recycle_x, logistic_y, logistic_w, 0.5),
+    logistic_oracle
+  )
 }

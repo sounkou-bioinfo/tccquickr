@@ -64,10 +64,12 @@ lowering has checked facts available rather than digging through untyped
 attributes. The lowerer consumes those facts as a kernel-entry barrier: a
 registry implementation replaces a call, so lazy closure forcing is compatible
 when arguments are pure and an unbound name is registry vocabulary rather than
-invalid R, but no implementation may claim a call whose observed dispatch is
-runtime S3 — the method table is not a compile-time fact, so that call returns
-a classed `lowering.semantics_barrier` diagnostic even when the registry has
-an implementation under its name. The current expression lowerer still
+invalid R. Because every kernel value is an unclassed declared atomic, S3
+dispatch resolves statically to the generic's default method (`mean` is
+legal); the barrier fires — a classed `lowering.semantics_barrier` diagnostic
+even when the registry claims the name — only when the generic has no default
+method, because R itself could not evaluate that call on declared atomic
+arguments. The current expression lowerer still
 reconstructs value dependencies from the function body for a very small
 subset, but operation availability is no longer a yes/no string predicate.
 Each lowerable call is resolved to a typed implementation record before a
@@ -132,12 +134,17 @@ changing the lowerer or the C and Fortran printers.
 
 Contractions are the third operation family. A call lowers as a contraction
 only when the resolved operation carries a `TccqContractionSpec`, which owns
-the shared signature, the reducer folded along the contracted axes, and the
-elementwise combine operation applied to aligned elements. The default
-registry models `%*%` for rank-2-by-rank-1 and rank-2-by-rank-2 inputs with a
-typed inner-dimension compatibility rule; matrix-vector and matrix-matrix
-products are therefore instances of the same loop-nest plan as maps and
-reductions, not a separate backend path.
+the shared signature, the reducer folded along the contracted axes, the
+elementwise combine operation applied to aligned elements, and the pair of
+operand dimensions that contract. The default registry models `%*%`
+(contracting dims 2 and 1), `crossprod` (1 and 1), and `tcrossprod` (2 and 2)
+for rank-2-by-rank-1 and rank-2-by-rank-2 inputs with a typed
+contracted-dimension compatibility rule; transposition is an operand
+axis-order fact in the nest plan, never a materialized transpose, so all
+three are instances of the same loop-nest plan as maps and reductions.
+Reducers may additionally carry a finalizer applied to the folded accumulator
+once the reduce loops close — `mean`, `colMeans`, and `rowMeans` divide by
+the reduced element count — rendered through `tccq_reduction_finalize()`.
 
 ## Current lowering boundary
 

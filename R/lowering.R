@@ -672,6 +672,12 @@ tccq_lower_function <- function(
     identical(value@op, "[")
   }
 
+  contracted_dim_of <- function(value, values) {
+    operation <- lowered_operation(value)
+    contract_dims <- as.integer(operation@contraction@attrs$contract_dims %||% c(2L, 1L))
+    values[[value@inputs[[1L]]]]@type@shape@dims[[contract_dims[[1L]]]]
+  }
+
   plan_regions <- function(values, result_id) {
     result_value <- values[[result_id]]
     result_operation <- lowered_operation(result_value)
@@ -680,8 +686,10 @@ tccq_lower_function <- function(
     domain_shape <- if (isTRUE(result_is_reduction)) {
       values[[result_value@inputs[[1L]]]]@type@shape
     } else if (isTRUE(result_is_contraction)) {
-      contracted_dim <- values[[result_value@inputs[[1L]]]]@type@shape@dims[[2L]]
-      tccq_shape(c(result_value@type@shape@dims, list(contracted_dim)))
+      tccq_shape(c(
+        result_value@type@shape@dims,
+        list(contracted_dim_of(result_value, values))
+      ))
     } else {
       result_value@type@shape
     }
@@ -748,8 +756,10 @@ tccq_lower_function <- function(
     intermediate_groups <- unname(Map(function(value, group_index) {
       operation <- lowered_operation(value)
       if (value_is_contraction(value)) {
-        contracted_dim <- values[[value@inputs[[1L]]]]@type@shape@dims[[2L]]
-        group_shape <- tccq_shape(c(value@type@shape@dims, list(contracted_dim)))
+        group_shape <- tccq_shape(c(
+          value@type@shape@dims,
+          list(contracted_dim_of(value, values))
+        ))
         group_kind <- "contract"
       } else {
         group_shape <- values[[value@inputs[[1L]]]]@type@shape
@@ -1024,12 +1034,13 @@ tccq_lower_function <- function(
 
   # The kernel model replaces a call with a registry implementation: lazy
   # closure forcing is compatible when arguments are pure, and a name the
-  # environment does not bind is registry vocabulary, not invalid R. The one
-  # observed fact no implementation may claim away is runtime S3 dispatch --
-  # the method table is not a compile-time fact, so the environment's generic
-  # could disagree with the registry's single implementation at run time.
-  # Declaration vocabulary inside declare(type(...)) is not an operation
-  # candidate, so the barrier only judges calls in executable statements.
+  # environment does not bind is registry vocabulary, not invalid R. Every
+  # kernel value is an unclassed declared atomic, so S3 dispatch resolves
+  # statically to the generic's default method; the barrier fires when no
+  # default method exists, because R itself could not evaluate the call on
+  # declared atomic arguments. Declaration vocabulary inside
+  # declare(type(...)) is not an operation candidate, so the barrier only
+  # judges calls in executable statements.
   executable_call_names <- unique(vapply(
     unlist(lapply(expressions, tccq_collect_calls), recursive = FALSE),
     function(call) call@name,
@@ -1043,10 +1054,13 @@ tccq_lower_function <- function(
     if (!identical(semantics@dispatch_kind, "s3")) {
       return(NULL)
     }
+    if (isTRUE(semantics@attrs$s3_default_exists)) {
+      return(NULL)
+    }
     tccq_diagnostic(
       "lowering.semantics_barrier",
       sprintf(
-        "Call `%s` cannot enter a kernel region: runtime S3 dispatch cannot be resolved to one typed implementation.",
+        "Call `%s` cannot enter a kernel region: its S3 generic has no default method for declared atomic arguments.",
         call@name
       ),
       phase = "lowering",

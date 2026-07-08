@@ -20,19 +20,12 @@ apotheosis_kernel <- function(x, y, w, lambda) {
 
 result <- tccq_analyze(apotheosis_kernel)
 
-expect_false(result@success)
+# The original apotheosis composite: column statistics, standardization via
+# recycling, a contraction over a computed operand, a crossprod, dimension
+# values, and elementwise chains — analyzed and lowered.
+expect_true(result@success)
 expect_true(S7::S7_inherits(result@value, TccqProgram))
-expect_true(length(result@diagnostics) >= 1L)
-expect_true(all(vapply(
-  result@diagnostics,
-  function(x) S7::S7_inherits(x, TccqDiagnostic),
-  logical(1)
-)))
-expect_true(any(vapply(
-  result@diagnostics,
-  function(x) identical(x@code, "frontend.unimplemented_call"),
-  logical(1)
-)))
+expect_true(result@value@attrs$lowered)
 
 program <- result@value
 expect_equal(names(program@formals), c("x", "y", "w", "lambda"))

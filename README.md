@@ -173,11 +173,15 @@ all.equal(normalize_kernel(v), v / sum(v))
 - **Elementwise**: `+`, `-`, `*`, `/`, `^`, `sqrt`, `exp` with scalar
   broadcast over any rank; registries can add rendered operations
   without touching the printers.
-- **Reductions**: `sum` over full rank-N domains; `colSums` and
-  `rowSums` as per-axis reductions; custom reducers via
-  `TccqReductionSpec`.
-- **Contractions**: `%*%` for matrix-vector and matrix-matrix products
-  with a typed inner-dimension rule (`TccqContractionSpec`).
+- **Reductions**: `sum` and `mean` over full rank-N domains; `colSums`,
+  `rowSums`, `colMeans`, and `rowMeans` as per-axis reductions; custom
+  reducers via `TccqReductionSpec`, including an optional finalizer
+  applied to the folded accumulator (`mean` divides by the reduced
+  count).
+- **Contractions**: `%*%`, `crossprod`, and `tcrossprod` with a typed
+  contracted-dimension rule (`TccqContractionSpec` carries which operand
+  dimensions contract, so transposition is an axis-order fact, never a
+  materialized transpose).
 - **Slices**: rank-1 `x[a:b]` with bounds affine in declared dimension
   symbols.
 - **Bindings**: single-assignment locals.
@@ -356,15 +360,14 @@ knitr::kable(data.frame(
 | raw_buffer_roundtrip  | `backend.unsupported_type`                  |
 | control_flow_probe    | `frontend.unimplemented_call`               |
 | apply_reduce_probe    | `frontend.unimplemented_call`               |
-| logistic_gradient     | `frontend.unimplemented_call`               |
+| logistic_gradient     | compiles through C, Fortran, and TinyCC JIT |
 | viterbi_decode        | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
-same typed IR — transposed contraction accesses so `crossprod` and the
-full logistic gradient close, structured control flow and recurrences
-for Viterbi, general indexing and access regions, `raw`/`buffer`
-bridges, and apply-family folds. Failures must stay specific enough that
-the next typed concept to add is obvious.
+same typed IR — structured control flow and recurrences for Viterbi,
+general indexing and access regions, `raw`/`buffer` bridges, and
+apply-family folds. Failures must stay specific enough that the next
+typed concept to add is obvious.
 
 ## Design
 

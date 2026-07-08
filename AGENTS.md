@@ -279,8 +279,11 @@ For the reset core, keep these rules explicit:
   that reads the extent parameter widened to double; it is not a new ABI
   surface.
 - Operation families are elementwise (`TccqElementwiseSpec`), reduction
-  (`TccqReductionSpec`), and contraction (`TccqContractionSpec`, which owns a
-  signature, a reducer, and a combine operation). Programs plan to an ordered
+  (`TccqReductionSpec`, whose optional finalizer transforms the folded
+  accumulator — the mean family divides by the reduced count), and
+  contraction (`TccqContractionSpec`, which owns a signature, a reducer, a
+  combine operation, and the contracted operand dimensions — `%*%`,
+  `crossprod`, and `tcrossprod` differ only in that typed fact). Programs plan to an ordered
   sequence of loop nests: every non-root reduction or contraction becomes its
   own nest — a named scalar for rank-0 results, a materialized temporary
   buffer otherwise — consumed by later nests through ordinary typed accesses.

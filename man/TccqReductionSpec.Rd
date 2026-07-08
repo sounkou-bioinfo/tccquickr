@@ -9,6 +9,7 @@ TccqReductionSpec(
   signature = TccqOpSignature(),
   identity = function() NULL,
   combine = function() NULL,
+  finalize = NULL,
   associative = logical(0),
   commutative = logical(0),
   attrs = list()
@@ -23,6 +24,10 @@ TccqReductionSpec(
 
 \item{combine}{Function from accumulator/source strings and render context
 to a target-source combine expression.}
+
+\item{finalize}{Optional function from accumulator/count source strings and
+render context to the stored-value source string (e.g. \code{mean} divides the
+folded accumulator by the reduced element count).}
 
 \item{associative}{Whether the reducer is associative under its declared
 semantics.}

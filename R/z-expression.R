@@ -709,6 +709,10 @@ tccq_program_loop_nests <- function(program) {
 
   contraction_nest <- function(expression, nest_id, role) {
     operation <- expression@attrs$operation
+    contraction_spec <- operation@contraction
+    contract_dims <- as.integer(contraction_spec@attrs$contract_dims %||% c(2L, 1L))
+    left_contract <- contract_dims[[1L]]
+    right_contract <- contract_dims[[2L]]
     left <- expression@inputs[[1L]]
     right <- expression@inputs[[2L]]
     left_shape <- left@type@shape
@@ -716,6 +720,7 @@ tccq_program_loop_nests <- function(program) {
     result_rank <- expression@type@shape@rank
     map_names <- vapply(seq_len(result_rank), axis_name, character(1))
     reduce_name <- axis_name(result_rank + 1L)
+    contracted_dim <- left_shape@dims[[left_contract]]
     axes <- c(
       lapply(seq_len(result_rank), function(position) {
         tccq_loop_axis(
@@ -724,20 +729,24 @@ tccq_program_loop_nests <- function(program) {
           role = "map"
         )
       }),
-      list(tccq_loop_axis(reduce_name, left_shape@dims[[2L]], role = "reduce"))
+      list(tccq_loop_axis(reduce_name, contracted_dim, role = "reduce"))
     )
     domain <- tccq_domain(
       sprintf("%s.domain", nest_id),
-      tccq_shape(c(expression@type@shape@dims, list(left_shape@dims[[2L]]))),
+      tccq_shape(c(expression@type@shape@dims, list(contracted_dim))),
       axes = c(map_names, reduce_name)
     )
-    left_axis_names <- c(map_names[[1L]], reduce_name)
+    left_axis_names <- character(2L)
+    left_axis_names[[left_contract]] <- reduce_name
+    left_axis_names[[setdiff(1:2, left_contract)]] <- map_names[[1L]]
     right_axis_names <- if (right_shape@rank == 1L) {
       reduce_name
     } else {
-      c(reduce_name, map_names[[2L]])
+      names_by_position <- character(2L)
+      names_by_position[[right_contract]] <- reduce_name
+      names_by_position[[setdiff(1:2, right_contract)]] <- map_names[[2L]]
+      names_by_position
     }
-    contraction_spec <- operation@contraction
     combine_call <- str2lang(sprintf("left %s right", contraction_spec@combine_op))
     combine_resolution <- tccq_resolve_call(
       program@attrs$registry %||% tccq_default_op_registry(),
