@@ -9,5 +9,6 @@ tccq_default_op_registry()
 \description{
 The default registry names the R language call forms that the frontend
 recognizes structurally. It is not a source-syntax whitelist and it is not a
-backend lowering promise.
+backend lowering promise. The registry is immutable, so it is built once
+per session and shared.
 }

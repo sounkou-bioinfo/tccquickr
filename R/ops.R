@@ -374,12 +374,16 @@ TccqOpImpl <- S7::new_class(
 #' Operation registry
 #'
 #' @param implementations List of operation implementations.
+#' @param op_index Named list from operation name to implementation positions,
+#'   used to resolve calls without scanning every implementation. Built by
+#'   [tccq_op_registry()]; an empty index falls back to a full scan.
 #' @export
 TccqOpRegistry <- S7::new_class(
   "TccqOpRegistry",
   package = "tccquickr",
   properties = list(
-    implementations = S7::class_list
+    implementations = S7::class_list,
+    op_index = S7::class_list
   ),
   validator = function(self) {
     problems <- character()
@@ -391,6 +395,12 @@ TccqOpRegistry <- S7::new_class(
     )
     if (!all(implementations_are_tccq_op_impls)) {
       problems <- c(problems, "@implementations must contain only <TccqOpImpl> values")
+    }
+    if (
+      length(self@op_index) > 0L &&
+        (is.null(names(self@op_index)) || any(!nzchar(names(self@op_index))))
+    ) {
+      problems <- c(problems, "@op_index must be named by operation names")
     }
     if (length(problems) > 0L) problems
   }
@@ -2035,7 +2045,11 @@ tccq_op_registry <- function(implementations = list()) {
     )
   }
 
-  TccqOpRegistry(implementations = implementations)
+  op_names <- vapply(implementations, function(impl) impl@op, character(1))
+  TccqOpRegistry(
+    implementations = implementations,
+    op_index = split(seq_along(implementations), op_names)
+  )
 }
 
 #' Construct a resolved operation
@@ -2283,14 +2297,20 @@ tccq_fusion_contract <- function(
   )
 }
 
+the_default_op_registry <- new.env(parent = emptyenv())
+
 #' Default operation registry for the reset frontend
 #'
 #' The default registry names the R language call forms that the frontend
 #' recognizes structurally. It is not a source-syntax whitelist and it is not a
-#' backend lowering promise.
+#' backend lowering promise. The registry is immutable, so it is built once
+#' per session and shared.
 #'
 #' @export
 tccq_default_op_registry <- function() {
+  if (!is.null(the_default_op_registry$registry)) {
+    return(the_default_op_registry$registry)
+  }
   scalar_renderers <- list(
     "+" = function(operands, context) sprintf("(%s + %s)", operands[[1L]], operands[[2L]]),
     "-" = function(operands, context) {
@@ -2576,7 +2596,7 @@ tccq_default_op_registry <- function() {
     "[", "[[", "$", "@", "[<-", "[[<-", "$<-", "@<-", ":",
     "declare", "type", TCCQ_BASE_TYPES
   )
-  tccq_op_registry(c(
+  registry <- tccq_op_registry(c(
     lapply(language_ops, function(op) {
       tccq_op_impl(op, target = "r_language", pure = FALSE)
     }),
@@ -2655,6 +2675,8 @@ tccq_default_op_registry <- function() {
       )
     )
   ))
+  the_default_op_registry$registry <- registry
+  registry
 }
 
 #' Opaque operation implementation
@@ -2782,13 +2804,20 @@ tccq_resolve_call <- function(registry, call, context = tccq_op_context()) {
   .tccq_check_s7(call, TccqCall, "TccqCall", "call")
   .tccq_check_s7(context, TccqOpContext, "TccqOpContext", "context")
 
-  for (implementation in registry@implementations) {
-    s7contract::assert_trait(implementation, TccqOpImplementation, arg = "implementation")
-    implementation_supports_call <- with(
-      TccqOpImplementation,
-      tccq_op_supports(implementation, call, context)
-    )
-    if (isTRUE(implementation_supports_call)) {
+  # Trait membership is asserted once at the registry constructor boundary,
+  # so resolution dispatches the trait generic directly, and the op-name
+  # index narrows the scan to this call's candidates plus wildcards.
+  candidate_positions <- if (length(registry@op_index) > 0L) {
+    sort(c(
+      registry@op_index[[call@name]],
+      registry@op_index[[TCCQ_ANY_OP]]
+    ))
+  } else {
+    seq_along(registry@implementations)
+  }
+  for (position in candidate_positions) {
+    implementation <- registry@implementations[[position]]
+    if (isTRUE(tccq_op_supports(implementation, call, context))) {
       return(tccq_result(
         success = TRUE,
         value = tccq_resolved_op(

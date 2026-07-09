@@ -4,10 +4,14 @@
 \alias{TccqOpRegistry}
 \title{Operation registry}
 \usage{
-TccqOpRegistry(implementations = list())
+TccqOpRegistry(implementations = list(), op_index = list())
 }
 \arguments{
 \item{implementations}{List of operation implementations.}
+
+\item{op_index}{Named list from operation name to implementation positions,
+used to resolve calls without scanning every implementation. Built by
+\code{\link[=tccq_op_registry]{tccq_op_registry()}}; an empty index falls back to a full scan.}
 }
 \description{
 Operation registry
