@@ -2057,7 +2057,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
       inputs <- vapply(expression@inputs, expression_text, character(1), emit_context = emit_context)
       render_result <- tccq_op_render(
-        expression@resolved_op@implementation,
+        expression@operation@resolved_op@implementation,
         inputs,
         tccq_op_render_context(
           language = emit_context$language,

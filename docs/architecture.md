@@ -263,7 +263,12 @@ symbol, lexical binding, slice offsets, and typed `TccqAccess` map of affine
 `TccqIndexExpr` values. It does not identify physical storage; that remains a
 `TccqStorageAllocation`. Each nest also carries an optional reducer with its
 identity and an output access; intermediate nests additionally name the scalar
-or temporary buffer their result materializes.
+or temporary buffer their result materializes. `TccqExpression` has no open
+metadata channel: every expression carries a typed effect, and an operation
+expression carries the full `TccqLoweredOperation` that owns its resolution,
+signature, domain policy, family, and reducer or contraction facts. Printers
+follow that payload to `tccq_op_render()` rather than accepting a second
+resolved-operation field.
 Scalar programs, elementwise maps, full and per-axis reductions, contractions,
 stencils, control-valued results, and scalar- or buffer-intermediate
 compositions are all sequences of this one value, so C, Fortran, and Rtinycc

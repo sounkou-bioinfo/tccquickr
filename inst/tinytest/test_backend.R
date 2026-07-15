@@ -276,7 +276,15 @@ expect_true(expression_result@success)
 expect_true(S7::S7_inherits(expression_result@value, TccqExpression))
 expect_equal(expression_result@value@kind, "operation")
 expect_equal(expression_result@value@op, "+")
-expect_true(S7::S7_inherits(expression_result@value@resolved_op, TccqResolvedOp))
+expect_true(S7::S7_inherits(expression_result@value@operation, TccqLoweredOperation))
+expect_true(S7::S7_inherits(
+  expression_result@value@operation@resolved_op,
+  TccqResolvedOp
+))
+expect_identical(
+  expression_result@value@effect,
+  expression_result@value@operation@resolved_op@effect
+)
 
 c_source_plan <- tccq_plan_backend(
   vector_program@value,
@@ -708,8 +716,8 @@ expect_true(reduction_program@value@attrs$lowered)
 reduction_expression <- tccq_expression_tree(reduction_program@value)
 expect_true(reduction_expression@success)
 expect_equal(reduction_expression@value@op, "sum")
-expect_true(S7::S7_inherits(reduction_expression@value@attrs$operation, TccqLoweredOperation))
-expect_equal(reduction_expression@value@attrs$operation@family, "reduction")
+expect_true(S7::S7_inherits(reduction_expression@value@operation, TccqLoweredOperation))
+expect_equal(reduction_expression@value@operation@family, "reduction")
 
 reduction_c_source_plan <- tccq_plan_backend(
   reduction_program@value,

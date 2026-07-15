@@ -251,6 +251,11 @@ resolved_add <- tccq_resolve_call(
   tccq_call("+"),
   tccq_op_context()
 )@value
+lowered_add <- tccq_lowered_operation(
+  "elementwise",
+  resolved_add,
+  elementwise = resolved_add@elementwise
+)
 reference_expression <- tccq_expression(
   "formal_0001",
   "reference",
@@ -274,7 +279,8 @@ operation_expression <- tccq_expression(
   value_id = "value_0002",
   op = "+",
   inputs = list(reference_expression, literal_expression),
-  resolved_op = resolved_add
+  effect = resolved_add@effect,
+  operation = lowered_add
 )
 logical_scalar <- tccq_type("logical")
 combined_effect <- tccq_effect_union(
@@ -317,7 +323,9 @@ expect_true(S7::S7_inherits(reference_expression, TccqExpression))
 expect_true(S7::S7_inherits(reference_expression@reference, TccqExpressionReference))
 expect_equal(reference_expression@reference@source_value_id, "formal_0001")
 expect_equal(reference_expression@reference@symbol, "x")
-expect_true(S7::S7_inherits(operation_expression@resolved_op, TccqResolvedOp))
+expect_true(S7::S7_inherits(operation_expression@operation, TccqLoweredOperation))
+expect_identical(operation_expression@operation@resolved_op, resolved_add)
+expect_identical(operation_expression@effect, resolved_add@effect)
 expect_equal(operation_expression@inputs[[2L]]@literal@value, 1.5)
 expect_true(S7::S7_inherits(branch_value, TccqBranch))
 expect_true(S7::S7_inherits(branch_value, TccqValue))
@@ -511,6 +519,19 @@ bad_expression <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_expression, "error"))
+
+mismatched_expression_operation <- tryCatch(
+  tccq_expression(
+    "mismatched_expression_operation",
+    "operation",
+    type = finite@type,
+    op = "-",
+    inputs = list(reference_expression, literal_expression),
+    operation = lowered_add
+  ),
+  error = identity
+)
+expect_true(inherits(mismatched_expression_operation, "error"))
 
 missing_reference_payload <- tryCatch(
   tccq_expression(

@@ -11,11 +11,11 @@ tccq_expression(
   value_id = id,
   op = kind,
   inputs = list(),
+  effect = tccq_effect(),
   literal = NULL,
-  resolved_op = NULL,
+  operation = NULL,
   branch = NULL,
-  reference = NULL,
-  attrs = list()
+  reference = NULL
 )
 }
 \arguments{
@@ -31,15 +31,15 @@ tccq_expression(
 
 \item{inputs}{Child expressions.}
 
+\item{effect}{Effect of evaluating the expression.}
+
 \item{literal}{Literal payload for literal expressions.}
 
-\item{resolved_op}{Selected implementation for operation expressions.}
+\item{operation}{Typed lowered-operation payload for operation expressions.}
 
 \item{branch}{Typed conditional payload for branch expressions.}
 
 \item{reference}{Typed source payload for reference expressions.}
-
-\item{attrs}{Structured metadata.}
 }
 \description{
 Construct a backend-neutral expression

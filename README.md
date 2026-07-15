@@ -182,7 +182,10 @@ yet.
 
 **Elementwise operations.** `+`, `-`, `*`, `/`, `^`, `sqrt`, and `exp`
 use scalar broadcast over any rank. Registries can add rendered
-operations without touching the printers.
+operations without touching the printers. Every neutral operation
+expression owns its complete `TccqLoweredOperation` and typed effect; it
+does not duplicate the selected implementation or hide pass facts in
+expression attributes.
 
 **Reductions and contractions.** `sum` and `mean` fold full rank-N
 domains; `colSums`, `rowSums`, `colMeans`, and `rowMeans` fold selected

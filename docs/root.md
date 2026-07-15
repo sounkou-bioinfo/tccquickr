@@ -7,6 +7,12 @@ products are compiler data first. Backend source exists only after those facts
 are explicit enough that C, Rtinycc, and Fortran consume the same semantic
 handoff.
 
+Neutral expressions are closed typed values rather than metadata bags. Every
+`TccqExpression` owns its effect, references own
+`TccqExpressionReference`, and operation nodes own the complete
+`TccqLoweredOperation` selected by lowering. The latter is the one path to the
+resolved implementation used by source printers.
+
 The current useful center is the typed loop-nest path. Elementwise maps,
 reductions, axis reductions, contractions, intermediate materialization,
 dimension symbols, and rank-mixed recycling are represented before printing.

@@ -67,12 +67,11 @@ TccqExpressionReference <- S7::new_class(
 #' @param op Operation name, or `formal`/`literal` for leaves.
 #' @param inputs Child expressions.
 #' @param type Result type.
+#' @param effect Effect of evaluating the expression.
 #' @param literal Literal payload for literal expressions.
-#' @param resolved_op Selected operation implementation for operation
-#'   expressions.
+#' @param operation Typed lowered-operation payload for operation expressions.
 #' @param branch Typed conditional payload for branch expressions.
 #' @param reference Typed source payload for reference expressions.
-#' @param attrs Structured metadata.
 #' @export
 TccqExpression <- S7::new_class(
   "TccqExpression",
@@ -84,11 +83,11 @@ TccqExpression <- S7::new_class(
     op = S7::class_character,
     inputs = S7::class_list,
     type = TccqType,
+    effect = TccqEffect,
     literal = S7::new_union(NULL, TccqLiteral),
-    resolved_op = S7::new_union(NULL, TccqResolvedOp),
+    operation = S7::new_union(NULL, TccqLoweredOperation),
     branch = S7::new_union(NULL, TccqBranch),
-    reference = S7::new_union(NULL, TccqExpressionReference),
-    attrs = S7::class_list
+    reference = S7::new_union(NULL, TccqExpressionReference)
   ),
   validator = function(self) {
     problems <- character()
@@ -113,12 +112,12 @@ TccqExpression <- S7::new_class(
     if (!all(inputs_are_expressions)) {
       problems <- c(problems, "@inputs must contain only <TccqExpression> values")
     }
-    reference_has_payload <- length(self@inputs) > 0L ||
+    reference_payload_invalid <- length(self@inputs) > 0L ||
       !is.null(self@literal) ||
-      !is.null(self@resolved_op) ||
+      !is.null(self@operation) ||
       !is.null(self@branch) ||
       is.null(self@reference)
-    if (identical(self@kind, "reference") && reference_has_payload) {
+    if (identical(self@kind, "reference") && reference_payload_invalid) {
       problems <- c(
         problems,
         "reference expressions need one reference and no inputs, literal, operation, or branch"
@@ -126,35 +125,35 @@ TccqExpression <- S7::new_class(
     }
     literal_has_invalid_payload <- length(self@inputs) > 0L ||
       is.null(self@literal) ||
-      !is.null(self@resolved_op) ||
+      !is.null(self@operation) ||
       !is.null(self@branch) ||
       !is.null(self@reference)
     if (identical(self@kind, "literal") && literal_has_invalid_payload) {
       problems <- c(
         problems,
-        "literal expressions must have one literal and no inputs or resolved operation"
+        "literal expressions must have one literal and no inputs or operation payload"
       )
     }
     operation_has_invalid_payload <- length(self@inputs) == 0L ||
       !is.null(self@literal) ||
-      is.null(self@resolved_op) ||
+      is.null(self@operation) ||
       !is.null(self@branch) ||
       !is.null(self@reference)
     if (identical(self@kind, "operation") && operation_has_invalid_payload) {
       problems <- c(
         problems,
-        "operation expressions must have inputs, a resolved operation, and no literal"
+        "operation expressions must have inputs, one operation payload, and no literal"
       )
     }
     branch_has_invalid_payload <- length(self@inputs) != 3L ||
       !is.null(self@literal) ||
-      !is.null(self@resolved_op) ||
+      !is.null(self@operation) ||
       is.null(self@branch) ||
       !is.null(self@reference)
     if (identical(self@kind, "branch") && branch_has_invalid_payload) {
       problems <- c(
         problems,
-        "branch expressions must have three inputs, a branch payload, and no literal or resolved operation"
+        "branch expressions must have three inputs, a branch payload, and no literal or operation payload"
       )
     }
     if (
@@ -166,6 +165,12 @@ TccqExpression <- S7::new_class(
     }
     if (!is.null(self@literal) && !identical(self@literal@type@base, self@type@base)) {
       problems <- c(problems, "@literal type base must match @type base")
+    }
+    if (
+      !is.null(self@operation) &&
+        !identical(self@operation@resolved_op@call@name, self@op)
+    ) {
+      problems <- c(problems, "@operation call name must match @op")
     }
     if (
       !is.null(self@reference) &&
@@ -225,11 +230,11 @@ tccq_expression_reference <- function(
 #' @param value_id Lowered value id represented by this expression.
 #' @param op Operation name.
 #' @param inputs Child expressions.
+#' @param effect Effect of evaluating the expression.
 #' @param literal Literal payload for literal expressions.
-#' @param resolved_op Selected implementation for operation expressions.
+#' @param operation Typed lowered-operation payload for operation expressions.
 #' @param branch Typed conditional payload for branch expressions.
 #' @param reference Typed source payload for reference expressions.
-#' @param attrs Structured metadata.
 #' @export
 tccq_expression <- function(
   id,
@@ -238,11 +243,11 @@ tccq_expression <- function(
   value_id = id,
   op = kind,
   inputs = list(),
+  effect = tccq_effect(),
   literal = NULL,
-  resolved_op = NULL,
+  operation = NULL,
   branch = NULL,
-  reference = NULL,
-  attrs = list()
+  reference = NULL
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_character_scalar(kind, "kind")
@@ -250,8 +255,14 @@ tccq_expression <- function(
   .tccq_check_character_scalar(op, "op")
   .tccq_check_s7(type, TccqType, "TccqType", "type")
   .tccq_check_list_of(inputs, TccqExpression, "TccqExpression", "inputs")
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
   .tccq_check_optional_s7(literal, TccqLiteral, "TccqLiteral", "literal")
-  .tccq_check_optional_s7(resolved_op, TccqResolvedOp, "TccqResolvedOp", "resolved_op")
+  .tccq_check_optional_s7(
+    operation,
+    TccqLoweredOperation,
+    "TccqLoweredOperation",
+    "operation"
+  )
   .tccq_check_optional_s7(branch, TccqBranch, "TccqBranch", "branch")
   .tccq_check_optional_s7(
     reference,
@@ -259,8 +270,6 @@ tccq_expression <- function(
     "TccqExpressionReference",
     "reference"
   )
-  .tccq_check_list(attrs, "attrs")
-
   TccqExpression(
     id = id,
     kind = kind,
@@ -268,11 +277,11 @@ tccq_expression <- function(
     op = op,
     inputs = inputs,
     type = type,
+    effect = effect,
     literal = literal,
-    resolved_op = resolved_op,
+    operation = operation,
     branch = branch,
-    reference = reference,
-    attrs = attrs
+    reference = reference
   )
 }
 
@@ -337,6 +346,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = value@op,
         type = value@type,
+        effect = value@effect,
         reference = tccq_expression_reference(
           current_value_id,
           symbol = value@attrs$symbol
@@ -350,6 +360,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = "local",
         type = value@type,
+        effect = value@effect,
         reference = tccq_expression_reference(
           value@binding@value_id,
           binding = value@binding
@@ -392,6 +403,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = "formal",
         type = value@type,
+        effect = value@effect,
         reference = tccq_expression_reference(
           source_value@id,
           symbol = source_value@attrs$symbol,
@@ -416,6 +428,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = value@op,
         type = value@type,
+        effect = value@effect,
         literal = literal
       ))
     }
@@ -435,8 +448,8 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         op = value@op,
         inputs = input_expressions,
         type = value@type,
-        branch = value,
-        attrs = list(effect = value@effect)
+        effect = value@effect,
+        branch = value
       ))
     }
 
@@ -484,9 +497,6 @@ tccq_expression_tree <- function(program, value_id = program@result) {
     if (any(vapply(input_expressions, is.null, logical(1)))) {
       return(NULL)
     }
-    value_attrs <- value@attrs
-    value_attrs$operation <- NULL
-
     tccq_expression(
       id = current_value_id,
       kind = "operation",
@@ -494,8 +504,8 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       op = value@op,
       inputs = input_expressions,
       type = value@type,
-      resolved_op = resolved_operation,
-      attrs = c(list(effect = value@effect, operation = lowered_operation), value_attrs)
+      effect = value@effect,
+      operation = lowered_operation
     )
   }
 
@@ -1117,7 +1127,7 @@ tccq_program_loop_nests <- function(program) {
     ))
   }
   expression_family <- function(expression) {
-    operation <- expression@attrs$operation
+    operation <- expression@operation
     if (S7::S7_inherits(operation, TccqLoweredOperation)) operation@family else NULL
   }
 
@@ -1160,6 +1170,7 @@ tccq_program_loop_nests <- function(program) {
       value_id = expression@value_id,
       op = "intermediate",
       type = expression@type,
+      effect = tccq_effect(reads = TRUE),
       reference = tccq_expression_reference(expression@value_id)
     )
     replacements[[expression@value_id]] <- replacement
@@ -1323,7 +1334,7 @@ tccq_program_loop_nests <- function(program) {
       diagnostics = list(tccq_condition_diagnostic(root))
     ))
   }
-  root_operation <- root@attrs$operation
+  root_operation <- root@operation
   root_family <- if (S7::S7_inherits(root_operation, TccqLoweredOperation)) {
     root_operation@family
   } else {
@@ -1434,7 +1445,7 @@ tccq_program_loop_nests <- function(program) {
   }
 
   reduction_nest <- function(expression, nest_id, guards = list()) {
-    operation <- expression@attrs$operation
+    operation <- expression@operation
     input_shape <- expression@inputs[[1L]]@type@shape
     reduction_axes <- as.integer(operation@attrs$reduction_axes %||% seq_len(input_shape@rank))
     kept_axes <- as.integer(operation@attrs$kept_axes %||% integer())
@@ -1503,7 +1514,7 @@ tccq_program_loop_nests <- function(program) {
   }
 
   contraction_nest <- function(expression, nest_id, guards = list()) {
-    operation <- expression@attrs$operation
+    operation <- expression@operation
     contraction_spec <- operation@contraction
     contract_dims <- as.integer(contraction_spec@attrs$contract_dims %||% c(2L, 1L))
     left_contract <- contract_dims[[1L]]
@@ -1561,6 +1572,11 @@ tccq_program_loop_nests <- function(program) {
         data = list(op = contraction_spec@combine_op)
       ))
     }
+    combine_operation <- tccq_lowered_operation(
+      "elementwise",
+      combine_resolution@value,
+      elementwise = combine_resolution@value@elementwise
+    )
     body <- tccq_expression(
       id = sprintf("%s_combine", expression@value_id),
       kind = "operation",
@@ -1571,7 +1587,8 @@ tccq_program_loop_nests <- function(program) {
         annotate(right, right_axis_names, domain, right_shape@dims)
       ),
       type = tccq_type(expression@type@base),
-      resolved_op = combine_resolution@value
+      effect = combine_resolution@value@effect,
+      operation = combine_operation
     )
     if (expression_contains(body, function(candidate) identical(candidate@kind, "branch"))) {
       body_target <- tccq_write_target(
@@ -1683,16 +1700,13 @@ tccq_program_loop_nests <- function(program) {
     statement_index <<- statement_index + 1L
     sprintf("statement_%04d", statement_index)
   }
-  expression_effect <- function(expression) {
-    value <- program@values[[expression@value_id]]
-    if (S7::S7_inherits(value, TccqValue)) value@effect else tccq_effect()
-  }
   target_reference <- function(target, domain) {
     tccq_expression(
       target@value_id,
       "reference",
       type = target@type,
       op = "local",
+      effect = tccq_effect(reads = TRUE),
       reference = tccq_expression_reference(
         target@value_id,
         access = tccq_access(target@value_id, domain, kind = "scalar")
@@ -1801,17 +1815,16 @@ tccq_program_loop_nests <- function(program) {
         op = expression@op,
         inputs = rewritten_inputs,
         type = expression@type,
-        resolved_op = expression@resolved_op,
-        attrs = expression@attrs
+        effect = expression@effect,
+        operation = expression@operation
       )
     }
 
-    effect <- expression_effect(expression)
     assignment <- tccq_assignment(
       next_statement_id(),
       target,
       expression,
-      effect = effect
+      effect = expression@effect
     )
     statements <- c(statements, list(assignment))
     block_effect <- Reduce(

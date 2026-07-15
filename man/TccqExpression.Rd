@@ -11,11 +11,11 @@ TccqExpression(
   op = character(0),
   inputs = list(),
   type = TccqType(),
+  effect = TccqEffect(),
   literal = NULL,
-  resolved_op = NULL,
+  operation = NULL,
   branch = NULL,
-  reference = NULL,
-  attrs = list()
+  reference = NULL
 )
 }
 \arguments{
@@ -31,16 +31,15 @@ TccqExpression(
 
 \item{type}{Result type.}
 
+\item{effect}{Effect of evaluating the expression.}
+
 \item{literal}{Literal payload for literal expressions.}
 
-\item{resolved_op}{Selected operation implementation for operation
-expressions.}
+\item{operation}{Typed lowered-operation payload for operation expressions.}
 
 \item{branch}{Typed conditional payload for branch expressions.}
 
 \item{reference}{Typed source payload for reference expressions.}
-
-\item{attrs}{Structured metadata.}
 }
 \description{
 \code{TccqExpression} is the small tree form consumed by source printers. It is
