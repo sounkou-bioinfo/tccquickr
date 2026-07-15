@@ -2356,6 +2356,17 @@ tccq_default_op_registry <- function() {
       }
       sprintf("pow(%s, %s)", operands[[1L]], operands[[2L]])
     },
+    "<" = function(operands, context) sprintf("(%s < %s)", operands[[1L]], operands[[2L]]),
+    "<=" = function(operands, context) sprintf("(%s <= %s)", operands[[1L]], operands[[2L]]),
+    ">" = function(operands, context) sprintf("(%s > %s)", operands[[1L]], operands[[2L]]),
+    ">=" = function(operands, context) sprintf("(%s >= %s)", operands[[1L]], operands[[2L]]),
+    "==" = function(operands, context) sprintf("(%s == %s)", operands[[1L]], operands[[2L]]),
+    "!=" = function(operands, context) sprintf(
+      "(%s %s %s)",
+      operands[[1L]],
+      if (identical(context@language, "fortran")) "/=" else "!=",
+      operands[[2L]]
+    ),
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
   )
@@ -2386,6 +2397,37 @@ tccq_default_op_registry <- function() {
       }
       tccq_type(result_base, result_shape)
     }
+  }
+  scalar_numeric_comparison_domain <- tccq_domain_policy(
+    "scalar_numeric_comparison",
+    result_shape = function(input_types) {
+      if (any(vapply(input_types, function(type) type@shape@rank != 0L, logical(1)))) {
+        tccq_abort(
+          "ops.non_scalar_comparison",
+          "The current comparison implementation accepts scalar operands only.",
+          phase = "ops",
+          path = "comparison.domain"
+        )
+      }
+      tccq_shape()
+    },
+    attrs = list(operation_family = "comparison")
+  )
+  numeric_comparison_result_type <- function(input_types, result_shape) {
+    unsupported_bases <- setdiff(
+      unique(vapply(input_types, function(type) type@base, character(1))),
+      c("integer", "double")
+    )
+    if (length(unsupported_bases) > 0L) {
+      tccq_abort(
+        "ops.unsupported_comparison_type",
+        "The current comparison implementation accepts integer and double operands.",
+        phase = "ops",
+        path = "comparison.type",
+        data = list(base = unsupported_bases)
+      )
+    }
+    tccq_type("logical", result_shape)
   }
   elementwise_specs <- list(
     "+" = tccq_elementwise_spec(
@@ -2418,6 +2460,42 @@ tccq_default_op_registry <- function() {
       numeric_elementwise_result_type(force_double = TRUE),
       domain_policy = elementwise_domain_policy
     ),
+    "<" = tccq_elementwise_spec(
+      "<",
+      2L,
+      numeric_comparison_result_type,
+      domain_policy = scalar_numeric_comparison_domain
+    ),
+    "<=" = tccq_elementwise_spec(
+      "<=",
+      2L,
+      numeric_comparison_result_type,
+      domain_policy = scalar_numeric_comparison_domain
+    ),
+    ">" = tccq_elementwise_spec(
+      ">",
+      2L,
+      numeric_comparison_result_type,
+      domain_policy = scalar_numeric_comparison_domain
+    ),
+    ">=" = tccq_elementwise_spec(
+      ">=",
+      2L,
+      numeric_comparison_result_type,
+      domain_policy = scalar_numeric_comparison_domain
+    ),
+    "==" = tccq_elementwise_spec(
+      "==",
+      2L,
+      numeric_comparison_result_type,
+      domain_policy = scalar_numeric_comparison_domain
+    ),
+    "!=" = tccq_elementwise_spec(
+      "!=",
+      2L,
+      numeric_comparison_result_type,
+      domain_policy = scalar_numeric_comparison_domain
+    ),
     sqrt = tccq_elementwise_spec(
       "sqrt",
       1L,
@@ -2437,6 +2515,12 @@ tccq_default_op_registry <- function() {
     "*" = tccq_effect(reads = TRUE, may_warn = TRUE),
     "/" = tccq_effect(reads = TRUE),
     "^" = tccq_effect(reads = TRUE),
+    "<" = tccq_effect(reads = TRUE),
+    "<=" = tccq_effect(reads = TRUE),
+    ">" = tccq_effect(reads = TRUE),
+    ">=" = tccq_effect(reads = TRUE),
+    "==" = tccq_effect(reads = TRUE),
+    "!=" = tccq_effect(reads = TRUE),
     sqrt = tccq_effect(reads = TRUE, may_warn = TRUE),
     exp = tccq_effect(reads = TRUE)
   )

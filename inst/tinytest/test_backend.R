@@ -1181,6 +1181,27 @@ expect_equal(backend_interface(logical_branch_c)@result_type@base, "logical")
 expect_true(grepl("bool tccq_", backend_source(logical_branch_c), fixed = TRUE))
 expect_true(grepl("logical(c_bool) :: output", backend_source(logical_branch_fortran), fixed = TRUE))
 
+scalar_less <- function(x, y) {
+  declare(type(x = double(), y = double()))
+  x < y
+}
+scalar_less_program <- tccq_analyze(scalar_less, strict = TRUE)@value
+scalar_less_c <- tccq_plan_backend(
+  scalar_less_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+scalar_less_fortran <- tccq_plan_backend(
+  scalar_less_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(scalar_less_c@success)
+expect_true(scalar_less_fortran@success)
+expect_equal(backend_interface(scalar_less_c)@result_type@base, "logical")
+expect_true(grepl("input_0001 < input_0002", backend_source(scalar_less_c), fixed = TRUE))
+expect_true(grepl("input_0001 < input_0002", backend_source(scalar_less_fortran), fixed = TRUE))
+
 nonfinite_branch <- function(flag) {
   declare(type(flag = logical(), returns = double()))
   if (flag) NaN else Inf
@@ -2112,6 +2133,15 @@ if (rtinycc_jit_available) {
   expect_true(logical_branch_jit@success)
   expect_identical(backend_callable(logical_branch_jit)(TRUE), TRUE)
   expect_identical(backend_callable(logical_branch_jit)(FALSE), FALSE)
+
+  scalar_less_jit <- tccq_plan_backend(
+    scalar_less_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(scalar_less_jit@success)
+  expect_identical(backend_callable(scalar_less_jit)(1, 2), TRUE)
+  expect_identical(backend_callable(scalar_less_jit)(2, 1), FALSE)
 }
 
 if (can_build_shared_library("c")) {

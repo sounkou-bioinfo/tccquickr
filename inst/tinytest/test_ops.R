@@ -167,6 +167,40 @@ fortran_power <- tccq_op_render(
 expect_true(fortran_power@success)
 expect_equal(fortran_power@value, "(left ** right)")
 
+resolved_less <- tccq_resolve_call(default_registry, tccq_call("<"), tccq_op_context())
+expect_true(resolved_less@success)
+expect_true(S7::S7_inherits(resolved_less@value@elementwise, TccqElementwiseSpec))
+less_result_type <- tccq_elementwise_result_type(
+  resolved_less@value@elementwise,
+  list(tccq_type("integer"), tccq_type("double"))
+)
+expect_true(less_result_type@success)
+expect_equal(less_result_type@value@base, "logical")
+expect_equal(less_result_type@value@shape@rank, 0L)
+vector_less_result_type <- tccq_elementwise_result_type(
+  resolved_less@value@elementwise,
+  list(tccq_type("double", tccq_shape("n")), tccq_type("double"))
+)
+expect_false(vector_less_result_type@success)
+expect_true(any(vapply(
+  vector_less_result_type@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "ops.non_scalar_comparison"),
+  logical(1)
+)))
+
+resolved_not_equal <- tccq_resolve_call(
+  default_registry,
+  tccq_call("!="),
+  tccq_op_context()
+)
+fortran_not_equal <- tccq_op_render(
+  resolved_not_equal@value@implementation,
+  c("left", "right"),
+  tccq_op_render_context(language = "fortran", backend_id = "unit_backend")
+)
+expect_true(fortran_not_equal@success)
+expect_equal(fortran_not_equal@value, "(left /= right)")
+
 resolved_sqrt <- tccq_resolve_call(default_registry, tccq_call("sqrt"), tccq_op_context())
 resolved_exp <- tccq_resolve_call(default_registry, tccq_call("exp"), tccq_op_context())
 expect_true(resolved_sqrt@value@effect@may_warn)

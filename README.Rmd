@@ -135,8 +135,11 @@ ABI as C `bool`, Fortran `logical(c_bool)`, and TinyCC `bool`; other declared
 base types analyze but do not reach the source backends yet.
 
 **Elementwise operations.** `+`, `-`, `*`, `/`, `^`, `sqrt`, and `exp` use
-scalar broadcast over any rank. Registries can add rendered operations without
-touching the printers. Every neutral operation expression owns its complete
+scalar broadcast over any rank. Scalar numeric `<`, `<=`, `>`, `>=`, `==`, and
+`!=` produce typed logical values for control conditions; their current
+implementation deliberately rejects array operands. Registries can add
+rendered operations without touching the printers. Every neutral operation
+expression owns its complete
 `TccqLoweredOperation` and typed effect; it does not duplicate the selected
 implementation or hide pass facts in expression attributes.
 

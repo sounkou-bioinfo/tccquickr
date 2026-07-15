@@ -356,6 +356,11 @@ idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and
 exits, dominance, carried loop state, effect ordering, reducer legality,
 allocation, and possible boundary regions.
 
+Scalar numeric comparisons are ordinary typed elementwise implementations, not
+control nodes. Their signatures currently require scalar operands and return a
+scalar logical value; this gives structured control a backend-neutral condition
+without falsely promising vector comparison and missing-value semantics.
+
 The intended representation is a small set of typed control nodes over the same
 value/effect/domain model. A `for` loop over `1:n`, a `Reduce("+", x)`, and a
 `sum(x)` can all become reduction regions when their reducer implementation,
