@@ -1051,6 +1051,40 @@ tccq_lower_function <- function(
     if (!call@name %in% executable_call_names) {
       return(NULL)
     }
+    if (isTRUE(semantics@control)) {
+      return(tccq_diagnostic(
+        "lowering.control_flow_boundary",
+        sprintf(
+          "Control call `%s` needs a typed control-flow representation before it can enter lowering.",
+          call@name
+        ),
+        phase = "lowering",
+        path = sprintf("call_index.%s", call@id),
+        data = list(
+          call = call@name,
+          evaluator_kind = semantics@evaluator_kind,
+          forcing_policy = semantics@forcing_policy,
+          dispatch_kind = semantics@dispatch_kind
+        )
+      ))
+    }
+    if (isTRUE(semantics@replacement) && !identical(call@origin, "assignment_rewrite")) {
+      return(tccq_diagnostic(
+        "lowering.replacement_boundary",
+        sprintf(
+          "Replacement call `%s` needs typed mutation and replacement semantics before it can enter lowering.",
+          call@name
+        ),
+        phase = "lowering",
+        path = sprintf("call_index.%s", call@id),
+        data = list(
+          call = call@name,
+          evaluator_kind = semantics@evaluator_kind,
+          forcing_policy = semantics@forcing_policy,
+          dispatch_kind = semantics@dispatch_kind
+        )
+      ))
+    }
     if (!identical(semantics@dispatch_kind, "s3")) {
       return(NULL)
     }

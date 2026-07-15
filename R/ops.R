@@ -2735,12 +2735,47 @@ tccq_collect_calls <- function(expr, global_calls = character()) {
     if (!is.call(node)) {
       return(NULL)
     }
+    call_name <- tccq_call_name(node)
     calls[[length(calls) + 1L]] <<- tccq_call(
-      tccq_call_name(node),
+      call_name,
       node,
       "ast",
       id = make_id()
     )
+    if (
+      call_name %in% c("<-", "<<-", "=") &&
+        length(node) == 3L &&
+        is.call(node[[2L]])
+    ) {
+      replacement_target <- node[[2L]]
+      target_call_name <- tccq_call_name(replacement_target)
+      replacement_args <- as.list(replacement_target)[-1L]
+      replacement_arg_names <- names(replacement_args)
+      if (is.null(replacement_arg_names)) {
+        replacement_arg_names <- rep("", length(replacement_args))
+      }
+      replacement_arg_names[is.na(replacement_arg_names)] <- ""
+      target_symbol <- if (length(replacement_target) >= 2L && is.symbol(replacement_target[[2L]])) {
+        as.character(replacement_target[[2L]])
+      } else {
+        ""
+      }
+      calls[[length(calls) + 1L]] <<- tccq_call(
+        paste0(target_call_name, "<-"),
+        node,
+        "assignment_rewrite",
+        id = make_id(),
+        kind = "replacement",
+        arity = as.integer(length(replacement_args) + 1L),
+        argument_names = c(replacement_arg_names, "value"),
+        attrs = list(
+          assignment = call_name,
+          target_call = target_call_name,
+          target_symbol = target_symbol,
+          syntax = "complex_assignment"
+        )
+      )
+    }
     children <- as.list(node)[-1L]
     for (child_index in seq_along(children)) {
       if (identical(children[[child_index]], quote(expr = ))) {
@@ -2751,7 +2786,8 @@ tccq_collect_calls <- function(expr, global_calls = character()) {
     NULL
   }
   walk(expr)
-  for (name in global_calls) {
+  observed_names <- unique(vapply(calls, function(call) call@name, character(1)))
+  for (name in setdiff(global_calls, observed_names)) {
     calls[[length(calls) + 1L]] <- tccq_call(name, origin = "codetools", id = make_id())
   }
   calls

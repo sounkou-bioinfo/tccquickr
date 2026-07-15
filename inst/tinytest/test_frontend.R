@@ -389,6 +389,34 @@ expect_true(any(vapply(
   logical(1)
 )))
 
+control_boundary <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  if (flag) x else -x
+}
+
+control_boundary_result <- tccq_analyze(control_boundary)
+expect_false(control_boundary_result@success)
+expect_false(control_boundary_result@value@attrs$lowered)
+expect_true(any(vapply(
+  control_boundary_result@diagnostics,
+  function(x) identical(x@code, "lowering.control_flow_boundary"),
+  logical(1)
+)))
+
+explicit_replacement <- function(x) {
+  declare(type(x = double(n)))
+  `[<-`(x, 1L, value = 2)
+}
+
+explicit_replacement_result <- tccq_analyze(explicit_replacement)
+expect_false(explicit_replacement_result@success)
+expect_false(explicit_replacement_result@value@attrs$lowered)
+expect_true(any(vapply(
+  explicit_replacement_result@diagnostics,
+  function(x) identical(x@code, "lowering.replacement_boundary"),
+  logical(1)
+)))
+
 fold_add <- function(x) x
 fold_add_registry <- tccq_op_registry_add(
   tccq_default_op_registry(),
@@ -447,6 +475,13 @@ replacement_kinds <- setNames(
 
 expect_equal(replacement_kinds[["<-"]], "assignment")
 expect_equal(replacement_kinds[["["]], "index")
+expect_equal(replacement_kinds[["[<-"]], "replacement")
+synthetic_replacement <- replacement_calls[[match("[<-", replacement_names)]]
+expect_equal(synthetic_replacement@origin, "assignment_rewrite")
+expect_equal(synthetic_replacement@arity, 3L)
+expect_equal(synthetic_replacement@argument_names, c("", "", "value"))
+expect_equal(synthetic_replacement@attrs$target_call, "[")
+expect_equal(synthetic_replacement@attrs$target_symbol, "x")
 expect_equal(tccq_call("[<-")@kind, "replacement")
 expect_equal(tccq_call("function")@kind, "function_definition")
 
