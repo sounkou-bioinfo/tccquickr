@@ -275,10 +275,11 @@ written in one loop iteration. `TccqBackendFunctionInterface` assigns stable
 names to those locals; C compound blocks and Fortran `block` constructs declare
 them at the owning statement block. Each block effect is the conservative union
 of its statement effects, including control normalized below a pure operation.
-Branch-local reductions and contractions
-stop until their loop nests can be scheduled inside the selected arm. A
-reduction or contraction whose operand contains control stops separately until
-reducer bodies can consume statement-produced values.
+`TccqBlock` explicitly names the write target produced on every terminal path.
+A reducer or contraction whose operand contains control reads that block-local
+target and combines it before the lexical block closes. Branch-local reductions
+and contractions still stop until their loop nests can be scheduled inside only
+the selected arm.
 
 `for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
 idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and

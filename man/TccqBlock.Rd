@@ -8,6 +8,7 @@ TccqBlock(
   id = character(0),
   locals = list(),
   statements = list(),
+  result = TccqWriteTarget(),
   effect = TccqEffect()
 )
 }
@@ -17,6 +18,8 @@ TccqBlock(
 \item{locals}{Ordered local write targets declared by the block.}
 
 \item{statements}{Ordered \code{TccqStatement} values.}
+
+\item{result}{Typed target produced on every terminal path through the block.}
 
 \item{effect}{Effect summary of evaluating the block.}
 }

@@ -200,9 +200,11 @@ control-valued operand into a block-owned write target before its
 consumer. That target retains the full semantic array type while
 carrying the scalar storage type actually written in each loop
 iteration; the shared function interface assigns its generated name.
-Reductions or contractions inside an arm, and reductions or contractions
-over conditional values, remain separate loop-nest diagnostics until
-selected-arm and statement-producing reducer scheduling exist.
+Every block names the write target produced by its terminal paths. A
+reducer or contraction can therefore consume a conditional element from
+a block-local target while the target is still in scope. Reductions or
+contractions selected inside an arm remain loop-nest diagnostics until
+the planner can schedule their nests inside only the selected arm.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. Locals are single-assignment bindings.
@@ -308,6 +310,10 @@ probes <- list(
     declare(type(x = double(n), flag = logical()))
     exp((if (flag) x else -x) + 1)
   },
+  conditional_reduce = function(x, flag) {
+    declare(type(x = double(n), flag = logical()))
+    sum(if (flag) x else -x)
+  },
   control_flow_probe = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
     out <- 0
@@ -398,6 +404,7 @@ knitr::kable(data.frame(
 | nested_conditional_map  | compiles through C, Fortran, and TinyCC JIT |
 | computed_condition_map  | compiles through C, Fortran, and TinyCC JIT |
 | conditional_composition | compiles through C, Fortran, and TinyCC JIT |
+| conditional_reduce      | compiles through C, Fortran, and TinyCC JIT |
 | control_flow_probe      | `frontend.unimplemented_call`               |
 | apply_reduce_probe      | `frontend.unimplemented_call`               |
 | logistic_gradient       | compiles through C, Fortran, and TinyCC JIT |

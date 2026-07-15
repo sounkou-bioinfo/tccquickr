@@ -4,10 +4,18 @@
 \alias{tccq_block}
 \title{Construct a neutral statement block}
 \usage{
-tccq_block(id, locals = list(), statements = list(), effect = tccq_effect())
+tccq_block(
+  id,
+  result,
+  locals = list(),
+  statements = list(),
+  effect = tccq_effect()
+)
 }
 \arguments{
 \item{id}{Stable block id.}
+
+\item{result}{Typed target produced on every terminal path through the block.}
 
 \item{locals}{Ordered local write targets declared by the block.}
 

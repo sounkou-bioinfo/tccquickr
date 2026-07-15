@@ -25,9 +25,11 @@ condition, or below pure elementwise operations. Control-valued operands are
 normalized left to right into block-owned write targets before their consumers.
 Each target separates the full semantic value type from the scalar storage type
 written in one loop iteration, and C and Fortran declare that storage in the
-lexical source block that owns it. Branch-local reductions and reductions over
-conditional values stop with distinct structured diagnostics until the loop
-planner can schedule selected-arm and statement-producing reducer nests.
+lexical source block that owns it. Each block names the target produced by every
+terminal path, so reductions and contractions can consume conditional elements
+inside the reducer scope. A reduction or contraction selected inside a branch
+arm still stops with a structured diagnostic until the loop planner can
+schedule that nest in only the selected arm.
 
 The remaining north-star pressure is loop and evaluator structure. Viterbi and
 smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement

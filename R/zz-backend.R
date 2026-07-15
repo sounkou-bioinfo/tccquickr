@@ -2034,7 +2034,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         vapply(nest@axes, function(axis) axis@name, character(1))
       }))) %||% character()
       result_rank <- result@type@shape@rank
-      result_needs_local <- S7::S7_inherits(result_nest@body, TccqBlock)
+      result_needs_local <- S7::S7_inherits(result_nest@body, TccqBlock) &&
+        is.null(result_nest@reducer)
       tccq_backend_function_interface(
         symbol = symbol,
         source_language = source_language,
@@ -2149,7 +2150,36 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
       accumulator_name <- nest@attrs$scalar_name %||% interface@accumulator_name
       body_requires_statements <- S7::S7_inherits(nest@body, TccqBlock)
-      body_text <- if (body_requires_statements) "" else expression_text(nest@body, emit_context)
+      body_text <- if (!body_requires_statements) {
+        expression_text(nest@body, emit_context)
+      } else if (!is.null(nest@reducer)) {
+        if (!identical(nest@body@result@kind, "local")) {
+          tccq_abort(
+            "backend.reducer_block_result_not_local",
+            "A statement-producing reducer body must expose a block-local result target.",
+            phase = "backend",
+            path = sprintf("backend.%s.reducer_body", backend@id),
+            data = list(backend = backend@id, nest = nest@id)
+          )
+        }
+        block_result_name <- emit_context$source_name_by_value_id[[nest@body@result@value_id]]
+        if (is.null(block_result_name) || !nzchar(block_result_name)) {
+          tccq_abort(
+            "backend.unbound_reducer_block_result",
+            "A statement-producing reducer body has no generated result name.",
+            phase = "backend",
+            path = sprintf("backend.%s.reducer_body", backend@id),
+            data = list(
+              backend = backend@id,
+              nest = nest@id,
+              value_id = nest@body@result@value_id
+            )
+          )
+        }
+        block_result_name
+      } else {
+        ""
+      }
       value_text <- body_text
       identity_text <- ""
       combine_text <- ""
@@ -2315,7 +2345,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push("}")
       }
       emit_statement <- NULL
-      emit_statement_block <- function(block, result_target) {
+      emit_statement_block <- function(block, result_target, after_statements = NULL) {
         push("{")
         depth <<- depth + 1L
         for (local_target in block@locals) {
@@ -2347,6 +2377,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         for (statement in block@statements) {
           emit_statement(statement, result_target)
+        }
+        if (!is.null(after_statements)) {
+          after_statements()
         }
         depth <<- depth - 1L
         push("}")
@@ -2439,11 +2472,25 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$reduce_axes) {
           open_loop(axis)
         }
-        push(sprintf(
-          "%s = %s;",
-          intermediate_plan$accumulator_name,
-          intermediate_plan$combine_text
-        ))
+        if (intermediate_plan$body_requires_statements) {
+          emit_statement_block(
+            intermediate_plan$body,
+            result_target = "",
+            after_statements = function() {
+              push(sprintf(
+                "%s = %s;",
+                intermediate_plan$accumulator_name,
+                intermediate_plan$combine_text
+              ))
+            }
+          )
+        } else {
+          push(sprintf(
+            "%s = %s;",
+            intermediate_plan$accumulator_name,
+            intermediate_plan$combine_text
+          ))
+        }
         for (axis in intermediate_plan$reduce_axes) {
           close_loop(axis)
         }
@@ -2473,14 +2520,26 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
-        push(sprintf("%s = %s;", plan$accumulator_name, plan$combine_text))
+        if (plan$body_requires_statements) {
+          emit_statement_block(
+            plan$body,
+            result_target = "",
+            after_statements = function() {
+              push(sprintf("%s = %s;", plan$accumulator_name, plan$combine_text))
+            }
+          )
+        } else {
+          push(sprintf("%s = %s;", plan$accumulator_name, plan$combine_text))
+        }
         for (axis in plan$reduce_axes) {
           close_loop(axis)
         }
       }
       if (returns_buffer) {
         output_target <- sprintf("%s[%s]", interface@result_name, plan$output_index)
-        if (plan$body_requires_statements) {
+        if (!is.null(result_nest@reducer)) {
+          push(sprintf("%s = %s;", output_target, plan$value_text))
+        } else if (plan$body_requires_statements) {
           emit_statement_block(plan$body, output_target)
         } else {
           push(sprintf("%s = %s;", output_target, plan$value_text))
@@ -2494,6 +2553,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (returns_buffer) {
         push(sprintf("return %s;", interface@result_name))
+      } else if (!is.null(result_nest@reducer)) {
+        push(sprintf("return %s;", plan$value_text))
       } else if (plan$body_requires_statements) {
         push(sprintf("%s %s;", source_scalar_type(result@type, "c"), interface@result_name))
         emit_statement_block(plan$body, interface@result_name)
@@ -2611,7 +2672,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push("end do")
       }
       emit_statement <- NULL
-      emit_statement_block <- function(block, result_target) {
+      emit_statement_block <- function(block, result_target, after_statements = NULL) {
         push("block")
         depth <<- depth + 1L
         for (local_target in block@locals) {
@@ -2643,6 +2704,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         for (statement in block@statements) {
           emit_statement(statement, result_target)
+        }
+        if (!is.null(after_statements)) {
+          after_statements()
         }
         depth <<- depth - 1L
         push("end block")
@@ -2701,11 +2765,25 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$reduce_axes) {
           open_loop(axis)
         }
-        push(sprintf(
-          "%s = %s",
-          intermediate_plan$accumulator_name,
-          intermediate_plan$combine_text
-        ))
+        if (intermediate_plan$body_requires_statements) {
+          emit_statement_block(
+            intermediate_plan$body,
+            result_target = "",
+            after_statements = function() {
+              push(sprintf(
+                "%s = %s",
+                intermediate_plan$accumulator_name,
+                intermediate_plan$combine_text
+              ))
+            }
+          )
+        } else {
+          push(sprintf(
+            "%s = %s",
+            intermediate_plan$accumulator_name,
+            intermediate_plan$combine_text
+          ))
+        }
         for (axis in intermediate_plan$reduce_axes) {
           close_loop(axis)
         }
@@ -2735,14 +2813,26 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
-        push(sprintf("%s = %s", plan$accumulator_name, plan$combine_text))
+        if (plan$body_requires_statements) {
+          emit_statement_block(
+            plan$body,
+            result_target = "",
+            after_statements = function() {
+              push(sprintf("%s = %s", plan$accumulator_name, plan$combine_text))
+            }
+          )
+        } else {
+          push(sprintf("%s = %s", plan$accumulator_name, plan$combine_text))
+        }
         for (axis in plan$reduce_axes) {
           close_loop(axis)
         }
       }
       if (returns_buffer) {
         output_target <- sprintf("%s(%s + 1)", interface@result_name, plan$output_index)
-        if (plan$body_requires_statements) {
+        if (!is.null(result_nest@reducer)) {
+          push(sprintf("%s = %s", output_target, plan$value_text))
+        } else if (plan$body_requires_statements) {
           emit_statement_block(plan$body, output_target)
         } else {
           push(sprintf("%s = %s", output_target, plan$value_text))
@@ -2752,7 +2842,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         close_loop(axis)
       }
       if (!returns_buffer) {
-        if (plan$body_requires_statements) {
+        if (!is.null(result_nest@reducer)) {
+          push(sprintf("%s = %s", interface@result_name, plan$value_text))
+        } else if (plan$body_requires_statements) {
           emit_statement_block(plan$body, interface@result_name)
         } else {
           push(sprintf("%s = %s", interface@result_name, plan$value_text))

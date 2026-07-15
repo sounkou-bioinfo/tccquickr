@@ -200,16 +200,20 @@ For the reset core, keep these rules explicit:
   condition, or under pure elementwise operations. Loop-nest lowering turns
   value-producing control into `TccqBlock`, `TccqAssignment`, and
   `TccqConditional` values over typed `TccqWriteTarget` destinations. It
-  normalizes control-valued operands left to right before their consumer.
+  normalizes control-valued operands left to right before their consumer. A
+  block explicitly names the result target produced by every terminal path;
+  reducers and contractions consume a block-local result inside the reduction
+  scope rather than asking a source printer to infer the yielded value.
   Every write target retains the full semantic value type and a distinct
   scalar storage type for the element written inside the loop; block-owned
   locals receive backend names through `TccqBackendFunctionInterface` and are
   declared in the source block that owns them. Statement-block effects are the
   conservative union of their statement effects; normalization must not hide
-  a nested control effect behind a pure consumer. Branch-local reductions and
-  reductions or contractions over conditional values remain distinct typed
-  scheduling failures rather than being hoisted, eagerly evaluated, or hidden
-  in a target ternary.
+  a nested control effect behind a pure consumer. A reduction or contraction
+  may consume conditional values through this block result. A reduction or
+  contraction selected inside a branch arm remains a distinct typed scheduling
+  failure rather than being hoisted, eagerly evaluated, or hidden in a target
+  ternary.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.

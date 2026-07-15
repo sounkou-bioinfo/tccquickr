@@ -148,12 +148,21 @@ alternative_assignment <- tccq_assignment(
 conditional_statement <- tccq_conditional(
   "statement_if",
   condition_expression,
-  tccq_block("block_consequent", statements = list(consequent_assignment)),
-  tccq_block("block_alternative", statements = list(alternative_assignment)),
+  tccq_block(
+    "block_consequent",
+    result = result_target,
+    statements = list(consequent_assignment)
+  ),
+  tccq_block(
+    "block_alternative",
+    result = result_target,
+    statements = list(alternative_assignment)
+  ),
   branch_value
 )
 statement_block <- tccq_block(
   "block_if",
+  result = result_target,
   statements = list(conditional_statement),
   effect = branch_value@effect
 )
@@ -164,6 +173,43 @@ expect_true(S7::S7_inherits(consequent_assignment, TccqStatement))
 expect_true(S7::S7_inherits(consequent_assignment, TccqAssignment))
 expect_true(S7::S7_inherits(conditional_statement, TccqConditional))
 expect_true(S7::S7_inherits(statement_block, TccqBlock))
+expect_identical(statement_block@result, result_target)
+
+other_result_target <- tccq_write_target("value_other", finite@type, kind = "result")
+bad_block_result <- tryCatch(
+  tccq_block(
+    "block_bad_result",
+    result = other_result_target,
+    statements = list(consequent_assignment)
+  ),
+  error = identity
+)
+expect_true(inherits(bad_block_result, "error"))
+
+other_result_assignment <- tccq_assignment(
+  "statement_other_result",
+  other_result_target,
+  literal_expression
+)
+bad_conditional_result <- tryCatch(
+  tccq_conditional(
+    "statement_bad_result",
+    condition_expression,
+    tccq_block(
+      "block_bad_consequent",
+      result = result_target,
+      statements = list(consequent_assignment)
+    ),
+    tccq_block(
+      "block_bad_alternative",
+      result = other_result_target,
+      statements = list(other_result_assignment)
+    ),
+    branch_value
+  ),
+  error = identity
+)
+expect_true(inherits(bad_conditional_result, "error"))
 
 statement_nest <- tccq_loop_nest(
   "loop_nest_statement",

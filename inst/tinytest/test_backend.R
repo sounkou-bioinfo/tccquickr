@@ -1279,23 +1279,129 @@ conditional_reduction_operand <- function(x, flag) {
   declare(type(x = double(n), flag = logical()))
   sum(if (flag) x else -x)
 }
+conditional_axis_reduction <- function(x, flag) {
+  declare(type(x = double(n, p), flag = logical()))
+  colSums(if (flag) x else -x)
+}
+conditional_reduction_composition <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  sum(if (flag) x else -x) + 1
+}
+conditional_contraction <- function(x, weights, flag) {
+  declare(type(x = double(n, p), weights = double(p), flag = logical()))
+  (if (flag) x else -x) %*% weights
+}
 conditional_reduction_program <- tccq_analyze(
   conditional_reduction_operand,
+  strict = TRUE
+)@value
+conditional_axis_reduction_program <- tccq_analyze(
+  conditional_axis_reduction,
+  strict = TRUE
+)@value
+conditional_reduction_composition_program <- tccq_analyze(
+  conditional_reduction_composition,
+  strict = TRUE
+)@value
+conditional_contraction_program <- tccq_analyze(
+  conditional_contraction,
   strict = TRUE
 )@value
 conditional_reduction_nests <- tccq_program_loop_nests(
   conditional_reduction_program
 )
-expect_false(conditional_reduction_nests@success)
-expect_true(any(vapply(
-  conditional_reduction_nests@diagnostics,
-  function(diagnostic) {
-    identical(diagnostic@code, "loop_nest.control_materialization_operand")
-  },
-  logical(1)
-)))
+conditional_axis_reduction_nests <- tccq_program_loop_nests(
+  conditional_axis_reduction_program
+)
+conditional_reduction_composition_nests <- tccq_program_loop_nests(
+  conditional_reduction_composition_program
+)
+conditional_contraction_nests <- tccq_program_loop_nests(
+  conditional_contraction_program
+)
+expect_true(conditional_reduction_nests@success)
+expect_true(conditional_axis_reduction_nests@success)
+expect_true(conditional_reduction_composition_nests@success)
+expect_true(conditional_contraction_nests@success)
+
+conditional_reduction_body <- conditional_reduction_nests@value[[1L]]@body
+expect_true(S7::S7_inherits(conditional_reduction_body, TccqBlock))
+expect_equal(conditional_reduction_body@result@kind, "local")
+expect_identical(
+  conditional_reduction_body@locals[[1L]],
+  conditional_reduction_body@result
+)
+expect_equal(conditional_reduction_body@result@type@shape@rank, 1L)
+expect_equal(conditional_reduction_body@result@storage_type@shape@rank, 0L)
+expect_equal(conditional_reduction_nests@value[[1L]]@reducer@name, "sum")
+expect_true(S7::S7_inherits(
+  conditional_axis_reduction_nests@value[[1L]]@body,
+  TccqBlock
+))
+expect_equal(length(conditional_reduction_composition_nests@value), 2L)
+expect_true(S7::S7_inherits(
+  conditional_reduction_composition_nests@value[[1L]]@body,
+  TccqBlock
+))
+expect_true(S7::S7_inherits(
+  conditional_contraction_nests@value[[1L]]@body,
+  TccqBlock
+))
+
+conditional_reduction_c <- tccq_plan_backend(
+  conditional_reduction_program,
+  tccq_c_backend()
+)
+conditional_reduction_fortran <- tccq_plan_backend(
+  conditional_reduction_program,
+  tccq_fortran_backend()
+)
+conditional_axis_reduction_c <- tccq_plan_backend(
+  conditional_axis_reduction_program,
+  tccq_c_backend()
+)
+conditional_axis_reduction_fortran <- tccq_plan_backend(
+  conditional_axis_reduction_program,
+  tccq_fortran_backend()
+)
+conditional_reduction_composition_c <- tccq_plan_backend(
+  conditional_reduction_composition_program,
+  tccq_c_backend()
+)
+conditional_reduction_composition_fortran <- tccq_plan_backend(
+  conditional_reduction_composition_program,
+  tccq_fortran_backend()
+)
+conditional_contraction_c <- tccq_plan_backend(
+  conditional_contraction_program,
+  tccq_c_backend()
+)
+conditional_contraction_fortran <- tccq_plan_backend(
+  conditional_contraction_program,
+  tccq_fortran_backend()
+)
+expect_true(conditional_reduction_c@success)
+expect_true(conditional_reduction_fortran@success)
+expect_true(conditional_axis_reduction_c@success)
+expect_true(conditional_axis_reduction_fortran@success)
+expect_true(conditional_reduction_composition_c@success)
+expect_true(conditional_reduction_composition_fortran@success)
+expect_true(conditional_contraction_c@success)
+expect_true(conditional_contraction_fortran@success)
+expect_equal(
+  vapply(
+    backend_interface(conditional_reduction_c)@local_storage_types,
+    function(type) type@shape@rank,
+    integer(1)
+  ),
+  0L
+)
 
 branch_x <- c(1, -2, 3.5)
+conditional_matrix <- matrix(c(1, 4, 9, 16, 25, 36), nrow = 2)
+conditional_weights <- c(2, 3, 5)
+conditional_axis_expected <- colSums(conditional_matrix)
+conditional_contraction_expected <- drop(conditional_matrix %*% conditional_weights)
 if (rtinycc_jit_available) {
   branch_jit_plan <- tccq_plan_backend(
     branch_program,
@@ -1357,6 +1463,53 @@ if (rtinycc_jit_available) {
     exp(-branch_x + 1)
   )
 
+  conditional_reduction_jit <- tccq_plan_backend(
+    conditional_reduction_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  conditional_axis_reduction_jit <- tccq_plan_backend(
+    conditional_axis_reduction_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  conditional_reduction_composition_jit <- tccq_plan_backend(
+    conditional_reduction_composition_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  conditional_contraction_jit <- tccq_plan_backend(
+    conditional_contraction_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(conditional_reduction_jit@success)
+  expect_true(conditional_axis_reduction_jit@success)
+  expect_true(conditional_reduction_composition_jit@success)
+  expect_true(conditional_contraction_jit@success)
+  expect_equal(backend_callable(conditional_reduction_jit)(branch_x, TRUE), sum(branch_x))
+  expect_equal(backend_callable(conditional_reduction_jit)(branch_x, FALSE), sum(-branch_x))
+  expect_equal(
+    backend_callable(conditional_axis_reduction_jit)(conditional_matrix, TRUE),
+    conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(conditional_axis_reduction_jit)(conditional_matrix, FALSE),
+    -conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(conditional_reduction_composition_jit)(branch_x, TRUE),
+    sum(branch_x) + 1
+  )
+  expect_equal(
+    backend_callable(conditional_contraction_jit)(
+      conditional_matrix,
+      conditional_weights,
+      FALSE
+    ),
+    -conditional_contraction_expected
+  )
+
   logical_branch_jit <- tccq_plan_backend(
     logical_branch_program,
     tccq_rtinycc_backend(),
@@ -1400,6 +1553,51 @@ if (can_build_shared_library("c")) {
   expect_equal(
     backend_callable(conditional_composition_c_shared)(branch_x, FALSE),
     exp(-branch_x + 1)
+  )
+
+  conditional_reduction_c_shared <- tccq_plan_backend(
+    conditional_reduction_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  conditional_axis_reduction_c_shared <- tccq_plan_backend(
+    conditional_axis_reduction_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  conditional_reduction_composition_c_shared <- tccq_plan_backend(
+    conditional_reduction_composition_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  conditional_contraction_c_shared <- tccq_plan_backend(
+    conditional_contraction_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(conditional_reduction_c_shared@success)
+  expect_true(conditional_axis_reduction_c_shared@success)
+  expect_true(conditional_reduction_composition_c_shared@success)
+  expect_true(conditional_contraction_c_shared@success)
+  expect_equal(
+    backend_callable(conditional_reduction_c_shared)(branch_x, TRUE),
+    sum(branch_x)
+  )
+  expect_equal(
+    backend_callable(conditional_axis_reduction_c_shared)(conditional_matrix, FALSE),
+    -conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(conditional_reduction_composition_c_shared)(branch_x, FALSE),
+    sum(-branch_x) + 1
+  )
+  expect_equal(
+    backend_callable(conditional_contraction_c_shared)(
+      conditional_matrix,
+      conditional_weights,
+      TRUE
+    ),
+    conditional_contraction_expected
   )
 }
 
@@ -1468,6 +1666,51 @@ if (can_build_shared_library("fortran")) {
   expect_equal(
     backend_callable(conditional_composition_fortran_shared)(branch_x, FALSE),
     exp(-branch_x + 1)
+  )
+
+  conditional_reduction_fortran_shared <- tccq_plan_backend(
+    conditional_reduction_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  conditional_axis_reduction_fortran_shared <- tccq_plan_backend(
+    conditional_axis_reduction_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  conditional_reduction_composition_fortran_shared <- tccq_plan_backend(
+    conditional_reduction_composition_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  conditional_contraction_fortran_shared <- tccq_plan_backend(
+    conditional_contraction_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(conditional_reduction_fortran_shared@success)
+  expect_true(conditional_axis_reduction_fortran_shared@success)
+  expect_true(conditional_reduction_composition_fortran_shared@success)
+  expect_true(conditional_contraction_fortran_shared@success)
+  expect_equal(
+    backend_callable(conditional_reduction_fortran_shared)(branch_x, FALSE),
+    sum(-branch_x)
+  )
+  expect_equal(
+    backend_callable(conditional_axis_reduction_fortran_shared)(conditional_matrix, TRUE),
+    conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(conditional_reduction_composition_fortran_shared)(branch_x, TRUE),
+    sum(branch_x) + 1
+  )
+  expect_equal(
+    backend_callable(conditional_contraction_fortran_shared)(
+      conditional_matrix,
+      conditional_weights,
+      FALSE
+    ),
+    -conditional_contraction_expected
   )
 
   logical_branch_fortran_shared <- tccq_plan_backend(
