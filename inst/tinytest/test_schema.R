@@ -454,11 +454,52 @@ expect_true(counter_cell@mutable)
 expect_identical(counter_reference@cell, counter_cell)
 expect_identical(counter_target@binding, counter_cell)
 expect_true(counter_assignment@effect@writes)
+expect_true(S7::S7_inherits(while_statement, TccqLoop))
 expect_true(S7::S7_inherits(while_statement, TccqWhile))
 expect_true(while_statement@effect@reads)
 expect_true(while_statement@effect@writes)
 expect_true(while_statement@effect@may_error)
 expect_equal(while_statement@semantics@forcing_policy, "special")
+
+break_semantics <- tccq_call_semantics(tccq_call(
+  "break",
+  expr = quote(break)
+))
+next_semantics <- tccq_call_semantics(tccq_call(
+  "next",
+  expr = quote(next)
+))
+break_statement <- tccq_loop_transfer(
+  "statement_break",
+  "break",
+  break_semantics
+)
+next_statement <- tccq_loop_transfer(
+  "statement_next",
+  "next",
+  next_semantics
+)
+repeat_body <- TccqBlock(
+  id = "block_repeat",
+  locals = list(),
+  statements = list(break_statement),
+  effect = break_statement@effect
+)
+repeat_statement <- tccq_repeat(
+  "statement_repeat",
+  repeat_body,
+  tccq_call_semantics(tccq_call(
+    "repeat",
+    expr = quote(repeat break)
+  ))
+)
+expect_true(S7::S7_inherits(repeat_statement, TccqLoop))
+expect_true(S7::S7_inherits(repeat_statement, TccqRepeat))
+expect_true(S7::S7_inherits(break_statement, TccqLoopTransfer))
+expect_equal(break_statement@action, "break")
+expect_equal(next_statement@action, "next")
+expect_identical(repeat_statement@effect, repeat_body@effect)
+expect_identical(break_statement@effect, tccq_effect())
 
 counter_initialization <- tccq_assignment(
   "statement_counter_initialization",
@@ -482,6 +523,7 @@ counter_program_body <- tccq_value_block(
   statements = list(
     counter_initialization,
     while_statement,
+    repeat_statement,
     counter_result_assignment
   )
 )
@@ -508,6 +550,27 @@ counter_program_schedule <- tccq_program_schedule(
 )
 expect_equal(length(counter_program_schedule@steps), 0L)
 expect_identical(counter_program_schedule@body, counter_program_body)
+
+transfer_outside_loop_body <- tccq_value_block(
+  "block_transfer_outside_loop",
+  result = counter_result_target,
+  locals = list(counter_target),
+  statements = list(
+    counter_initialization,
+    next_statement,
+    counter_result_assignment
+  )
+)
+transfer_outside_loop <- tryCatch(
+  tccq_program_schedule(
+    steps = list(),
+    result = counter_reference@id,
+    values = counter_program_values,
+    body = transfer_outside_loop_body
+  ),
+  error = identity
+)
+expect_true(inherits(transfer_outside_loop, "schema.loop_transfer_outside_loop"))
 
 mismatched_body_result <- tryCatch(
   tccq_program_schedule(

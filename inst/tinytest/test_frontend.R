@@ -642,16 +642,30 @@ expect_true(any(vapply(
 )))
 
 loop_boundary <- function(x) {
-  declare(type(x = double(n)))
+  declare(type(x = double()))
   repeat break
   x
 }
 
-loop_boundary_result <- tccq_analyze(loop_boundary)
-expect_false(loop_boundary_result@success)
+loop_boundary_result <- tccq_analyze(loop_boundary, strict = TRUE)
+expect_true(loop_boundary_result@success)
+repeat_statement <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqRepeat),
+  loop_boundary_result@value@schedule@body@statements
+)[[1L]]
+expect_true(S7::S7_inherits(repeat_statement, TccqLoop))
+expect_equal(repeat_statement@body@statements[[1L]]@action, "break")
+
+transfer_outside_loop <- function(x) {
+  declare(type(x = double(n)))
+  break
+  x
+}
+transfer_outside_loop_result <- tccq_analyze(transfer_outside_loop)
+expect_false(transfer_outside_loop_result@success)
 expect_true(any(vapply(
-  loop_boundary_result@diagnostics,
-  function(x) identical(x@code, "lowering.control_flow_boundary"),
+  transfer_outside_loop_result@diagnostics,
+  function(x) identical(x@code, "lowering.loop_transfer_outside_loop"),
   logical(1)
 )))
 
@@ -753,6 +767,44 @@ without_else_if <- Filter(
   without_else_while@body@statements
 )[[1L]]
 expect_equal(length(without_else_if@alternative@statements), 0L)
+
+repeat_recurrence <- function(n) {
+  declare(type(n = double()))
+  iteration <- 0
+  total <- 0
+  repeat {
+    iteration <- iteration + 1
+    if (iteration > n) break
+    if (iteration == 2) next
+    total <- total + iteration
+  }
+  total
+}
+repeat_result <- tccq_analyze(repeat_recurrence, strict = TRUE)
+expect_true(repeat_result@success)
+repeat_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqRepeat),
+  repeat_result@value@schedule@body@statements
+)[[1L]]
+repeat_transfers <- unlist(lapply(
+  Filter(
+    function(statement) S7::S7_inherits(statement, TccqIf),
+    repeat_loop@body@statements
+  ),
+  function(statement) c(
+    statement@consequent@statements,
+    statement@alternative@statements
+  )
+), recursive = FALSE)
+repeat_actions <- vapply(
+  Filter(
+    function(statement) S7::S7_inherits(statement, TccqLoopTransfer),
+    repeat_transfers
+  ),
+  function(statement) statement@action,
+  character(1)
+)
+expect_equal(sort(repeat_actions), c("break", "next"))
 
 uninitialized_recurrence <- function(n) {
   declare(type(n = double()))

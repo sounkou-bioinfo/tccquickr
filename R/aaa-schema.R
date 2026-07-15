@@ -2011,7 +2011,12 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
       invisible(NULL)
     }
 
-    validate_block <- function(block, initialized_cells, visible_local_targets = list()) {
+    validate_block <- function(
+      block,
+      initialized_cells,
+      visible_local_targets = list(),
+      loop_depth = 0L
+    ) {
       current_cells <- initialized_cells
       current_local_targets <- visible_local_targets
       for (local_target in block@locals) {
@@ -2047,17 +2052,44 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
           consequent_cells <- validate_block(
             statement@consequent,
             current_cells,
-            current_local_targets
+            current_local_targets,
+            loop_depth
           )
           alternative_cells <- validate_block(
             statement@alternative,
             current_cells,
-            current_local_targets
+            current_local_targets,
+            loop_depth
           )
           current_cells <- intersect(consequent_cells, alternative_cells)
-        } else if (S7::S7_inherits(statement, TccqWhile)) {
-          validate_expression(statement@condition, current_cells, statement@id)
-          validate_block(statement@body, current_cells, current_local_targets)
+        } else if (S7::S7_inherits(statement, TccqLoopTransfer)) {
+          if (loop_depth == 0L) {
+            tccq_abort(
+              "schema.loop_transfer_outside_loop",
+              "A structured loop transfer must be nested inside a loop.",
+              phase = "schema",
+              path = "program_schedule.body.statements",
+              data = list(statement = statement@id, action = statement@action)
+            )
+          }
+        } else if (S7::S7_inherits(statement, TccqLoop)) {
+          if (S7::S7_inherits(statement, TccqWhile)) {
+            validate_expression(statement@condition, current_cells, statement@id)
+          } else if (!S7::S7_inherits(statement, TccqRepeat)) {
+            tccq_abort(
+              "schema.unsupported_program_loop",
+              "The structured schedule contains an unknown loop class.",
+              phase = "schema",
+              path = "program_schedule.body.statements",
+              data = list(statement = statement@id, class = class(statement))
+            )
+          }
+          validate_block(
+            statement@body,
+            current_cells,
+            current_local_targets,
+            loop_depth + 1L
+          )
         } else {
           tccq_abort(
             "schema.unsupported_program_statement",

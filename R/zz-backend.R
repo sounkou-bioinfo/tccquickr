@@ -2182,7 +2182,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           if (S7::S7_inherits(statement, TccqIf)) {
             collect_block_locals(statement@consequent)
             collect_block_locals(statement@alternative)
-          } else if (S7::S7_inherits(statement, TccqWhile)) {
+          } else if (S7::S7_inherits(statement, TccqLoop)) {
             collect_block_locals(statement@body)
           }
         }
@@ -2195,6 +2195,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           }
           if (S7::S7_inherits(statement, TccqWhile)) {
             return(TRUE)
+          }
+          if (S7::S7_inherits(statement, TccqLoop)) {
+            return(block_has_condition(statement@body))
           }
           FALSE
         }, logical(1)))
@@ -2813,6 +2816,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push(sprintf("%s = %s;", target, expression_text(statement@value, emit_context)))
           return(invisible(NULL))
         }
+        if (S7::S7_inherits(statement, TccqLoopTransfer)) {
+          source_action <- if (identical(statement@action, "break")) "break" else "continue"
+          push(sprintf("%s;", source_action))
+          return(invisible(NULL))
+        }
         if (S7::S7_inherits(statement, TccqIf)) {
           push("{")
           depth <<- depth + 1L
@@ -2839,6 +2847,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push("if (condition_value == 0) break;")
           depth <<- depth - 1L
           push("}")
+          emit_statement_block(statement@body, result_target)
+          depth <<- depth - 1L
+          push("}")
+          return(invisible(NULL))
+        }
+        if (S7::S7_inherits(statement, TccqRepeat)) {
+          push("while (1) {")
+          depth <<- depth + 1L
           emit_statement_block(statement@body, result_target)
           depth <<- depth - 1L
           push("}")
@@ -3353,6 +3369,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push(sprintf("%s = %s", target, expression_text(statement@value, emit_context)))
           return(invisible(NULL))
         }
+        if (S7::S7_inherits(statement, TccqLoopTransfer)) {
+          source_action <- if (identical(statement@action, "break")) "exit" else "cycle"
+          push(source_action)
+          return(invisible(NULL))
+        }
         if (S7::S7_inherits(statement, TccqIf)) {
           push("block")
           depth <<- depth + 1L
@@ -3381,6 +3402,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push("if (condition_value == 0_c_int) exit")
           depth <<- depth - 1L
           push("end block")
+          emit_statement_block(statement@body, result_target)
+          depth <<- depth - 1L
+          push("end do")
+          return(invisible(NULL))
+        }
+        if (S7::S7_inherits(statement, TccqRepeat)) {
+          push("do")
+          depth <<- depth + 1L
           emit_statement_block(statement@body, result_target)
           depth <<- depth - 1L
           push("end do")

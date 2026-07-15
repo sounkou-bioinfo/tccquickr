@@ -233,16 +233,21 @@ For the reset core, keep these rules explicit:
   target ternary. C uses nullable owned buffers for guarded arrays; Fortran uses
   guarded allocatable arrays. Both clean up through the same typed nest/slot
   ownership fact.
-- Sequential recurrence is represented by `TccqWhile` inside a typed
-  `TccqBlock`/`TccqValueBlock`, not by extending `TccqLoopNest`. Loop-carried
-  scalar state is explicit mutable `TccqCell` storage, distinct from immutable
-  SSA `TccqLocalBinding` definitions; cell reads are neutral expressions and
-  assignments carry write effects. C, Fortran, and Rtinycc must consume the
-  same typed program body. Procedural branches inside that body are `TccqIf`
-  statements over general `TccqBlock` arms; a missing `else` is an explicit
-  empty alternative block rather than a fabricated result. The current slice
-  requires initialization before loop entry and does not cover `for`,
-  `repeat`, `break`, `next`, or array-carried state. Numeric comparison
+- Sequential loops inherit from abstract `TccqLoop` inside a typed
+  `TccqBlock`/`TccqValueBlock`; `TccqWhile` adds a header condition and
+  `TccqRepeat` enters its body unconditionally. Neither extends `TccqLoopNest`.
+  Loop-carried scalar state is explicit mutable `TccqCell` storage, distinct
+  from immutable SSA `TccqLocalBinding` definitions; cell reads are neutral
+  expressions and assignments carry write effects. C, Fortran, and Rtinycc
+  must consume the same typed program body. Procedural branches inside that
+  body are `TccqIf` statements over general `TccqBlock` arms; a missing `else`
+  is an explicit empty alternative block rather than a fabricated result.
+  `break` and `next` are `TccqLoopTransfer` statements whose validated action
+  targets the nearest enclosing loop. A transfer is control completion, not an
+  ordinary `TccqEffect`; transformations must treat it as a terminator even
+  though it fabricates no read/write effect. The current slice requires scalar
+  cells to be initialized before loop entry and does not cover `for`, labeled
+  or nonlocal transfer, or array-carried state. Numeric comparison
   implementations must preserve `NA`/`NaN` in logical results so `while` and
   `if` can report R's missing-condition error.
 - `TccqProgramSchedule` is the sole owner of top-level order. It carries either

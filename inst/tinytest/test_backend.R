@@ -1286,6 +1286,42 @@ expect_true(grepl("while (1)", backend_source(conditional_c), fixed = TRUE))
 expect_true(grepl("if (condition_value != 0)", backend_source(conditional_c), fixed = TRUE))
 expect_true(grepl("if (condition_value /= 0_c_int) then", backend_source(conditional_fortran), fixed = TRUE))
 
+repeat_recurrence <- function(n) {
+  declare(type(n = double()))
+  iteration <- 0
+  total <- 0
+  repeat {
+    iteration <- iteration + 1
+    if (iteration > n) break
+    if (iteration == 2) next
+    total <- total + iteration
+  }
+  total
+}
+repeat_program <- tccq_analyze(repeat_recurrence, strict = TRUE)@value
+repeat_c <- tccq_plan_backend(
+  repeat_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+repeat_fortran <- tccq_plan_backend(
+  repeat_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(repeat_c@success)
+expect_true(repeat_fortran@success)
+expect_true(any(vapply(
+  backend_products(repeat_c)@body@statements,
+  S7::S7_inherits,
+  logical(1),
+  class = TccqRepeat
+)))
+expect_true(grepl("continue;", backend_source(repeat_c), fixed = TRUE))
+expect_true(grepl("break;", backend_source(repeat_c), fixed = TRUE))
+expect_true(grepl("cycle", backend_source(repeat_fortran), fixed = TRUE))
+expect_true(grepl("exit", backend_source(repeat_fortran), fixed = TRUE))
+
 nonfinite_branch <- function(flag) {
   declare(type(flag = logical(), returns = double()))
   if (flag) NaN else Inf
@@ -3703,4 +3739,42 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(conditional_fortran_shared@success)
   check_conditional_recurrence(backend_callable(conditional_fortran_shared))
+}
+
+repeat_inputs <- c(0, 1, 2, 5)
+repeat_expected <- vapply(repeat_inputs, repeat_recurrence, numeric(1))
+check_repeat_recurrence <- function(callable) {
+  expect_equal(vapply(repeat_inputs, callable, numeric(1)), repeat_expected)
+  missing_condition <- tryCatch(callable(NA_real_), error = identity)
+  expect_true(inherits(missing_condition, "runtime.invalid_logical_condition"))
+}
+
+if (rtinycc_jit_available) {
+  repeat_jit <- tccq_plan_backend(
+    repeat_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(repeat_jit@success)
+  check_repeat_recurrence(backend_callable(repeat_jit))
+}
+
+if (can_build_shared_library("c")) {
+  repeat_c_shared <- tccq_plan_backend(
+    repeat_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(repeat_c_shared@success)
+  check_repeat_recurrence(backend_callable(repeat_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  repeat_fortran_shared <- tccq_plan_backend(
+    repeat_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(repeat_fortran_shared@success)
+  check_repeat_recurrence(backend_callable(repeat_fortran_shared))
 }

@@ -191,20 +191,24 @@ The retained `TccqBranch` effect describes the original source computation,
 while a normalized `TccqConditional` effect describes only the work left in its
 statement arms after guarded operations have been extracted.
 
-**Sequential recurrence.** The first executable sequential slice accepts a
-scalar `while` recurrence whose loop-carried variables are initialized before
-entry and assigned scalar values in the body. Each carried variable is a
-mutable `TccqCell`, deliberately distinct from the immutable
-`TccqLocalBinding` used by the top-level SSA schedule. Cell reads remain neutral
-expressions; writes and the `TccqWhile` statement live in a typed
-`TccqValueBlock`. A nested procedural `if` is a `TccqIf` whose consequent and
-alternative are general typed blocks; omitting `else` produces an explicit
+**Sequential recurrence.** The executable sequential slice uses abstract
+`TccqLoop` as the shared loop contract. `TccqWhile` adds a scalar logical header
+condition; `TccqRepeat` enters its typed body unconditionally. Loop-carried
+variables are initialized before entry and assigned scalar values in the body.
+Each carried variable is a mutable `TccqCell`, deliberately distinct from the
+immutable `TccqLocalBinding` used by the top-level SSA schedule. Cell reads remain neutral
+expressions; writes and concrete loop statements live in a typed
+`TccqValueBlock`. `break` and `next` become `TccqLoopTransfer` statements aimed
+at the nearest enclosing loop. They are typed control completion rather than
+fabricated read/write effects. A nested procedural `if` is a `TccqIf` whose
+consequent and alternative are general typed blocks; omitting `else` produces an explicit
 empty alternative block. C, Fortran, and Rtinycc consume that same structured
 body without encoding recurrence as a `TccqLoopNest`. The body is the
-structured form of `TccqProgramSchedule`, so there is still one top-level owner of order;
+structured form of `TccqProgramSchedule`, so there is still one top-level owner
+of order;
 the schedule constructor validates result identity, graph references, exact
 cell and local ownership, graph-consistent target types, and initialization
-dominance. `repeat`, `break`, `next`, `for`, and array-carried state remain
+dominance. `for`, labeled or nonlocal transfer, and array-carried state remain
 structured refusals rather than emitter conventions.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in declared
@@ -443,7 +447,7 @@ The compiler core is typed all the way down: S7 schemas for values, shapes,
 effects, regions, and plans; `s7contract` interfaces between phases; classed
 diagnostics instead of error strings; neutral expression and statement values;
 one `TccqLoopNest` abstraction for data-parallel iteration; and structured
-`TccqBlock`/`TccqIf`/`TccqWhile` values for sequential recurrence. Every source
+`TccqBlock`/`TccqIf`/`TccqLoop` values for sequential recurrence. Every source
 backend consumes the same neutral handoff.
 The full phase-by-phase story —
 call semantics, operation registries, lowering, loop nests, bridges, backend

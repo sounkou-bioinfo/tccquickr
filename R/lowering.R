@@ -1551,6 +1551,35 @@ tccq_lower_function <- function(
       if (call_name %in% c("<-", "=") && length(expr) == 3L) {
         return(lower_cell_assignment(expr, in_loop))
       }
+      if (call_name %in% TCCQ_LOOP_TRANSFER_ACTIONS && length(expr) == 1L) {
+        if (!isTRUE(in_loop)) {
+          return(diagnostic_value(
+            "lowering.loop_transfer_outside_loop",
+            sprintf("Loop transfer `%s` must occur inside a sequential loop.", call_name),
+            expr,
+            data = list(action = call_name)
+          ))
+        }
+        semantics <- take_semantics(expr, call_name)
+        if (is.null(semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            sprintf("The `%s` call has no matching evaluator facts in the frontend call index.", call_name),
+            expr,
+            data = list(action = call_name)
+          ))
+        }
+        return(list(
+          value_id = NULL,
+          type = NULL,
+          statement = tccq_loop_transfer(
+            next_statement_id(),
+            call_name,
+            semantics
+          ),
+          diagnostics = list()
+        ))
+      }
       if (identical(call_name, "if") && length(expr) %in% c(3L, 4L)) {
         semantics <- take_semantics(expr, "if")
         if (is.null(semantics)) {
@@ -1656,9 +1685,33 @@ tccq_lower_function <- function(
           diagnostics = list()
         ))
       }
+      if (identical(call_name, "repeat") && length(expr) == 2L) {
+        semantics <- take_semantics(expr, "repeat")
+        if (is.null(semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            "The `repeat` call has no matching evaluator facts in the frontend call index.",
+            expr
+          ))
+        }
+        body_result <- lower_control_block(expr[[2L]], in_loop = TRUE)
+        if (length(body_result$diagnostics) > 0L) {
+          return(body_result)
+        }
+        return(list(
+          value_id = NULL,
+          type = NULL,
+          statement = tccq_repeat(
+            next_statement_id(),
+            body_result$block,
+            semantics
+          ),
+          diagnostics = list()
+        ))
+      }
       diagnostic_value(
         "lowering.unsupported_sequential_statement",
-        "Sequential blocks currently accept cell assignments, procedural `if`, and `while` statements.",
+        "Sequential blocks currently accept cell assignments, procedural `if`, `while`, `repeat`, `break`, and `next` statements.",
         expr,
         data = list(call = call_name)
       )
@@ -1801,13 +1854,19 @@ tccq_lower_function <- function(
     function(call) call@name,
     character(1)
   ))
-  has_sequential_control <- "while" %in% executable_call_names
-  while_calls <- Filter(function(call) identical(call@name, "while"), executable_calls)
-  loop_cell_names <- unique(unlist(lapply(while_calls, function(call) {
-    if (!is.call(call@expr) || length(call@expr) != 3L) {
+  sequential_control_names <- c("while", "repeat", TCCQ_LOOP_TRANSFER_ACTIONS)
+  has_sequential_control <- any(sequential_control_names %in% executable_call_names)
+  loop_calls <- Filter(
+    function(call) call@name %in% c("while", "repeat"),
+    executable_calls
+  )
+  loop_cell_names <- unique(unlist(lapply(loop_calls, function(call) {
+    expected_length <- if (identical(call@name, "while")) 3L else 2L
+    if (!is.call(call@expr) || length(call@expr) != expected_length) {
       return(character())
     }
-    body_calls <- tccq_collect_calls(call@expr[[3L]])
+    body_position <- if (identical(call@name, "while")) 3L else 2L
+    body_calls <- tccq_collect_calls(call@expr[[body_position]])
     assignments <- Filter(
       function(body_call) {
         body_call@name %in% c("<-", "=") &&
@@ -1828,7 +1887,7 @@ tccq_lower_function <- function(
     if (!call@name %in% executable_call_names) {
       return(NULL)
     }
-    lowerable_controls <- c("if", if (has_sequential_control) "while")
+    lowerable_controls <- c("if", if (has_sequential_control) sequential_control_names)
     if (isTRUE(semantics@control) && !call@name %in% lowerable_controls) {
       return(tccq_diagnostic(
         "lowering.control_flow_boundary",
@@ -1914,7 +1973,10 @@ tccq_lower_function <- function(
       effect = sequential_result$body@effect,
       memory_space = "host",
       touches_rapi = FALSE,
-      attrs = list(result = sequential_result$value_id, control = "while")
+      attrs = list(
+        result = sequential_result$value_id,
+        control = intersect(sequential_control_names, executable_call_names)
+      )
     )
     return(new_plan(
       values = state$values,

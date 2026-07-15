@@ -1,4 +1,6 @@
 TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation", "branch")
+TCCQ_LOOP_CALL_NAMES <- c("for", "while", "repeat")
+TCCQ_LOOP_TRANSFER_ACTIONS <- c("break", "next")
 
 #' Typed expression reference
 #'
@@ -724,6 +726,7 @@ TccqWriteTarget <- S7::new_class(
 TccqStatement <- S7::new_class(
   "TccqStatement",
   package = "tccquickr",
+  abstract = TRUE,
   properties = list(
     id = S7::class_character,
     effect = TccqEffect
@@ -962,26 +965,49 @@ TccqConditional <- S7::new_class(
   }
 )
 
+#' Neutral sequential loop
+#'
+#' Abstract parent for sequential loops whose body is a typed statement block.
+#' Concrete loop classes add their own entry and completion rules.
+#'
+#' @inheritParams TccqStatement
+#' @param body Procedural loop body.
+#' @param semantics Evaluator facts for the originating R loop special form.
+#' @export
+TccqLoop <- S7::new_class(
+  "TccqLoop",
+  package = "tccquickr",
+  parent = TccqStatement,
+  abstract = TRUE,
+  properties = list(
+    body = TccqBlock,
+    semantics = TccqCallSemantics
+  ),
+  validator = function(self) {
+    if (
+      !self@semantics@call@name %in% TCCQ_LOOP_CALL_NAMES ||
+        !isTRUE(self@semantics@control) ||
+        !identical(self@semantics@forcing_policy, "special")
+    ) {
+      "@semantics must describe an R loop special form"
+    }
+  }
+)
+
 #' Neutral while statement
 #'
 #' This is sequential recurrence, not a [TccqLoopNest]. The condition is
 #' re-evaluated before every iteration and the body may update explicitly
 #' declared mutable cells.
 #'
-#' @inheritParams TccqStatement
+#' @inheritParams TccqLoop
 #' @param condition Scalar logical condition expression.
-#' @param body Procedural body evaluated while the condition is true.
-#' @param semantics Evaluator facts for the originating `while` special form.
 #' @export
 TccqWhile <- S7::new_class(
   "TccqWhile",
   package = "tccquickr",
-  parent = TccqStatement,
-  properties = list(
-    condition = TccqExpression,
-    body = TccqBlock,
-    semantics = TccqCallSemantics
-  ),
+  parent = TccqLoop,
+  properties = list(condition = TccqExpression),
   validator = function(self) {
     problems <- character()
     if (
@@ -1008,6 +1034,69 @@ TccqWhile <- S7::new_class(
     )
     if (!identical(self@effect, expected_effect)) {
       problems <- c(problems, "@effect must include the condition, body, and condition error")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Neutral repeat statement
+#'
+#' A repeat loop enters its body unconditionally and relies on a typed loop
+#' transfer to terminate or begin another iteration.
+#'
+#' @inheritParams TccqLoop
+#' @export
+TccqRepeat <- S7::new_class(
+  "TccqRepeat",
+  package = "tccquickr",
+  parent = TccqLoop,
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@semantics@call@name, "repeat")) {
+      problems <- c(problems, "@semantics must describe the R `repeat` special form")
+    }
+    if (!identical(self@effect, self@body@effect)) {
+      problems <- c(problems, "@effect must match the repeat body")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Neutral loop transfer statement
+#'
+#' A transfer is structured control completion, not a read/write side effect.
+#' Its action always targets the nearest enclosing sequential loop.
+#'
+#' @inheritParams TccqStatement
+#' @param action Loop action, either `break` or `next`.
+#' @param semantics Evaluator facts for the originating R control special form.
+#' @export
+TccqLoopTransfer <- S7::new_class(
+  "TccqLoopTransfer",
+  package = "tccquickr",
+  parent = TccqStatement,
+  properties = list(
+    action = S7::class_character,
+    semantics = TccqCallSemantics
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@action) != 1L ||
+        is.na(self@action) ||
+        !self@action %in% TCCQ_LOOP_TRANSFER_ACTIONS
+    ) {
+      problems <- c(problems, "@action must be `break` or `next`")
+    }
+    if (
+      !identical(self@semantics@call@name, self@action) ||
+        !isTRUE(self@semantics@control) ||
+        !identical(self@semantics@forcing_policy, "special")
+    ) {
+      problems <- c(problems, "@semantics must describe the selected R loop transfer")
+    }
+    if (!identical(self@effect, tccq_effect())) {
+      problems <- c(problems, "loop transfers must not fabricate ordinary effects")
     }
     if (length(problems) > 0L) problems
   }
@@ -1168,6 +1257,33 @@ tccq_while <- function(id, condition, body, semantics) {
     effect = effect,
     condition = condition,
     body = body,
+    semantics = semantics
+  )
+}
+
+#' Construct a neutral repeat statement
+#'
+#' @inheritParams TccqRepeat
+#' @export
+tccq_repeat <- function(id, body, semantics) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(body, TccqBlock, "TccqBlock", "body")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  TccqRepeat(id = id, effect = body@effect, body = body, semantics = semantics)
+}
+
+#' Construct a neutral loop transfer
+#'
+#' @inheritParams TccqLoopTransfer
+#' @export
+tccq_loop_transfer <- function(id, action, semantics) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_character_scalar(action, "action")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  TccqLoopTransfer(
+    id = id,
+    effect = tccq_effect(),
+    action = action,
     semantics = semantics
   )
 }

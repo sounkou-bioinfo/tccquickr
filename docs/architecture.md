@@ -154,9 +154,10 @@ The first lowering pass is deliberately small. It handles scalar and rank-N
 elementwise expressions, full-domain rank-N reductions, per-axis reductions
 such as `colSums()` and `rowSums()`, `%*%` contractions, and rank-1 interior
 slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
-symbols. It also handles scalar loop-carried cells updated by a `while`
-statement after explicit initialization, including nested procedural `if`
-statements over typed blocks. Slice extents are typed
+symbols. It also handles scalar loop-carried cells updated by `while` and
+`repeat` loops after explicit initialization, including nested procedural `if`
+statements and nearest-loop `break`/`next` transfers over typed blocks. Slice
+extents are typed
 affine dimensions (`n - 2` is a `TccqDim`
 fact, not a printed string), and slices themselves disappear into typed affine
 accesses rather than materializing values. Programs compose across loop
@@ -356,12 +357,18 @@ allocatable array there. Both clean up after the final consumer. When a prior
 schedule even across different consumer paths; without a definition boundary,
 incompatible paths remain a classed loop-nest diagnostic.
 
-The first sequential recurrence is a `TccqWhile` statement over a plain
-`TccqBlock`. Its loop-carried state is explicit `TccqCell` storage: mutable by
-contract and distinct from immutable `TccqLocalBinding` definitions. Conditions
-and assignments reuse `TccqExpression`, so the C and Fortran printers consume
-one neutral program body and do not recover recurrence from source names. This
-slice is scalar, requires cells to be initialized before loop entry, and admits
+Sequential recurrence uses abstract `TccqLoop` over a plain `TccqBlock`.
+`TccqWhile` adds a condition evaluated before every iteration; `TccqRepeat`
+enters the body directly. Loop-carried state is explicit `TccqCell` storage:
+mutable by contract and distinct from immutable `TccqLocalBinding` definitions.
+Conditions and assignments reuse `TccqExpression`, so the C and Fortran
+printers consume one neutral program body and do not recover recurrence from
+source names. `TccqLoopTransfer` records a validated `break` or `next` action
+against its originating call semantics and always targets the nearest enclosing
+loop. It is control completion rather than an ordinary effect, so a
+transformation must not move work across it merely because its `TccqEffect` is
+empty. This slice is scalar, requires cells to be initialized before loop
+entry, and admits
 procedural `TccqIf` statements whose arms are general typed blocks. A source
 `if` without `else` has an explicit empty alternative. `TccqConditional` is the
 stricter value-producing subtype used by expression loop nests; its retained
@@ -375,8 +382,8 @@ top-level order. Schedule construction verifies exact cell, local, and result
 targets, graph-consistent expression and target types, and initialization
 dominance before a backend sees the body.
 
-`for`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and idiomatic
-R surfaces such as `Map`, `lapply`,
+`for`, `switch`, vectorized `ifelse`, and idiomatic R surfaces such as `Map`,
+`lapply`,
 `vapply`, `apply`, `Reduce`, and `Filter` are not just more function names to
 whitelist. They describe regions, exits, dominance, carried loop state, effect
 ordering, reducer legality, allocation, and possible boundary regions.
@@ -393,14 +400,15 @@ value/effect/domain model. A `for` loop over `1:n`, a `Reduce("+", x)`, and a
 identity, missing-value policy, and effects are known. `ifelse` is not ordinary
 branching when it is vectorized; it is a select over a domain with recycling and
 missing-value rules. `switch` is a dispatch boundary until the selector type
-and case set are known. `break` and `next` are structured exits, not hidden
-`goto` strings.
+and case set are known. `break` and `next` are structured transfer statements,
+not hidden `goto` strings; labeled and nonlocal transfers remain outside the
+current model.
 
 `TccqProgramSchedule` remains the sole top-level ordering boundary. Expression
 programs use its linear SSA steps; sequential recurrence uses its typed body
-form with an
-explicit header condition, body, backedge through cells, and exact effects; it
-does not become another mode hidden inside `TccqLoopNest`.
+form with an optional while-header condition, loop body, backedge through
+cells, and explicit transfer statements; it does not become another mode hidden
+inside `TccqLoopNest`.
 
 ## Regions and bridges
 
