@@ -1338,6 +1338,49 @@ axis_feed_fortran <- tccq_plan_backend(
 )
 expect_true(axis_feed_fortran@success)
 
+if (can_build_shared_library("fortran")) {
+  fortran_multi_nest_x <- matrix(c(1, 2, 3, 4, 5, 6), nrow = 2)
+  fortran_multi_nest_w <- c(0.5, -1, 2)
+  fortran_multi_nest_y <- c(10, 20)
+
+  axis_feed_fortran_shared <- tccq_plan_backend(
+    axis_reduction_feed_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(axis_feed_fortran_shared@success)
+  expect_equal(
+    backend_callable(axis_feed_fortran_shared)(fortran_multi_nest_x),
+    colSums(fortran_multi_nest_x) + 1
+  )
+
+  contraction_feed_fortran_shared <- tccq_plan_backend(
+    contraction_feed_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(contraction_feed_fortran_shared@success)
+  expect_equal(
+    backend_callable(contraction_feed_fortran_shared)(
+      fortran_multi_nest_x,
+      fortran_multi_nest_w,
+      fortran_multi_nest_y
+    ),
+    drop(fortran_multi_nest_x %*% fortran_multi_nest_w) + fortran_multi_nest_y
+  )
+
+  col_normalize_fortran_shared <- tccq_plan_backend(
+    col_normalize_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(col_normalize_fortran_shared@success)
+  expect_equal(
+    backend_callable(col_normalize_fortran_shared)(fortran_multi_nest_x),
+    colSums(fortran_multi_nest_x) / sum(colSums(fortran_multi_nest_x))
+  )
+}
+
 # Declared dimension symbols are scalar values in the body: `n` reads the
 # extent parameter the generated ABI already passes, widened to double.
 col_means <- function(x) {
@@ -1442,11 +1485,39 @@ recycle_unprovable <- function(x, w) {
 }
 expect_false(tccq_analyze(recycle_unprovable)@success)
 
-if (rtinycc_jit_available) {
-  recycle_x <- matrix(c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), nrow = 3)
-  recycle_mu <- c(0.5, -1, 2, 1)
-  recycle_v <- c(10, 20, 30)
+recycle_x <- matrix(c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), nrow = 3)
+recycle_mu <- c(0.5, -1, 2, 1)
+recycle_v <- c(10, 20, 30)
 
+# The original apotheosis composite, end to end against each executable
+# backend that claims the typed loop-nest path.
+logistic_gradient <- function(x, y, w, lambda) {
+  declare(type(
+    x = double(n, p),
+    y = double(n),
+    w = double(p),
+    lambda = double()
+  ))
+  mu <- colMeans(x)
+  sigma <- sqrt(colSums((x - mu)^2) / (n - 1L))
+  z <- (x - mu) / sigma
+  eta <- z %*% w
+  prob <- 1 / (1 + exp(-eta))
+  grad <- crossprod(z, prob - y) / n + lambda * w
+  w - 0.01 * grad
+}
+logistic_y <- c(0.2, 0.7, 0.4)
+logistic_w <- c(0.25, -0.5, 1, 0.75)
+logistic_oracle <- local({
+  mu <- colMeans(recycle_x)
+  sigma <- sqrt(colSums((recycle_x - mu)^2) / (nrow(recycle_x) - 1L))
+  z <- (recycle_x - mu) / sigma
+  prob <- 1 / (1 + exp(-(z %*% logistic_w)))
+  grad <- crossprod(z, drop(prob) - logistic_y) / nrow(recycle_x) + 0.5 * logistic_w
+  logistic_w - 0.01 * drop(grad)
+})
+
+if (rtinycc_jit_available) {
   recycle_center_jit <- tccq_plan_backend(
     recycle_center_program@value,
     tccq_rtinycc_backend(),
@@ -1605,40 +1676,32 @@ if (rtinycc_jit_available) {
   expect_true(row_means_jit@success)
   expect_equal(backend_callable(row_means_jit)(recycle_x), rowMeans(recycle_x) + 1)
 
-  # The original apotheosis composite, end to end against R.
-  logistic_gradient <- function(x, y, w, lambda) {
-    declare(type(
-      x = double(n, p),
-      y = double(n),
-      w = double(p),
-      lambda = double()
-    ))
-    mu <- colMeans(x)
-    sigma <- sqrt(colSums((x - mu)^2) / (n - 1L))
-    z <- (x - mu) / sigma
-    eta <- z %*% w
-    prob <- 1 / (1 + exp(-eta))
-    grad <- crossprod(z, prob - y) / n + lambda * w
-    w - 0.01 * grad
-  }
   logistic_gradient_jit <- tccq_plan_backend(
     tccq_analyze(logistic_gradient, strict = TRUE)@value,
     tccq_rtinycc_backend(),
     tccq_backend_context(mode = "jit", target = "c")
   )
   expect_true(logistic_gradient_jit@success)
-  logistic_y <- c(0.2, 0.7, 0.4)
-  logistic_w <- c(0.25, -0.5, 1, 0.75)
-  logistic_oracle <- local({
-    mu <- colMeans(recycle_x)
-    sigma <- sqrt(colSums((recycle_x - mu)^2) / (nrow(recycle_x) - 1L))
-    z <- (recycle_x - mu) / sigma
-    prob <- 1 / (1 + exp(-(z %*% logistic_w)))
-    grad <- crossprod(z, drop(prob) - logistic_y) / nrow(recycle_x) + 0.5 * logistic_w
-    logistic_w - 0.01 * drop(grad)
-  })
   expect_equal(
     backend_callable(logistic_gradient_jit)(recycle_x, logistic_y, logistic_w, 0.5),
+    logistic_oracle
+  )
+}
+
+if (can_build_shared_library("fortran")) {
+  logistic_gradient_fortran_plan <- tccq_plan_backend(
+    tccq_analyze(logistic_gradient, strict = TRUE)@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(logistic_gradient_fortran_plan@success)
+  expect_equal(
+    backend_callable(logistic_gradient_fortran_plan)(
+      recycle_x,
+      logistic_y,
+      logistic_w,
+      0.5
+    ),
     logistic_oracle
   )
 }

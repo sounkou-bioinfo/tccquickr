@@ -1,19 +1,22 @@
 # Root Direction
 
-The compiler core starts from values with schemas:
+The compiler core starts from declared R and turns parsed language objects into
+typed S7 values. Declarations, call facts, value types, dimensions, effects,
+diagnostics, operation implementations, backend plans, loop nests, and backend
+products are compiler data first. Backend source exists only after those facts
+are explicit enough that C, Rtinycc, and Fortran consume the same semantic
+handoff.
 
-1. Parse declarations from a deliberately narrow R subset.
-2. Represent formals, values, effects, and diagnostics as S7 objects.
-3. Express opt-in protocols (operation implementations, backends) as
-   `s7contract` traits; a pass-runner protocol returns only when the pipeline
-   has more than one caller for it.
-4. Grow type, rank, symbolic-shape, effect, and legality analysis before any
-   backend work.
-5. Treat unsupported R as a classed diagnostic, not as implicit fallback.
+The current useful center is the typed loop-nest path. Elementwise maps,
+reductions, axis reductions, contractions, intermediate materialization,
+dimension symbols, and rank-mixed recycling are represented before printing.
+TinyCC and Fortran execution now both exercise composite kernels, including the
+logistic-gradient apotheosis, so the next failures should come from semantics
+that are not yet modeled rather than from target-specific source shortcuts.
 
-The first north-star programs are the apotheosis examples in `README.Rmd`.
-Minimal probes should isolate one higher-level idea at a time. Composite
-targets such as logistic-gradient and Viterbi should remain known-failing until
-the compiler can model their declarations, domains, reductions, matrix
-operations, regions, bridges, operation implementations, and fusion boundaries
-honestly.
+The remaining north-star pressure is control and evaluator structure. Viterbi
+and smaller probes around `if`, `switch`, loops, `repeat`, `break`, `next`,
+replacement calls, dispatch, promises, side effects, and interruption should
+fail with structured diagnostics until the compiler has typed facts for those
+concepts. The goal is not to accept more R by fallback; it is to make each new
+accepted program deepen the shared representation consumed by every backend.
