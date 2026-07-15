@@ -13,6 +13,7 @@ tccq_loop_nest(
   reducer = NULL,
   identity = NULL,
   domain = NULL,
+  guards = list(),
   attrs = list()
 )
 }
@@ -33,6 +34,8 @@ references.}
 \item{identity}{Reducer identity literal, or \code{NULL}.}
 
 \item{domain}{Optional iteration domain. Defaults to one built from \code{axes}.}
+
+\item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
 
 \item{attrs}{Structured metadata.}
 }

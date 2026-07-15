@@ -2238,7 +2238,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         combine_text = combine_text,
         output_index = output_index,
         body = nest@body,
-        body_requires_statements = body_requires_statements
+        body_requires_statements = body_requires_statements,
+        guards = nest@guards
       )
     }
 
@@ -2344,6 +2345,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth - 1L
         push("}")
       }
+      open_guards <- function(guards) {
+        for (guard in guards) {
+          condition <- expression_text(guard@condition, emit_context)
+          if (!isTRUE(guard@selected)) {
+            condition <- sprintf("!(%s)", condition)
+          }
+          push(sprintf("if (%s) {", condition))
+          depth <<- depth + 1L
+        }
+      }
+      close_guards <- function(guards) {
+        for (guard in rev(guards)) {
+          depth <<- depth - 1L
+          push("}")
+        }
+      }
       emit_statement <- NULL
       emit_statement_block <- function(block, result_target, after_statements = NULL) {
         push("{")
@@ -2442,6 +2459,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         intermediate_plan <- intermediate_plans[[position]]
         intermediate <- intermediate_nests[[position]]
         buffer_name <- intermediate@attrs$buffer_name
+        guarded <- length(intermediate_plan$guards) > 0L
+        if (guarded && is.null(buffer_name)) {
+          push(sprintf("double %s;", intermediate_plan$accumulator_name))
+        }
+        open_guards(intermediate_plan$guards)
         if (!is.null(buffer_name)) {
           push(sprintf(
             "double *%s = (double *)malloc(sizeof(double) * (size_t)(%s));",
@@ -2465,7 +2487,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           open_loop(axis)
         }
         push(sprintf(
-          "double %s = %s;",
+          "%s%s = %s;",
+          if (guarded && is.null(buffer_name)) "" else "double ",
           intermediate_plan$accumulator_name,
           intermediate_plan$identity_text
         ))
@@ -2511,6 +2534,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$map_axes) {
           close_loop(axis)
         }
+        close_guards(intermediate_plan$guards)
       }
       for (axis in plan$map_axes) {
         open_loop(axis)
@@ -2671,6 +2695,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth - 1L
         push("end do")
       }
+      open_guards <- function(guards) {
+        for (guard in guards) {
+          condition <- expression_text(guard@condition, emit_context)
+          if (!isTRUE(guard@selected)) {
+            condition <- sprintf(".not. (%s)", condition)
+          }
+          push(sprintf("if (%s) then", condition))
+          depth <<- depth + 1L
+        }
+      }
+      close_guards <- function(guards) {
+        for (guard in rev(guards)) {
+          depth <<- depth - 1L
+          push("end if")
+        }
+      }
       emit_statement <- NULL
       emit_statement_block <- function(block, result_target, after_statements = NULL) {
         push("block")
@@ -2754,6 +2794,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
         buffer_name <- intermediate_nests[[position]]@attrs$buffer_name
+        open_guards(intermediate_plan$guards)
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
@@ -2804,6 +2845,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$map_axes) {
           close_loop(axis)
         }
+        close_guards(intermediate_plan$guards)
       }
       for (axis in plan$map_axes) {
         open_loop(axis)

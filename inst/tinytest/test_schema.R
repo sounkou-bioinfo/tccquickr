@@ -217,6 +217,14 @@ statement_nest <- tccq_loop_nest(
   body = statement_block,
   result_type = finite@type
 )
+loop_guard <- tccq_loop_guard(condition_expression, branch_value, selected = TRUE)
+guarded_statement_nest <- tccq_loop_nest(
+  "loop_nest_guarded_statement",
+  axes = list(),
+  body = statement_block,
+  result_type = finite@type,
+  guards = list(loop_guard)
+)
 statement_products <- tccq_backend_products(
   body = statement_block,
   loop_nest = statement_nest,
@@ -236,6 +244,15 @@ statement_interface <- tccq_backend_function_interface(
 
 expect_true(S7::S7_inherits(statement_products@body, TccqBlock))
 expect_equal(statement_interface@local_storage_types[[1L]]@base, "logical")
+expect_true(S7::S7_inherits(loop_guard, TccqLoopGuard))
+expect_true(loop_guard@selected)
+expect_identical(guarded_statement_nest@guards[[1L]], loop_guard)
+
+bad_loop_guard <- tryCatch(
+  tccq_loop_guard(condition_expression, branch_value, selected = NA),
+  error = identity
+)
+expect_true(inherits(bad_loop_guard, "tccq_error"))
 
 matrix_local_target <- tccq_write_target("matrix_local", matrix_type, kind = "local")
 expect_equal(matrix_local_target@type@shape@rank, 2L)

@@ -210,10 +210,13 @@ For the reset core, keep these rules explicit:
   declared in the source block that owns them. Statement-block effects are the
   conservative union of their statement effects; normalization must not hide
   a nested control effect behind a pure consumer. A reduction or contraction
-  may consume conditional values through this block result. A reduction or
-  contraction selected inside a branch arm remains a distinct typed scheduling
-  failure rather than being hoisted, eagerly evaluated, or hidden in a target
-  ternary.
+  may consume conditional values through this block result. A scalar reduction
+  or contraction selected inside a branch arm becomes an intermediate
+  `TccqLoopNest` carrying an ordered `TccqLoopGuard` path; nested guards retain
+  outer-to-inner selected-arm evaluation. Do not hoist or eagerly evaluate the
+  nest, or hide it in a target ternary. Selected-arm array intermediates remain
+  a typed storage-lifetime failure until conditional allocation, ownership, and
+  cleanup are represented consistently across source backends.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.
@@ -286,7 +289,9 @@ For the reset core, keep these rules explicit:
   variable, or reduction accumulator names.
 - Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
   the SAC-style with-loop, planned as an ordered sequence (intermediate nests
-  first, result nest last). Each nest carries ordered `TccqLoopAxis` values
+  first, result nest last). A selected-arm scalar intermediate extends that
+  same nest with an ordered `TccqLoopGuard` control path rather than introducing
+  a second schedule abstraction. Each nest carries ordered `TccqLoopAxis` values
   (`map` produces output positions, `reduce` folds into an accumulator), a
   value-expression or typed-statement-block body whose references carry typed
   `TccqAccess`/`TccqIndexExpr` affine access maps, an optional reducer with
@@ -368,6 +373,6 @@ For the reset core, keep these rules explicit:
 - Run `R CMD check --no-manual` before committing broad package changes.
 - Keep `README.md` rendered from `README.Rmd` when the README changes.
 - Keep `.sync/` ignored. It is a local research cache for Hermes, Numba,
-  quickr, anvl, Simple, and s7contract, not package source.
+  Porffor, quickr, anvl, Simple, and s7contract, not package source.
 - Do not add vignettes or broad docs until the semantic core has more than one
   real layer to explain.

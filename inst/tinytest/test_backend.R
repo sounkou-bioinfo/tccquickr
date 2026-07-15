@@ -1268,12 +1268,98 @@ expect_true(S7::S7_inherits(branch_reduction_contract@result_value, TccqBranch))
 expect_equal(length(branch_reduction_contract@operations), 0L)
 expect_null(branch_reduction_contract@result_operation)
 branch_reduction_nests <- tccq_program_loop_nests(branch_reduction_program)
-expect_false(branch_reduction_nests@success)
-expect_true(any(vapply(
-  branch_reduction_nests@diagnostics,
-  function(diagnostic) identical(diagnostic@code, "loop_nest.branch_materialization"),
-  logical(1)
-)))
+expect_true(branch_reduction_nests@success)
+expect_equal(length(branch_reduction_nests@value), 2L)
+branch_reduction_guard <- branch_reduction_nests@value[[1L]]@guards[[1L]]
+expect_true(S7::S7_inherits(branch_reduction_guard, TccqLoopGuard))
+expect_true(branch_reduction_guard@selected)
+expect_equal(branch_reduction_guard@condition@attrs$access@kind, "scalar")
+expect_equal(length(branch_reduction_nests@value[[2L]]@guards), 0L)
+
+branch_reduction_both <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  if (flag) sum(x) else sum(-x)
+}
+branch_reduction_both_program <- tccq_analyze(
+  branch_reduction_both,
+  strict = TRUE
+)@value
+branch_reduction_both_nests <- tccq_program_loop_nests(
+  branch_reduction_both_program
+)
+expect_true(branch_reduction_both_nests@success)
+expect_equal(length(branch_reduction_both_nests@value), 3L)
+expect_equal(
+  vapply(
+    branch_reduction_both_nests@value[1:2],
+    function(nest) nest@guards[[1L]]@selected,
+    logical(1)
+  ),
+  c(TRUE, FALSE)
+)
+
+nested_branch_reduction <- function(x, primary, secondary) {
+  declare(type(x = double(n), primary = logical(), secondary = logical()))
+  if (primary) if (secondary) sum(x) else sum(-x) else 0
+}
+nested_branch_reduction_program <- tccq_analyze(
+  nested_branch_reduction,
+  strict = TRUE
+)@value
+nested_branch_reduction_nests <- tccq_program_loop_nests(
+  nested_branch_reduction_program
+)
+expect_true(nested_branch_reduction_nests@success)
+expect_equal(length(nested_branch_reduction_nests@value), 3L)
+expect_equal(
+  lapply(nested_branch_reduction_nests@value[1:2], function(nest) {
+    vapply(nest@guards, function(guard) guard@selected, logical(1))
+  }),
+  list(c(TRUE, TRUE), c(TRUE, FALSE))
+)
+
+guarded_buffer_reduction <- function(x, flag) {
+  declare(type(x = double(n, p), flag = logical()))
+  if (flag) colSums(x) else -colSums(x)
+}
+guarded_buffer_program <- tccq_analyze(
+  guarded_buffer_reduction,
+  strict = TRUE
+)@value
+guarded_buffer_nests <- tccq_program_loop_nests(guarded_buffer_program)
+expect_false(guarded_buffer_nests@success)
+expect_equal(
+  guarded_buffer_nests@diagnostics[[1L]]@code,
+  "loop_nest.guarded_buffer_materialization"
+)
+
+branch_reduction_c <- tccq_plan_backend(branch_reduction_program, tccq_c_backend())
+branch_reduction_fortran <- tccq_plan_backend(
+  branch_reduction_program,
+  tccq_fortran_backend()
+)
+branch_reduction_both_c <- tccq_plan_backend(
+  branch_reduction_both_program,
+  tccq_c_backend()
+)
+branch_reduction_both_fortran <- tccq_plan_backend(
+  branch_reduction_both_program,
+  tccq_fortran_backend()
+)
+nested_branch_reduction_c <- tccq_plan_backend(
+  nested_branch_reduction_program,
+  tccq_c_backend()
+)
+nested_branch_reduction_fortran <- tccq_plan_backend(
+  nested_branch_reduction_program,
+  tccq_fortran_backend()
+)
+expect_true(branch_reduction_c@success)
+expect_true(branch_reduction_fortran@success)
+expect_true(branch_reduction_both_c@success)
+expect_true(branch_reduction_both_fortran@success)
+expect_true(nested_branch_reduction_c@success)
+expect_true(nested_branch_reduction_fortran@success)
 
 conditional_reduction_operand <- function(x, flag) {
   declare(type(x = double(n), flag = logical()))
@@ -1418,6 +1504,37 @@ if (rtinycc_jit_available) {
   expect_true(inherits(missing_condition, "tccq_error"))
   expect_equal(tccq_condition_diagnostic(missing_condition)@code, "runtime.invalid_logical_condition")
 
+  branch_reduction_jit <- tccq_plan_backend(
+    branch_reduction_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  branch_reduction_both_jit <- tccq_plan_backend(
+    branch_reduction_both_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  nested_branch_reduction_jit <- tccq_plan_backend(
+    nested_branch_reduction_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(branch_reduction_jit@success)
+  expect_true(branch_reduction_both_jit@success)
+  expect_true(nested_branch_reduction_jit@success)
+  expect_equal(backend_callable(branch_reduction_jit)(branch_x, TRUE), sum(branch_x))
+  expect_equal(backend_callable(branch_reduction_jit)(branch_x, FALSE), 0)
+  expect_equal(backend_callable(branch_reduction_both_jit)(branch_x, TRUE), sum(branch_x))
+  expect_equal(backend_callable(branch_reduction_both_jit)(branch_x, FALSE), sum(-branch_x))
+  expect_equal(
+    backend_callable(nested_branch_reduction_jit)(branch_x, TRUE, FALSE),
+    sum(-branch_x)
+  )
+  expect_equal(
+    backend_callable(nested_branch_reduction_jit)(branch_x, FALSE, TRUE),
+    0
+  )
+
   nested_branch_jit <- tccq_plan_backend(
     nested_branch_program,
     tccq_rtinycc_backend(),
@@ -1521,6 +1638,34 @@ if (rtinycc_jit_available) {
 }
 
 if (can_build_shared_library("c")) {
+  branch_reduction_c_shared <- tccq_plan_backend(
+    branch_reduction_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  branch_reduction_both_c_shared <- tccq_plan_backend(
+    branch_reduction_both_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  nested_branch_reduction_c_shared <- tccq_plan_backend(
+    nested_branch_reduction_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(branch_reduction_c_shared@success)
+  expect_true(branch_reduction_both_c_shared@success)
+  expect_true(nested_branch_reduction_c_shared@success)
+  expect_equal(backend_callable(branch_reduction_c_shared)(branch_x, FALSE), 0)
+  expect_equal(
+    backend_callable(branch_reduction_both_c_shared)(branch_x, FALSE),
+    sum(-branch_x)
+  )
+  expect_equal(
+    backend_callable(nested_branch_reduction_c_shared)(branch_x, TRUE, TRUE),
+    sum(branch_x)
+  )
+
   branch_condition_c_shared <- tccq_plan_backend(
     branch_condition_program,
     tccq_c_backend(),
@@ -1610,6 +1755,37 @@ if (can_build_shared_library("fortran")) {
   expect_true(branch_fortran_shared@success)
   expect_equal(backend_callable(branch_fortran_shared)(branch_x, TRUE), branch_x)
   expect_equal(backend_callable(branch_fortran_shared)(branch_x, FALSE), -branch_x)
+
+  branch_reduction_fortran_shared <- tccq_plan_backend(
+    branch_reduction_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  branch_reduction_both_fortran_shared <- tccq_plan_backend(
+    branch_reduction_both_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  nested_branch_reduction_fortran_shared <- tccq_plan_backend(
+    nested_branch_reduction_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(branch_reduction_fortran_shared@success)
+  expect_true(branch_reduction_both_fortran_shared@success)
+  expect_true(nested_branch_reduction_fortran_shared@success)
+  expect_equal(
+    backend_callable(branch_reduction_fortran_shared)(branch_x, TRUE),
+    sum(branch_x)
+  )
+  expect_equal(
+    backend_callable(branch_reduction_both_fortran_shared)(branch_x, FALSE),
+    sum(-branch_x)
+  )
+  expect_equal(
+    backend_callable(nested_branch_reduction_fortran_shared)(branch_x, FALSE, FALSE),
+    0
+  )
 
   nested_branch_fortran_shared <- tccq_plan_backend(
     nested_branch_program,

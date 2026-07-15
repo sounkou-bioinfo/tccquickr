@@ -13,6 +13,7 @@ TccqLoopNest(
   output = NULL,
   reducer = NULL,
   identity = NULL,
+  guards = list(),
   attrs = list()
 )
 }
@@ -33,6 +34,8 @@ references.}
 \item{reducer}{Reduction metadata for reduce axes, or \code{NULL}.}
 
 \item{identity}{Reducer identity literal, or \code{NULL}.}
+
+\item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
 
 \item{attrs}{Structured metadata.}
 }

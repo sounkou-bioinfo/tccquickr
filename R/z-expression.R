@@ -668,6 +668,54 @@ tccq_conditional <- function(
   )
 }
 
+#' Selected-arm loop guard
+#'
+#' A loop guard records one branch decision that must select a loop nest. An
+#' ordered list of guards is a control path from outermost to innermost branch;
+#' source backends nest those guards around the same `TccqLoopNest` plan.
+#'
+#' @param condition Scalar logical condition expression.
+#' @param branch Source branch payload retaining R special-form semantics.
+#' @param selected Whether the consequent (`TRUE`) or alternative (`FALSE`) arm
+#'   selects the guarded loop nest.
+#' @export
+TccqLoopGuard <- S7::new_class(
+  "TccqLoopGuard",
+  package = "tccquickr",
+  properties = list(
+    condition = TccqExpression,
+    branch = TccqBranch,
+    selected = S7::class_logical
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      !identical(self@condition@type@base, "logical") ||
+        self@condition@type@shape@rank != 0L
+    ) {
+      problems <- c(problems, "@condition must be a scalar logical expression")
+    }
+    if (!identical(self@condition@value_id, self@branch@condition)) {
+      problems <- c(problems, "@condition value id must match @branch condition")
+    }
+    if (length(self@selected) != 1L || is.na(self@selected)) {
+      problems <- c(problems, "@selected must be one non-missing logical value")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Construct a selected-arm loop guard
+#'
+#' @inheritParams TccqLoopGuard
+#' @export
+tccq_loop_guard <- function(condition, branch, selected) {
+  .tccq_check_s7(condition, TccqExpression, "TccqExpression", "condition")
+  .tccq_check_s7(branch, TccqBranch, "TccqBranch", "branch")
+  .tccq_check_logical_scalar(selected, "selected")
+  TccqLoopGuard(condition = condition, branch = branch, selected = selected)
+}
+
 #' Loop-nest program plan
 #'
 #' `TccqLoopNest` is the single backend-neutral iteration plan consumed by
@@ -689,6 +737,7 @@ tccq_conditional <- function(
 #' @param output Output access over map axes, or `NULL` for scalar results.
 #' @param reducer Reduction metadata for reduce axes, or `NULL`.
 #' @param identity Reducer identity literal, or `NULL`.
+#' @param guards Ordered `TccqLoopGuard` control path selecting this nest.
 #' @param attrs Structured metadata.
 #' @export
 TccqLoopNest <- S7::new_class(
@@ -703,6 +752,7 @@ TccqLoopNest <- S7::new_class(
     output = S7::new_union(NULL, TccqAccess),
     reducer = S7::new_union(NULL, TccqReductionSpec),
     identity = S7::new_union(NULL, TccqLiteral),
+    guards = S7::class_list,
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -743,6 +793,15 @@ TccqLoopNest <- S7::new_class(
     if (reducer_present != identity_present) {
       problems <- c(problems, "@reducer and @identity must be present together")
     }
+    guards_are_typed <- vapply(
+      self@guards,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqLoopGuard
+    )
+    if (!all(guards_are_typed)) {
+      problems <- c(problems, "@guards must contain only <TccqLoopGuard> values")
+    }
     if (self@result_type@shape@rank > 0L && is.null(self@output)) {
       problems <- c(problems, "non-scalar loop nests must carry an output access")
     }
@@ -764,6 +823,7 @@ TccqLoopNest <- S7::new_class(
 #' @param reducer Reduction metadata for reduce axes, or `NULL`.
 #' @param identity Reducer identity literal, or `NULL`.
 #' @param domain Optional iteration domain. Defaults to one built from `axes`.
+#' @param guards Ordered `TccqLoopGuard` control path selecting this nest.
 #' @param attrs Structured metadata.
 #' @export
 tccq_loop_nest <- function(
@@ -775,6 +835,7 @@ tccq_loop_nest <- function(
   reducer = NULL,
   identity = NULL,
   domain = NULL,
+  guards = list(),
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -792,6 +853,7 @@ tccq_loop_nest <- function(
   .tccq_check_optional_s7(output, TccqAccess, "TccqAccess", "output")
   .tccq_check_optional_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
   .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
+  .tccq_check_list_of(guards, TccqLoopGuard, "TccqLoopGuard", "guards")
   .tccq_check_list(attrs, "attrs")
   if (is.null(domain)) {
     domain <- tccq_domain(
@@ -811,6 +873,7 @@ tccq_loop_nest <- function(
     output = output,
     reducer = reducer,
     identity = identity,
+    guards = guards,
     attrs = attrs
   )
 }
@@ -870,29 +933,6 @@ tccq_program_loop_nests <- function(program) {
     if (S7::S7_inherits(operation, TccqLoweredOperation)) operation@family else NULL
   }
 
-  branch_contains_materialization <- function(expression, inside_branch = FALSE) {
-    if (
-      isTRUE(inside_branch) &&
-        !is.null(expression_family(expression)) &&
-        expression_family(expression) %in% c("reduction", "contraction")
-    ) {
-      return(TRUE)
-    }
-    any(vapply(
-      expression@inputs,
-      branch_contains_materialization,
-      logical(1),
-      inside_branch = inside_branch || identical(expression@kind, "branch")
-    ))
-  }
-  if (branch_contains_materialization(root)) {
-    return(failed(nest_diagnostic(
-      "loop_nest.branch_materialization",
-      "Reductions and contractions inside a conditional arm need branch-local loop nests.",
-      data = list(value_id = root@value_id)
-    )))
-  }
-
   axis_name <- function(position) sprintf("axis_%04d", position)
 
   # Post-order extraction: every non-root reduction or contraction subtree
@@ -903,25 +943,83 @@ tccq_program_loop_nests <- function(program) {
   # value id so a value consumed twice materializes once.
   intermediates <- list()
   replacements <- new.env(parent = emptyenv())
-  extract <- function(expression, is_root) {
+  intermediate_guards <- new.env(parent = emptyenv())
+  extract <- function(expression, is_root, guards = list()) {
     if (identical(expression@kind, "branch")) {
-      expression@inputs <- lapply(expression@inputs, extract, is_root = FALSE)
+      expression@inputs[[1L]] <- extract(expression@inputs[[1L]], FALSE, guards)
+      consequent_guard <- tccq_loop_guard(
+        expression@inputs[[1L]],
+        expression@branch,
+        selected = TRUE
+      )
+      alternative_guard <- tccq_loop_guard(
+        expression@inputs[[1L]],
+        expression@branch,
+        selected = FALSE
+      )
+      expression@inputs[[2L]] <- extract(
+        expression@inputs[[2L]],
+        FALSE,
+        c(guards, list(consequent_guard))
+      )
+      expression@inputs[[3L]] <- extract(
+        expression@inputs[[3L]],
+        FALSE,
+        c(guards, list(alternative_guard))
+      )
       return(expression)
     }
     if (!identical(expression@kind, "operation")) {
       return(expression)
     }
     if (!is_root && !is.null(replacements[[expression@value_id]])) {
+      if (!identical(intermediate_guards[[expression@value_id]], guards)) {
+        tccq_abort_diagnostic(nest_diagnostic(
+          "loop_nest.incompatible_materialization_paths",
+          "One materialized value is consumed through incompatible control paths.",
+          data = list(value_id = expression@value_id)
+        ))
+      }
       return(replacements[[expression@value_id]])
     }
-    expression@inputs <- lapply(expression@inputs, extract, is_root = FALSE)
+    expression@inputs <- lapply(
+      expression@inputs,
+      extract,
+      is_root = FALSE,
+      guards = guards
+    )
     family <- expression_family(expression)
     if (
       !is_root &&
         !is.null(family) &&
         family %in% c("reduction", "contraction")
     ) {
+      if (length(guards) > 0L && expression@type@shape@rank > 0L) {
+        tccq_abort_diagnostic(nest_diagnostic(
+          "loop_nest.guarded_buffer_materialization",
+          paste(
+            "A selected-arm array materialization needs conditional storage",
+            "lifetime planning before it can become a guarded loop nest."
+          ),
+          data = list(value_id = expression@value_id, rank = expression@type@shape@rank)
+        ))
+      }
+      if (any(vapply(
+        guards,
+        function(guard) expression_contains(
+          guard@condition,
+          function(candidate) identical(candidate@kind, "branch")
+        ),
+        logical(1)
+      ))) {
+        tccq_abort_diagnostic(nest_diagnostic(
+          "loop_nest.statement_control_guard",
+          "A selected-arm materialization needs its control guard normalized to a scalar value.",
+          data = list(value_id = expression@value_id)
+        ))
+      }
       intermediates[[length(intermediates) + 1L]] <<- expression
+      intermediate_guards[[expression@value_id]] <- guards
       replacement <- tccq_expression(
         id = expression@value_id,
         kind = "reference",
@@ -935,7 +1033,13 @@ tccq_program_loop_nests <- function(program) {
     }
     expression
   }
-  root <- extract(root, is_root = TRUE)
+  root <- tryCatch(extract(root, is_root = TRUE), tccq_error = identity)
+  if (inherits(root, "tccq_error")) {
+    return(tccq_result(
+      success = FALSE,
+      diagnostics = list(tccq_condition_diagnostic(root))
+    ))
+  }
   root_operation <- root@attrs$operation
   root_family <- if (S7::S7_inherits(root_operation, TccqLoweredOperation)) {
     root_operation@family
@@ -1034,6 +1138,16 @@ tccq_program_loop_nests <- function(program) {
     expression
   }
 
+  annotate_loop_guards <- function(guards, axis_names, domain, iteration_dims) {
+    lapply(guards, function(guard) {
+      tccq_loop_guard(
+        annotate(guard@condition, axis_names, domain, iteration_dims),
+        guard@branch,
+        guard@selected
+      )
+    })
+  }
+
   nest_role_attrs <- function(expression, role) {
     attrs <- list(result_value_id = expression@value_id)
     if (identical(role, "result")) {
@@ -1048,7 +1162,7 @@ tccq_program_loop_nests <- function(program) {
     attrs
   }
 
-  reduction_nest <- function(expression, nest_id, role) {
+  reduction_nest <- function(expression, nest_id, role, guards = list()) {
     operation <- expression@attrs$operation
     input_shape <- expression@inputs[[1L]]@type@shape
     reduction_axes <- as.integer(operation@attrs$reduction_axes %||% seq_len(input_shape@rank))
@@ -1066,6 +1180,12 @@ tccq_program_loop_nests <- function(program) {
       sprintf("%s.domain", nest_id),
       tccq_shape(lapply(loop_order, function(position) input_shape@dims[[position]])),
       axes = names_by_position[loop_order]
+    )
+    guards <- annotate_loop_guards(
+      guards,
+      names_by_position[loop_order],
+      domain,
+      lapply(loop_order, function(position) input_shape@dims[[position]])
     )
     body <- annotate(expression@inputs[[1L]], names_by_position, domain, input_shape@dims)
     if (expression_contains(body, function(candidate) identical(candidate@kind, "branch"))) {
@@ -1102,11 +1222,12 @@ tccq_program_loop_nests <- function(program) {
       reducer = operation@reduction,
       identity = operation@identity,
       domain = domain,
+      guards = guards,
       attrs = nest_role_attrs(expression, role)
     )
   }
 
-  contraction_nest <- function(expression, nest_id, role) {
+  contraction_nest <- function(expression, nest_id, role, guards = list()) {
     operation <- expression@attrs$operation
     contraction_spec <- operation@contraction
     contract_dims <- as.integer(contraction_spec@attrs$contract_dims %||% c(2L, 1L))
@@ -1134,6 +1255,12 @@ tccq_program_loop_nests <- function(program) {
       sprintf("%s.domain", nest_id),
       tccq_shape(c(expression@type@shape@dims, list(contracted_dim))),
       axes = c(map_names, reduce_name)
+    )
+    guards <- annotate_loop_guards(
+      guards,
+      c(map_names, reduce_name),
+      domain,
+      c(expression@type@shape@dims, list(contracted_dim))
     )
     left_axis_names <- character(2L)
     left_axis_names[[left_contract]] <- reduce_name
@@ -1199,16 +1326,17 @@ tccq_program_loop_nests <- function(program) {
       reducer = contraction_spec@reducer,
       identity = operation@identity,
       domain = domain,
+      guards = guards,
       attrs = nest_role_attrs(expression, role)
     )
   }
 
-  intermediate_nest <- function(expression, nest_index) {
+  intermediate_nest <- function(expression, nest_index, guards) {
     nest_id <- sprintf("loop_nest_%04d", nest_index)
     if (identical(expression_family(expression), "contraction")) {
-      contraction_nest(expression, nest_id, "intermediate")
+      contraction_nest(expression, nest_id, "intermediate", guards)
     } else {
-      reduction_nest(expression, nest_id, "intermediate")
+      reduction_nest(expression, nest_id, "intermediate", guards)
     }
   }
 
@@ -1442,7 +1570,14 @@ tccq_program_loop_nests <- function(program) {
 
   nests <- tryCatch(
     c(
-      unname(Map(intermediate_nest, intermediates, seq_along(intermediates))),
+      unname(Map(
+        intermediate_nest,
+        intermediates,
+        seq_along(intermediates),
+        lapply(intermediates, function(expression) {
+          intermediate_guards[[expression@value_id]]
+        })
+      )),
       list(build())
     ),
     tccq_error = identity

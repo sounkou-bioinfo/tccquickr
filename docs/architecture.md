@@ -277,9 +277,12 @@ them at the owning statement block. Each block effect is the conservative union
 of its statement effects, including control normalized below a pure operation.
 `TccqBlock` explicitly names the write target produced on every terminal path.
 A reducer or contraction whose operand contains control reads that block-local
-target and combines it before the lexical block closes. Branch-local reductions
-and contractions still stop until their loop nests can be scheduled inside only
-the selected arm.
+target and combines it before the lexical block closes. A scalar branch-local
+reduction or contraction is an intermediate `TccqLoopNest` carrying an ordered
+`TccqLoopGuard` path. C and Fortran nest those guards around the same neutral
+plan, including outer-to-inner nested branch paths. A branch-local array
+intermediate stops at `loop_nest.guarded_buffer_materialization` until the core
+represents conditional allocation, ownership, lifetime, and cleanup.
 
 `for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
 idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and
