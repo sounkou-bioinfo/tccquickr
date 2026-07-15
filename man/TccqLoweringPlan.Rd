@@ -6,6 +6,7 @@
 \usage{
 TccqLoweringPlan(
   values = list(),
+  local_bindings = list(),
   regions = list(),
   result = NULL,
   storage_plan = NULL,
@@ -15,6 +16,8 @@ TccqLoweringPlan(
 }
 \arguments{
 \item{values}{List of lowered IR values.}
+
+\item{local_bindings}{Ordered local value bindings.}
 
 \item{regions}{List of executable code regions.}
 

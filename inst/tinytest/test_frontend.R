@@ -325,8 +325,16 @@ bound_result <- tccq_analyze(bound_chain)
 expect_true(bound_result@success)
 expect_true(bound_result@value@attrs$lowered)
 expect_equal(bound_result@value@result, "value_0004")
-expect_equal(bound_result@value@attrs$lowering$local_bindings$shifted, "value_0001")
-expect_equal(bound_result@value@attrs$lowering$local_bindings$weighted, "value_0003")
+expect_equal(names(bound_result@value@local_bindings), c("shifted", "weighted"))
+expect_true(S7::S7_inherits(
+  bound_result@value@local_bindings$shifted,
+  TccqLocalBinding
+))
+expect_equal(bound_result@value@local_bindings$shifted@value_id, "value_0001")
+expect_equal(bound_result@value@local_bindings$shifted@statement_index, 1L)
+expect_equal(bound_result@value@local_bindings$weighted@value_id, "value_0003")
+expect_equal(bound_result@value@local_bindings$weighted@statement_index, 2L)
+expect_null(bound_result@value@attrs$lowering$local_bindings)
 expect_equal(bound_result@value@values$value_0004@inputs, list("value_0003", "formal_0002"))
 bound_storage_slots <- bound_result@value@storage_plan@slots
 bound_storage_slots_by_value <- bound_storage_slots

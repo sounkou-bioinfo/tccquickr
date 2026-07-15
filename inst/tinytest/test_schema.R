@@ -52,6 +52,56 @@ value <- tccq_value(
   type = finite@type,
   attrs = list(literal = finite)
 )
+local_binding <- tccq_local_binding(
+  "answer",
+  value@id,
+  value@type,
+  statement_index = 1L
+)
+local_program <- tccq_program(
+  "local_binding_probe",
+  formals = list(),
+  local_bindings = list(answer = local_binding),
+  values = list(value),
+  result = value@id
+)
+
+expect_true(S7::S7_inherits(local_binding, TccqLocalBinding))
+expect_equal(local_binding@statement_index, 1L)
+expect_identical(local_program@local_bindings$answer@type, value@type)
+
+unknown_local_value <- tryCatch(
+  tccq_program(
+    "unknown_local_value",
+    formals = list(),
+    local_bindings = list(answer = tccq_local_binding(
+      "answer",
+      "missing_value",
+      value@type,
+      statement_index = 1L
+    )),
+    values = list(value)
+  ),
+  error = identity
+)
+expect_true(inherits(unknown_local_value, "error"))
+
+mismatched_local_type <- tryCatch(
+  tccq_program(
+    "mismatched_local_type",
+    formals = list(),
+    local_bindings = list(answer = tccq_local_binding(
+      "answer",
+      value@id,
+      tccq_type("integer"),
+      statement_index = 1L
+    )),
+    values = list(value)
+  ),
+  error = identity
+)
+expect_true(inherits(mismatched_local_type, "error"))
+
 matrix_type <- tccq_type("double", tccq_shape(c("n", "p")))
 matrix_value <- tccq_value(
   "m1",

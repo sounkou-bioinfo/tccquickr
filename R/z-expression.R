@@ -995,9 +995,15 @@ tccq_program_loop_nests <- function(program) {
   intermediates <- list()
   replacements <- new.env(parent = emptyenv())
   intermediate_guards <- new.env(parent = emptyenv())
-  extract <- function(expression, is_root, guards = list()) {
+  materialization_definitions <- new.env(parent = emptyenv())
+  extract <- function(expression, is_root, guards = list(), definition_binding = NULL) {
     if (identical(expression@kind, "branch")) {
-      expression@inputs[[1L]] <- extract(expression@inputs[[1L]], FALSE, guards)
+      expression@inputs[[1L]] <- extract(
+        expression@inputs[[1L]],
+        is_root = FALSE,
+        guards = guards,
+        definition_binding = definition_binding
+      )
       consequent_guard <- tccq_loop_guard(
         expression@inputs[[1L]],
         expression@branch,
@@ -1010,21 +1016,32 @@ tccq_program_loop_nests <- function(program) {
       )
       expression@inputs[[2L]] <- extract(
         expression@inputs[[2L]],
-        FALSE,
-        c(guards, list(consequent_guard))
+        is_root = FALSE,
+        guards = c(guards, list(consequent_guard)),
+        definition_binding = definition_binding
       )
       expression@inputs[[3L]] <- extract(
         expression@inputs[[3L]],
-        FALSE,
-        c(guards, list(alternative_guard))
+        is_root = FALSE,
+        guards = c(guards, list(alternative_guard)),
+        definition_binding = definition_binding
       )
       return(expression)
     }
     if (!identical(expression@kind, "operation")) {
       return(expression)
     }
-    if (!is_root && !is.null(replacements[[expression@value_id]])) {
-      if (!identical(intermediate_guards[[expression@value_id]], guards)) {
+    replacement <- replacements[[expression@value_id]]
+    materialization_definition <- materialization_definitions[[expression@value_id]]
+    definition_owns_schedule <- S7::S7_inherits(
+      materialization_definition,
+      TccqLocalBinding
+    )
+    if (!is.null(replacement) && (!is_root || definition_owns_schedule)) {
+      if (
+        !definition_owns_schedule &&
+          !identical(intermediate_guards[[expression@value_id]], guards)
+      ) {
         tccq_abort_diagnostic(nest_diagnostic(
           "loop_nest.incompatible_materialization_paths",
           "One materialized value is consumed through incompatible control paths.",
@@ -1037,7 +1054,8 @@ tccq_program_loop_nests <- function(program) {
       expression@inputs,
       extract,
       is_root = FALSE,
-      guards = guards
+      guards = guards,
+      definition_binding = definition_binding
     )
     family <- expression_family(expression)
     if (
@@ -1061,6 +1079,9 @@ tccq_program_loop_nests <- function(program) {
       }
       intermediates[[length(intermediates) + 1L]] <<- expression
       intermediate_guards[[expression@value_id]] <- guards
+      if (S7::S7_inherits(definition_binding, TccqLocalBinding)) {
+        materialization_definitions[[expression@value_id]] <- definition_binding
+      }
       replacement <- tccq_expression(
         id = expression@value_id,
         kind = "reference",
@@ -1073,6 +1094,38 @@ tccq_program_loop_nests <- function(program) {
       return(replacement)
     }
     expression
+  }
+
+  if (length(program@local_bindings) > 0L) {
+    statement_positions <- vapply(
+      program@local_bindings,
+      function(binding) binding@statement_index,
+      integer(1)
+    )
+    for (binding in program@local_bindings[order(statement_positions)]) {
+      binding_expression_result <- tccq_expression_tree(program, binding@value_id)
+      if (!binding_expression_result@success) {
+        return(tccq_result(
+          success = FALSE,
+          diagnostics = binding_expression_result@diagnostics
+        ))
+      }
+      binding_expression <- tryCatch(
+        extract(
+          binding_expression_result@value,
+          is_root = FALSE,
+          guards = list(),
+          definition_binding = binding
+        ),
+        tccq_error = identity
+      )
+      if (inherits(binding_expression, "tccq_error")) {
+        return(tccq_result(
+          success = FALSE,
+          diagnostics = list(tccq_condition_diagnostic(binding_expression))
+        ))
+      }
+    }
   }
   root <- tryCatch(extract(root, is_root = TRUE), tccq_error = identity)
   if (inherits(root, "tccq_error")) {

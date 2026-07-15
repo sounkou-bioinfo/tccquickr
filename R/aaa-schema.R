@@ -518,6 +518,41 @@ TccqBinding <- S7::new_class(
   }
 )
 
+#' Local value binding
+#'
+#' A local binding records the value produced by one top-level assignment in
+#' the declared subset. Its statement position is a semantic definition
+#' boundary used by scheduling; it is not source-printer metadata.
+#'
+#' @inheritParams TccqBinding
+#' @param value_id Lowered value bound to the local name.
+#' @param statement_index One-based executable statement position defining the
+#'   binding.
+#' @export
+TccqLocalBinding <- S7::new_class(
+  "TccqLocalBinding",
+  package = "tccquickr",
+  parent = TccqBinding,
+  properties = list(
+    value_id = S7::class_character,
+    statement_index = S7::class_integer
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@value_id) != 1L || is.na(self@value_id) || !nzchar(self@value_id)) {
+      problems <- c(problems, "@value_id must be a single non-empty string")
+    }
+    if (
+      length(self@statement_index) != 1L ||
+        is.na(self@statement_index) ||
+        self@statement_index < 1L
+    ) {
+      problems <- c(problems, "@statement_index must be one positive integer")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' IR value
 #'
 #' @param id Stable value id.
@@ -958,6 +993,7 @@ TccqStoragePlan <- S7::new_class(
 #' semantics from source text.
 #'
 #' @param values List of lowered IR values.
+#' @param local_bindings Ordered local value bindings.
 #' @param regions List of executable code regions.
 #' @param result Result value id, or `NULL` when no expression was lowered.
 #' @param storage_plan Optional middle-end storage plan.
@@ -969,6 +1005,7 @@ TccqLoweringPlan <- S7::new_class(
   package = "tccquickr",
   properties = list(
     values = S7::class_list,
+    local_bindings = S7::class_list,
     regions = S7::class_list,
     result = S7::class_any,
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
@@ -978,6 +1015,12 @@ TccqLoweringPlan <- S7::new_class(
   validator = function(self) {
     problems <- character()
     values_are_tccq_values <- vapply(self@values, S7::S7_inherits, logical(1), class = TccqValue)
+    bindings_are_tccq_local_bindings <- vapply(
+      self@local_bindings,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqLocalBinding
+    )
     regions_are_tccq_regions <- vapply(self@regions, S7::S7_inherits, logical(1), class = TccqRegion)
     diagnostics_are_tccq_diagnostics <- vapply(
       self@diagnostics,
@@ -987,6 +1030,50 @@ TccqLoweringPlan <- S7::new_class(
     )
     if (!all(values_are_tccq_values)) {
       problems <- c(problems, "@values must contain only <TccqValue> values")
+    }
+    if (!all(bindings_are_tccq_local_bindings)) {
+      problems <- c(problems, "@local_bindings must contain only <TccqLocalBinding> values")
+    }
+    if (all(bindings_are_tccq_local_bindings) && all(values_are_tccq_values)) {
+      value_ids <- vapply(self@values, function(value) value@id, character(1))
+      binding_names <- vapply(self@local_bindings, function(binding) binding@name, character(1))
+      binding_value_ids <- vapply(
+        self@local_bindings,
+        function(binding) binding@value_id,
+        character(1)
+      )
+      statement_indices <- vapply(
+        self@local_bindings,
+        function(binding) binding@statement_index,
+        integer(1)
+      )
+      if (anyDuplicated(binding_names)) {
+        problems <- c(problems, "@local_bindings must have unique names")
+      }
+      if (anyDuplicated(statement_indices)) {
+        problems <- c(problems, "@local_bindings must have unique statement positions")
+      }
+      if (!identical(statement_indices, sort(statement_indices))) {
+        problems <- c(problems, "@local_bindings must be ordered by statement position")
+      }
+      if (length(setdiff(binding_value_ids, value_ids)) > 0L) {
+        problems <- c(problems, "@local_bindings must reference values in @values")
+      }
+      referenced_positions <- match(binding_value_ids, value_ids)
+      known_references <- !is.na(referenced_positions)
+      binding_types_match <- vapply(
+        seq_along(self@local_bindings)[known_references],
+        function(position) {
+          identical(
+            self@local_bindings[[position]]@type,
+            self@values[[referenced_positions[[position]]]]@type
+          )
+        },
+        logical(1)
+      )
+      if (!all(binding_types_match)) {
+        problems <- c(problems, "@local_bindings types must match their referenced values")
+      }
     }
     if (!all(regions_are_tccq_regions)) {
       problems <- c(problems, "@regions must contain only <TccqRegion> values")
@@ -1007,6 +1094,7 @@ TccqLoweringPlan <- S7::new_class(
 #'
 #' @param name Program name.
 #' @param formals Named list of formal bindings.
+#' @param local_bindings Ordered local value bindings.
 #' @param values List of IR values.
 #' @param regions List of executable code regions.
 #' @param result Result value id or object.
@@ -1021,6 +1109,7 @@ TccqProgram <- S7::new_class(
   properties = list(
     name = S7::class_character,
     formals = S7::class_list,
+    local_bindings = S7::class_list,
     values = S7::class_list,
     regions = S7::class_list,
     result = S7::class_any,
@@ -1035,6 +1124,12 @@ TccqProgram <- S7::new_class(
       problems <- c(problems, "@name must be a single non-empty string")
     }
     formals_are_tccq_bindings <- vapply(self@formals, S7::S7_inherits, logical(1), class = TccqBinding)
+    locals_are_tccq_local_bindings <- vapply(
+      self@local_bindings,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqLocalBinding
+    )
     values_are_tccq_values <- vapply(self@values, S7::S7_inherits, logical(1), class = TccqValue)
     regions_are_tccq_regions <- vapply(self@regions, S7::S7_inherits, logical(1), class = TccqRegion)
     diagnostics_are_tccq_diagnostics <- vapply(
@@ -1045,6 +1140,50 @@ TccqProgram <- S7::new_class(
     )
     if (!all(formals_are_tccq_bindings)) {
       problems <- c(problems, "@formals must contain only <TccqBinding> values")
+    }
+    if (!all(locals_are_tccq_local_bindings)) {
+      problems <- c(problems, "@local_bindings must contain only <TccqLocalBinding> values")
+    }
+    if (all(locals_are_tccq_local_bindings) && all(values_are_tccq_values)) {
+      value_ids <- vapply(self@values, function(value) value@id, character(1))
+      local_names <- vapply(self@local_bindings, function(binding) binding@name, character(1))
+      local_value_ids <- vapply(
+        self@local_bindings,
+        function(binding) binding@value_id,
+        character(1)
+      )
+      statement_indices <- vapply(
+        self@local_bindings,
+        function(binding) binding@statement_index,
+        integer(1)
+      )
+      if (anyDuplicated(local_names)) {
+        problems <- c(problems, "@local_bindings must have unique names")
+      }
+      if (anyDuplicated(statement_indices)) {
+        problems <- c(problems, "@local_bindings must have unique statement positions")
+      }
+      if (!identical(statement_indices, sort(statement_indices))) {
+        problems <- c(problems, "@local_bindings must be ordered by statement position")
+      }
+      if (length(setdiff(local_value_ids, value_ids)) > 0L) {
+        problems <- c(problems, "@local_bindings must reference values in @values")
+      }
+      referenced_positions <- match(local_value_ids, value_ids)
+      known_references <- !is.na(referenced_positions)
+      local_types_match <- vapply(
+        seq_along(self@local_bindings)[known_references],
+        function(position) {
+          identical(
+            self@local_bindings[[position]]@type,
+            self@values[[referenced_positions[[position]]]]@type
+          )
+        },
+        logical(1)
+      )
+      if (!all(local_types_match)) {
+        problems <- c(problems, "@local_bindings types must match their referenced values")
+      }
     }
     if (!all(values_are_tccq_values)) {
       problems <- c(problems, "@values must contain only <TccqValue> values")
@@ -1409,6 +1548,31 @@ tccq_binding <- function(name, type, mutable = FALSE) {
   .tccq_check_s7(type, TccqType, "TccqType", "type")
   .tccq_check_logical_scalar(mutable, "mutable")
   TccqBinding(name = name, type = type, mutable = mutable)
+}
+
+#' Construct a local value binding
+#'
+#' @inheritParams TccqLocalBinding
+#' @export
+tccq_local_binding <- function(
+  name,
+  value_id,
+  type,
+  statement_index,
+  mutable = FALSE
+) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_character_scalar(value_id, "value_id")
+  .tccq_check_s7(type, TccqType, "TccqType", "type")
+  statement_index <- .tccq_check_positive_integer(statement_index, "statement_index")
+  .tccq_check_logical_scalar(mutable, "mutable")
+  TccqLocalBinding(
+    name = name,
+    type = type,
+    mutable = mutable,
+    value_id = value_id,
+    statement_index = statement_index
+  )
 }
 
 #' Construct an IR value
@@ -1819,6 +1983,7 @@ tccq_storage_plan <- function(slots = list(), reuse_groups = list(), attrs = lis
 #'
 #' @param name Program name.
 #' @param formals Named list of formal bindings.
+#' @param local_bindings Ordered local value bindings.
 #' @param values List of IR values.
 #' @param regions List of executable code regions.
 #' @param result Result value id or object.
@@ -1830,6 +1995,7 @@ tccq_storage_plan <- function(slots = list(), reuse_groups = list(), attrs = lis
 tccq_program <- function(
   name,
   formals,
+  local_bindings = list(),
   values = list(),
   regions = list(),
   result = NULL,
@@ -1840,6 +2006,12 @@ tccq_program <- function(
 ) {
   .tccq_check_character_scalar(name, "name")
   .tccq_check_list_of(formals, TccqBinding, "TccqBinding", "formals")
+  .tccq_check_list_of(
+    local_bindings,
+    TccqLocalBinding,
+    "TccqLocalBinding",
+    "local_bindings"
+  )
   .tccq_check_list_of(values, TccqValue, "TccqValue", "values")
   .tccq_check_list_of(regions, TccqRegion, "TccqRegion", "regions")
   .tccq_check_list_of(diagnostics, TccqDiagnostic, "TccqDiagnostic", "diagnostics")
@@ -1849,6 +2021,7 @@ tccq_program <- function(
   TccqProgram(
     name = name,
     formals = formals,
+    local_bindings = local_bindings,
     values = values,
     regions = regions,
     result = result,

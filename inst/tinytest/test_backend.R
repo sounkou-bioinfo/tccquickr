@@ -1408,11 +1408,99 @@ shared_guarded_buffer_program <- tccq_analyze(
 shared_guarded_buffer_nests <- tccq_program_loop_nests(
   shared_guarded_buffer_program
 )
-expect_false(shared_guarded_buffer_nests@success)
+expect_true(shared_guarded_buffer_nests@success)
+expect_equal(length(shared_guarded_buffer_nests@value), 2L)
+shared_guarded_binding <- shared_guarded_buffer_program@local_bindings$totals
+expect_true(S7::S7_inherits(shared_guarded_binding, TccqLocalBinding))
 expect_equal(
-  shared_guarded_buffer_nests@diagnostics[[1L]]@code,
-  "loop_nest.incompatible_materialization_paths"
+  shared_guarded_buffer_nests@value[[1L]]@storage@value_id,
+  shared_guarded_binding@value_id
 )
+expect_equal(length(shared_guarded_buffer_nests@value[[1L]]@guards), 0L)
+shared_guarded_buffer_c <- tccq_plan_backend(
+  shared_guarded_buffer_program,
+  tccq_c_backend()
+)
+shared_guarded_buffer_fortran <- tccq_plan_backend(
+  shared_guarded_buffer_program,
+  tccq_fortran_backend()
+)
+expect_true(shared_guarded_buffer_c@success)
+expect_true(shared_guarded_buffer_fortran@success)
+
+definition_guarded_buffer <- function(x, primary, secondary) {
+  declare(type(x = double(n, p), primary = logical(), secondary = logical()))
+  totals <- if (primary) colSums(x) else -colSums(x)
+  if (secondary) totals else -totals
+}
+definition_guarded_buffer_program <- tccq_analyze(
+  definition_guarded_buffer,
+  strict = TRUE
+)@value
+definition_guarded_binding <- definition_guarded_buffer_program@local_bindings$totals
+definition_guarded_buffer_nests <- tccq_program_loop_nests(
+  definition_guarded_buffer_program
+)
+expect_true(definition_guarded_buffer_nests@success)
+expect_equal(length(definition_guarded_buffer_nests@value), 3L)
+expect_equal(
+  vapply(
+    definition_guarded_buffer_nests@value[1:2],
+    function(nest) length(nest@guards),
+    integer(1)
+  ),
+  c(1L, 1L)
+)
+expect_equal(
+  vapply(
+    definition_guarded_buffer_nests@value[1:2],
+    function(nest) nest@guards[[1L]]@selected,
+    logical(1)
+  ),
+  c(TRUE, FALSE)
+)
+expect_true(all(vapply(
+  definition_guarded_buffer_nests@value[1:2],
+  function(nest) identical(nest@guards[[1L]]@branch@id, definition_guarded_binding@value_id),
+  logical(1)
+)))
+definition_guarded_buffer_c <- tccq_plan_backend(
+  definition_guarded_buffer_program,
+  tccq_c_backend()
+)
+definition_guarded_buffer_fortran <- tccq_plan_backend(
+  definition_guarded_buffer_program,
+  tccq_fortran_backend()
+)
+expect_true(definition_guarded_buffer_c@success)
+expect_true(definition_guarded_buffer_fortran@success)
+
+unused_definition_buffer <- function(x) {
+  declare(type(x = double(n, p)))
+  discarded <- colSums(x)
+  x
+}
+unused_definition_analysis <- tccq_analyze(
+  unused_definition_buffer,
+  strict = TRUE
+)
+expect_true(unused_definition_analysis@success)
+unused_definition_program <- unused_definition_analysis@value
+unused_definition_nests <- tccq_program_loop_nests(unused_definition_program)
+expect_true(unused_definition_nests@success)
+expect_equal(length(unused_definition_nests@value), 2L)
+expect_equal(
+  unused_definition_nests@value[[1L]]@storage@value_id,
+  unused_definition_program@local_bindings$discarded@value_id
+)
+expect_true(tccq_plan_backend(
+  unused_definition_program,
+  tccq_c_backend()
+)@success)
+expect_true(tccq_plan_backend(
+  unused_definition_program,
+  tccq_fortran_backend()
+)@success)
 
 branch_reduction_c <- tccq_plan_backend(branch_reduction_program, tccq_c_backend())
 branch_reduction_fortran <- tccq_plan_backend(
@@ -1569,6 +1657,25 @@ conditional_matrix <- matrix(c(1, 4, 9, 16, 25, 36), nrow = 2)
 conditional_weights <- c(2, 3, 5)
 conditional_axis_expected <- colSums(conditional_matrix)
 conditional_contraction_expected <- drop(conditional_matrix %*% conditional_weights)
+definition_primary_cases <- c(TRUE, TRUE, FALSE, FALSE)
+definition_secondary_cases <- c(TRUE, FALSE, TRUE, FALSE)
+definition_guarded_expected <- Map(
+  function(primary, secondary) {
+    totals <- if (primary) conditional_axis_expected else -conditional_axis_expected
+    if (secondary) totals else -totals
+  },
+  definition_primary_cases,
+  definition_secondary_cases
+)
+evaluate_definition_cases <- function(callable) {
+  Map(
+    function(primary, secondary) {
+      callable(conditional_matrix, primary, secondary)
+    },
+    definition_primary_cases,
+    definition_secondary_cases
+  )
+}
 if (rtinycc_jit_available) {
   branch_jit_plan <- tccq_plan_backend(
     branch_program,
@@ -1628,6 +1735,40 @@ if (rtinycc_jit_available) {
   expect_equal(
     backend_callable(guarded_buffer_jit)(conditional_matrix, FALSE),
     -colSums(conditional_matrix)
+  )
+  shared_guarded_buffer_jit <- tccq_plan_backend(
+    shared_guarded_buffer_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  definition_guarded_buffer_jit <- tccq_plan_backend(
+    definition_guarded_buffer_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(shared_guarded_buffer_jit@success)
+  expect_true(definition_guarded_buffer_jit@success)
+  expect_equal(
+    backend_callable(shared_guarded_buffer_jit)(conditional_matrix, TRUE),
+    conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(shared_guarded_buffer_jit)(conditional_matrix, FALSE),
+    -conditional_axis_expected
+  )
+  expect_equal(
+    evaluate_definition_cases(backend_callable(definition_guarded_buffer_jit)),
+    definition_guarded_expected
+  )
+  unused_definition_jit <- tccq_plan_backend(
+    unused_definition_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(unused_definition_jit@success)
+  expect_equal(
+    backend_callable(unused_definition_jit)(conditional_matrix),
+    conditional_matrix
   )
 
   nested_branch_jit <- tccq_plan_backend(
@@ -1774,6 +1915,40 @@ if (can_build_shared_library("c")) {
     backend_callable(guarded_buffer_c_shared)(conditional_matrix, FALSE),
     -colSums(conditional_matrix)
   )
+  shared_guarded_buffer_c_shared <- tccq_plan_backend(
+    shared_guarded_buffer_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  definition_guarded_buffer_c_shared <- tccq_plan_backend(
+    definition_guarded_buffer_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(shared_guarded_buffer_c_shared@success)
+  expect_true(definition_guarded_buffer_c_shared@success)
+  expect_equal(
+    backend_callable(shared_guarded_buffer_c_shared)(conditional_matrix, TRUE),
+    conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(shared_guarded_buffer_c_shared)(conditional_matrix, FALSE),
+    -conditional_axis_expected
+  )
+  expect_equal(
+    evaluate_definition_cases(backend_callable(definition_guarded_buffer_c_shared)),
+    definition_guarded_expected
+  )
+  unused_definition_c_shared <- tccq_plan_backend(
+    unused_definition_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(unused_definition_c_shared@success)
+  expect_equal(
+    backend_callable(unused_definition_c_shared)(conditional_matrix),
+    conditional_matrix
+  )
 
   branch_condition_c_shared <- tccq_plan_backend(
     branch_condition_program,
@@ -1908,6 +2083,40 @@ if (can_build_shared_library("fortran")) {
   expect_equal(
     backend_callable(guarded_buffer_fortran_shared)(conditional_matrix, FALSE),
     -colSums(conditional_matrix)
+  )
+  shared_guarded_buffer_fortran_shared <- tccq_plan_backend(
+    shared_guarded_buffer_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  definition_guarded_buffer_fortran_shared <- tccq_plan_backend(
+    definition_guarded_buffer_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(shared_guarded_buffer_fortran_shared@success)
+  expect_true(definition_guarded_buffer_fortran_shared@success)
+  expect_equal(
+    backend_callable(shared_guarded_buffer_fortran_shared)(conditional_matrix, TRUE),
+    conditional_axis_expected
+  )
+  expect_equal(
+    backend_callable(shared_guarded_buffer_fortran_shared)(conditional_matrix, FALSE),
+    -conditional_axis_expected
+  )
+  expect_equal(
+    evaluate_definition_cases(backend_callable(definition_guarded_buffer_fortran_shared)),
+    definition_guarded_expected
+  )
+  unused_definition_fortran_shared <- tccq_plan_backend(
+    unused_definition_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(unused_definition_fortran_shared@success)
+  expect_equal(
+    backend_callable(unused_definition_fortran_shared)(conditional_matrix),
+    conditional_matrix
   )
 
   nested_branch_fortran_shared <- tccq_plan_backend(

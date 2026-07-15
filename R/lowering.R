@@ -19,6 +19,7 @@ tccq_lower_function <- function(
 ) {
   new_plan <- function(
     values = list(),
+    local_bindings = list(),
     regions = list(),
     result = NULL,
     storage_plan = NULL,
@@ -27,6 +28,7 @@ tccq_lower_function <- function(
   ) {
     TccqLoweringPlan(
       values = values,
+      local_bindings = local_bindings,
       regions = regions,
       result = result,
       storage_plan = storage_plan,
@@ -59,6 +61,7 @@ tccq_lower_function <- function(
     state$local_bindings <- list()
     state$values <- list()
     state$value_counter <- 0L
+    state$statement_index <- 0L
     state$consumed_call_ids <- character()
     state$dim_symbols <- unique(unlist(lapply(bindings, function(binding) {
       labels <- vapply(binding@type@shape@dims, function(dim) dim@label, character(1))
@@ -95,6 +98,7 @@ tccq_lower_function <- function(
   }
 
   lower_statement <- function(expr, state) {
+    state$statement_index <- state$statement_index + 1L
     if (is.call(expr) && tccq_call_name(expr) %in% c("<-", "=") && length(expr) == 3L) {
       return(lower_assignment(expr, state))
     }
@@ -158,7 +162,12 @@ tccq_lower_function <- function(
       return(result)
     }
     state$symbol_value_ids[[binding_name]] <- result$value_id
-    state$local_bindings[[binding_name]] <- result$value_id
+    state$local_bindings[[binding_name]] <- tccq_local_binding(
+      binding_name,
+      result$value_id,
+      result$type,
+      statement_index = state$statement_index
+    )
     result
   }
 
@@ -919,6 +928,9 @@ tccq_lower_function <- function(
       function(value) !value@id %in% intermediate_ids,
       operation_values
     )
+    if (!result_id %in% vapply(main_values, function(value) value@id, character(1))) {
+      main_values[[length(main_values) + 1L]] <- result_value
+    }
     fusion_kind <- if (isTRUE(result_is_contraction)) {
       "contract"
     } else if (isTRUE(value_is_axis_reduction(result_value))) {
@@ -1238,8 +1250,9 @@ tccq_lower_function <- function(
     if (length(result$diagnostics) > 0L) {
       return(new_plan(
         values = state$values,
+        local_bindings = state$local_bindings,
         diagnostics = result$diagnostics,
-        attrs = list(local_bindings = state$local_bindings)
+        attrs = list()
       ))
     }
   }
@@ -1248,12 +1261,12 @@ tccq_lower_function <- function(
   regions <- plan_regions(state$values, result$value_id)
   new_plan(
     values = state$values,
+    local_bindings = state$local_bindings,
     regions = regions,
     result = result$value_id,
     storage_plan = storage_plan,
     attrs = list(
-      strategy = sprintf("%s-expression", result_strategy(state$values, result$value_id)),
-      local_bindings = state$local_bindings
+      strategy = sprintf("%s-expression", result_strategy(state$values, result$value_id))
     )
   )
 }

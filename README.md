@@ -211,12 +211,20 @@ a block-local target while the target is still in scope. A reduction or
 contraction selected inside an arm becomes an intermediate loop nest
 carrying an ordered typed guard path, so nested branches execute and
 materialize only the selected nests. The guard path is the storage
-execution scope: extraction rejects references reached through a
-different path, C uses nullable owned buffers, and Fortran uses guarded
-allocatable arrays.
+execution scope: extraction rejects an unscheduled value reached through
+incompatible paths, C uses nullable owned buffers, and Fortran uses
+guarded allocatable arrays.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
-declared dimension symbols. Locals are single-assignment bindings.
+declared dimension symbols. Locals are single-assignment
+`TccqLocalBinding` values that name the lowered value and the executable
+statement where R defines it. The loop-nest planner visits those typed
+definitions in statement order before the returned expression. A
+reduction defined before a later `if` therefore materializes once
+without that `if`’s guards; when the definition itself is conditional,
+its intermediate nests retain the definition’s selected-arm guards.
+Later consumers reuse that schedule rather than moving evaluation to a
+use site.
 
 **Composition.** Non-root reductions and contractions become
 intermediate nests — named scalars for rank-0 results and materialized

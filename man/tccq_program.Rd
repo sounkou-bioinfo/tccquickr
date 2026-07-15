@@ -7,6 +7,7 @@
 tccq_program(
   name,
   formals,
+  local_bindings = list(),
   values = list(),
   regions = list(),
   result = NULL,
@@ -20,6 +21,8 @@ tccq_program(
 \item{name}{Program name.}
 
 \item{formals}{Named list of formal bindings.}
+
+\item{local_bindings}{Ordered local value bindings.}
 
 \item{values}{List of IR values.}
 

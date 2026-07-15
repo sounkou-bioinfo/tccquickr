@@ -15,7 +15,7 @@ values, typed `NA`, `NaN`, `Inf`, and `-Inf` their own representation.
 attributes. `TccqBranch` inherits from `TccqValue` and adds the condition,
 consequent, alternative, and originating `TccqCallSemantics` needed to preserve
 R's lazy `if` evaluation. `TccqProgram` collects formals, values, regions,
-result, and diagnostics.
+result, diagnostics, and ordered `TccqLocalBinding` definitions.
 
 Physical layout is currently a fixed convention, not a value: every array is a
 dense, contiguous, column-major R buffer, and the shared loop-nest emitter
@@ -187,13 +187,18 @@ than infer operation behavior from names, ranks, or emitted source. This is
 not a general legality pass and it is not the place where new language
 coverage should sprawl.
 
-Top-level local assignment is currently modeled as single-assignment binding.
-In `a <- expr`, the local symbol `a` becomes a name for the lowered value of
-`expr`; it is not treated as mutation. Rebinding a local name, rebinding a
+Top-level local assignment is modeled as a typed single-assignment definition.
+In `a <- expr`, `TccqLocalBinding` records the name, lowered value id, value type,
+and one-based executable statement position. The position is a scheduling fact,
+not printer metadata: the loop-nest planner visits local definitions in source
+order before it plans the returned expression. Non-fusible descendants such as
+reductions and contractions are therefore materialized at the definition's
+control path. A value defined before a later branch is computed once without
+that branch's guards, while a conditional definition retains its own selected
+arm guards when later consumers reuse it. Rebinding a local name, rebinding a
 formal, or mutating through a formal such as `x[i] <- value` produces a classed
-lowering diagnostic. That is intentionally strict until mutation barriers,
-aliasing, materialization, and view semantics are represented in the
-middle-end.
+lowering diagnostic. That remains intentionally strict until mutation barriers,
+aliasing, materialization, and view semantics are represented in the middle-end.
 
 The important constraint is that lowering failure is not frontend failure. A
 registered opaque operation can be a valid analyzed operation even when the
@@ -280,9 +285,13 @@ A reducer or contraction whose operand contains control reads that block-local
 target and combines it before the lexical block closes. A scalar branch-local
 reduction or contraction is an intermediate `TccqLoopNest` carrying an ordered
 `TccqLoopGuard` path. C and Fortran nest those guards around the same neutral
-plan, including outer-to-inner nested branch paths. A branch-local array
-intermediate stops at `loop_nest.guarded_buffer_materialization` until the core
-represents conditional allocation, ownership, lifetime, and cleanup.
+plan, including outer-to-inner nested branch paths. Branch-local array
+intermediates use the same typed guard and storage-slot facts: C allocates a
+nullable owned buffer inside the selected path, and Fortran allocates an
+allocatable array there. Both clean up after the final consumer. When a prior
+`TccqLocalBinding` owns the materialization schedule, later uses reuse that
+schedule even across different consumer paths; without a definition boundary,
+incompatible paths remain a classed loop-nest diagnostic.
 
 `for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
 idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and

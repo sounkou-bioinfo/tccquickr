@@ -213,11 +213,20 @@ For the reset core, keep these rules explicit:
   selected inside a branch arm becomes an intermediate `TccqLoopNest` carrying
   an ordered `TccqLoopGuard` path; nested guards retain outer-to-inner
   selected-arm evaluation. That guard path is also the execution scope of its
-  typed materialized slot. Extraction must reject any use reached through an
-  incompatible path. Do not hoist or eagerly allocate the nest, or hide it in a
+  typed materialized slot. Without a typed definition that owns an earlier
+  schedule, extraction must reject any use reached through an incompatible
+  path. Do not hoist or eagerly allocate a branch-defined nest, or hide it in a
   target ternary. C uses nullable owned buffers for guarded arrays; Fortran uses
   guarded allocatable arrays. Both clean up through the same typed nest/slot
   ownership fact.
+- Every accepted top-level assignment is a `TccqLocalBinding`, not a name-to-id
+  entry in program attributes. It records the bound value type, value id, and
+  one-based executable statement position. Loop-nest planning consumes local
+  definitions in statement order before the returned expression: non-fusible
+  descendants materialize at the definition's control path, a value defined
+  before a later branch remains unguarded, and a conditional definition retains
+  only its own guards. Later uses may reuse a definition-owned materialization
+  across consumer paths; they must not reschedule it from a common use path.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.
