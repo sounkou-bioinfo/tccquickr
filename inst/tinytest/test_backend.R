@@ -1245,6 +1245,47 @@ expect_true(grepl("condition_value == TCCQ_NA_LOGICAL", backend_source(triangula
 expect_true(grepl("condition_value == tccq_na_logical", backend_source(triangular_fortran), fixed = TRUE))
 expect_true(grepl("if (condition_value == 0_c_int) exit", backend_source(triangular_fortran), fixed = TRUE))
 
+conditional_recurrence <- function(n, pivot) {
+  declare(type(n = double(), pivot = double()))
+  iteration <- 0
+  total <- 0
+  while (iteration < n) {
+    iteration <- iteration + 1
+    if (iteration <= pivot) {
+      total <- total + iteration
+    } else {
+      total <- total - iteration
+    }
+  }
+  total
+}
+conditional_program <- tccq_analyze(conditional_recurrence, strict = TRUE)@value
+conditional_c <- tccq_plan_backend(
+  conditional_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+conditional_fortran <- tccq_plan_backend(
+  conditional_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(conditional_c@success)
+expect_true(conditional_fortran@success)
+conditional_while <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqWhile),
+  backend_products(conditional_c)@body@statements
+)[[1L]]
+expect_true(any(vapply(
+  conditional_while@body@statements,
+  S7::S7_inherits,
+  logical(1),
+  class = TccqIf
+)))
+expect_true(grepl("while (1)", backend_source(conditional_c), fixed = TRUE))
+expect_true(grepl("if (condition_value != 0)", backend_source(conditional_c), fixed = TRUE))
+expect_true(grepl("if (condition_value /= 0_c_int) then", backend_source(conditional_fortran), fixed = TRUE))
+
 nonfinite_branch <- function(flag) {
   declare(type(flag = logical(), returns = double()))
   if (flag) NaN else Inf
@@ -3611,4 +3652,55 @@ if (can_build_shared_library("fortran")) {
     triangular_expected
   )
   expect_missing_generated_condition(backend_callable(triangular_fortran_shared))
+}
+
+conditional_cases <- list(
+  c(n = 0, pivot = 2),
+  c(n = 4, pivot = 2),
+  c(n = 5, pivot = 3)
+)
+conditional_expected <- vapply(
+  conditional_cases,
+  function(arguments) conditional_recurrence(arguments[[1L]], arguments[[2L]]),
+  numeric(1)
+)
+check_conditional_recurrence <- function(callable) {
+  actual <- vapply(
+    conditional_cases,
+    function(arguments) callable(arguments[[1L]], arguments[[2L]]),
+    numeric(1)
+  )
+  expect_equal(actual, conditional_expected)
+  missing_condition <- tryCatch(callable(2, NA_real_), error = identity)
+  expect_true(inherits(missing_condition, "runtime.invalid_logical_condition"))
+}
+
+if (rtinycc_jit_available) {
+  conditional_jit <- tccq_plan_backend(
+    conditional_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(conditional_jit@success)
+  check_conditional_recurrence(backend_callable(conditional_jit))
+}
+
+if (can_build_shared_library("c")) {
+  conditional_c_shared <- tccq_plan_backend(
+    conditional_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(conditional_c_shared@success)
+  check_conditional_recurrence(backend_callable(conditional_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  conditional_fortran_shared <- tccq_plan_backend(
+    conditional_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(conditional_fortran_shared@success)
+  check_conditional_recurrence(backend_callable(conditional_fortran_shared))
 }

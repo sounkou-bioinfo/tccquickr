@@ -368,11 +368,34 @@ expect_true(S7::S7_inherits(result_target, TccqWriteTarget))
 expect_equal(result_target@storage_type@shape@rank, 0L)
 expect_true(S7::S7_inherits(consequent_assignment, TccqStatement))
 expect_true(S7::S7_inherits(consequent_assignment, TccqAssignment))
+expect_true(S7::S7_inherits(conditional_statement, TccqIf))
 expect_true(S7::S7_inherits(conditional_statement, TccqConditional))
 expect_true(S7::S7_inherits(statement_block, TccqBlock))
 expect_true(S7::S7_inherits(statement_block, TccqValueBlock))
 expect_identical(statement_block@result, result_target)
 expect_identical(statement_block@effect, conditional_statement@effect)
+
+procedural_if <- tccq_if(
+  "statement_procedural_if",
+  condition_expression,
+  TccqBlock(
+    id = "block_procedural_consequent",
+    locals = list(),
+    statements = list(consequent_assignment),
+    effect = consequent_assignment@effect
+  ),
+  TccqBlock(
+    id = "block_procedural_alternative",
+    locals = list(),
+    statements = list(alternative_assignment),
+    effect = alternative_assignment@effect
+  ),
+  branch_value@semantics
+)
+expect_true(S7::S7_inherits(procedural_if, TccqIf))
+expect_false(S7::S7_inherits(procedural_if, TccqConditional))
+expect_true(procedural_if@effect@may_error)
+expect_identical(procedural_if@semantics, branch_value@semantics)
 
 procedural_block <- TccqBlock(
   id = "block_procedural",

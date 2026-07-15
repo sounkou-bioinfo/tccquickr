@@ -69,13 +69,17 @@ Sequential recurrence now has a separate honest representation. A scalar R
 `while` becomes `TccqWhile` over a typed statement block, and loop-carried
 variables become mutable `TccqCell` storage rather than fake SSA bindings or a
 special `TccqLoopNest` mode. Cell reads use the same neutral expressions as the
-array path, assignments carry write effects, and C, TinyCC, and Fortran consume
-the same structured program body. That body is the mutually exclusive
+array path, assignments carry write effects, and nested procedural branches are
+`TccqIf` statements over typed arm blocks. `TccqConditional` is its stricter
+value-producing subtype; the shared parent keeps printers independent of that
+distinction while exact local effects remain separate from the retained source
+branch effect. C, TinyCC, and Fortran consume the same structured program body.
+That body is the mutually exclusive
 structured form of `TccqProgramSchedule`, preserving one owner for top-level
 order and result identity. Initialization before entry is mandatory. Numeric
 comparisons preserve missing logical results, and every generated control test
 reports them through a typed callable error channel; structured exits, nested
-sequential control, and arrays remain explicit gaps. A controlled array result
+loops, and array-carried state remain explicit gaps. A controlled array result
 uses caller-owned output storage, so C, Rtinycc, and Fortran inspect that error
 channel without first converting a returned buffer pointer.
 

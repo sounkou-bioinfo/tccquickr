@@ -154,8 +154,9 @@ The first lowering pass is deliberately small. It handles scalar and rank-N
 elementwise expressions, full-domain rank-N reductions, per-axis reductions
 such as `colSums()` and `rowSums()`, `%*%` contractions, and rank-1 interior
 slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
-symbols. It also handles one sequential form: scalar loop-carried cells updated
-by a `while` statement after explicit initialization. Slice extents are typed
+symbols. It also handles scalar loop-carried cells updated by a `while`
+statement after explicit initialization, including nested procedural `if`
+statements over typed blocks. Slice extents are typed
 affine dimensions (`n - 2` is a `TccqDim`
 fact, not a printed string), and slices themselves disappear into typed affine
 accesses rather than materializing values. Programs compose across loop
@@ -360,16 +361,22 @@ The first sequential recurrence is a `TccqWhile` statement over a plain
 contract and distinct from immutable `TccqLocalBinding` definitions. Conditions
 and assignments reuse `TccqExpression`, so the C and Fortran printers consume
 one neutral program body and do not recover recurrence from source names. This
-slice is scalar, requires cells to be initialized before loop entry, and does
-not use `TccqLoopNest`, which remains the data-parallel iteration abstraction.
+slice is scalar, requires cells to be initialized before loop entry, and admits
+procedural `TccqIf` statements whose arms are general typed blocks. A source
+`if` without `else` has an explicit empty alternative. `TccqConditional` is the
+stricter value-producing subtype used by expression loop nests; its retained
+source branch may have a broader effect after guarded work has been extracted,
+while the inherited statement effect remains exact for the normalized arms.
+Sequential control does not use `TccqLoopNest`, which remains the data-parallel
+iteration abstraction.
 The structured body is the mutually exclusive body form of
 `TccqProgramSchedule`; it does not compete with the schedule for ownership of
 top-level order. Schedule construction verifies exact cell, local, and result
 targets, graph-consistent expression and target types, and initialization
 dominance before a backend sees the body.
 
-`for`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, nested
-sequential conditionals, and idiomatic R surfaces such as `Map`, `lapply`,
+`for`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and idiomatic
+R surfaces such as `Map`, `lapply`,
 `vapply`, `apply`, `Reduce`, and `Filter` are not just more function names to
 whitelist. They describe regions, exits, dominance, carried loop state, effect
 ordering, reducer legality, allocation, and possible boundary regions.

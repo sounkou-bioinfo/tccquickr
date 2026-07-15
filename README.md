@@ -214,28 +214,34 @@ Fortran emit conditional statements, so the unselected arm is not
 evaluated, and native call boundaries report a missing computed
 condition through a typed `TccqBackendErrorChannel` as R does. Loop-nest
 lowering represents value-producing control as a typed `TccqValueBlock`
-containing `TccqConditional` and `TccqAssignment` values; arithmetic in
-each assignment remains a neutral `TccqExpression`. Pure branches may
-nest in result arms, directly as another branch’s condition, or under
-pure elementwise operations. The normalizer evaluates each
-control-valued operand into a block-owned write target before its
-consumer. That target retains the full semantic array type while
-carrying the scalar storage type actually written in each loop
-iteration; the shared function interface assigns its generated name
-through a typed value binding. ABI parameters, scalar locals, physical
-allocations, and symbolic extents are bindings rather than parallel
-name/id/type arrays. Every value block names the write target produced
-by its terminal paths. The general `TccqBlock` owns lexical statements
-and their exact effect without claiming to yield a value;
-`TccqValueBlock` adds the terminal-result contract needed by the current
-expression loop nests. A reducer or contraction can therefore consume a
-conditional element from a block-local target while the target is still
-in scope. A reduction or contraction selected inside an arm becomes an
-intermediate loop nest carrying an ordered typed guard path, so nested
-branches execute and materialize only the selected nests. The guard path
-is the storage execution scope: extraction rejects an unscheduled value
-reached through incompatible paths, C uses nullable owned buffers, and
-Fortran uses guarded allocatable arrays.
+containing `TccqConditional` and `TccqAssignment` values.
+`TccqConditional` is the value-producing subtype of the general
+procedural `TccqIf`, so printers consume one condition-and-arm shape for
+both expression control and sequential control; arithmetic in each
+assignment remains a neutral `TccqExpression`. Pure branches may nest in
+result arms, directly as another branch’s condition, or under pure
+elementwise operations. The normalizer evaluates each control-valued
+operand into a block-owned write target before its consumer. That target
+retains the full semantic array type while carrying the scalar storage
+type actually written in each loop iteration; the shared function
+interface assigns its generated name through a typed value binding. ABI
+parameters, scalar locals, physical allocations, and symbolic extents
+are bindings rather than parallel name/id/type arrays. Every value block
+names the write target produced by its terminal paths. The general
+`TccqBlock` owns lexical statements and their exact effect without
+claiming to yield a value; `TccqValueBlock` adds the terminal-result
+contract needed by the current expression loop nests. A reducer or
+contraction can therefore consume a conditional element from a
+block-local target while the target is still in scope. A reduction or
+contraction selected inside an arm becomes an intermediate loop nest
+carrying an ordered typed guard path, so nested branches execute and
+materialize only the selected nests. The guard path is the storage
+execution scope: extraction rejects an unscheduled value reached through
+incompatible paths, C uses nullable owned buffers, and Fortran uses
+guarded allocatable arrays. The retained `TccqBranch` effect describes
+the original source computation, while a normalized `TccqConditional`
+effect describes only the work left in its statement arms after guarded
+operations have been extracted.
 
 **Sequential recurrence.** The first executable sequential slice accepts
 a scalar `while` recurrence whose loop-carried variables are initialized
@@ -243,14 +249,17 @@ before entry and assigned scalar values in the body. Each carried
 variable is a mutable `TccqCell`, deliberately distinct from the
 immutable `TccqLocalBinding` used by the top-level SSA schedule. Cell
 reads remain neutral expressions; writes and the `TccqWhile` statement
-live in a typed `TccqValueBlock`. C, Fortran, and Rtinycc consume that
-same structured body, without encoding recurrence as a `TccqLoopNest`.
-The body is the structured form of `TccqProgramSchedule`, so there is
-still one top-level owner of order; the schedule constructor validates
-result identity, graph references, exact cell and local ownership,
-graph-consistent target types, and initialization dominance. `repeat`,
-`break`, `next`, nested sequential conditionals, and array-carried state
-remain structured refusals rather than emitter conventions.
+live in a typed `TccqValueBlock`. A nested procedural `if` is a `TccqIf`
+whose consequent and alternative are general typed blocks; omitting
+`else` produces an explicit empty alternative block. C, Fortran, and
+Rtinycc consume that same structured body without encoding recurrence as
+a `TccqLoopNest`. The body is the structured form of
+`TccqProgramSchedule`, so there is still one top-level owner of order;
+the schedule constructor validates result identity, graph references,
+exact cell and local ownership, graph-consistent target types, and
+initialization dominance. `repeat`, `break`, `next`, `for`, and
+array-carried state remain structured refusals rather than emitter
+conventions.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. A `TccqProgramSchedule` owns either
@@ -520,9 +529,10 @@ The compiler core is typed all the way down: S7 schemas for values,
 shapes, effects, regions, and plans; `s7contract` interfaces between
 phases; classed diagnostics instead of error strings; neutral expression
 and statement values; one `TccqLoopNest` abstraction for data-parallel
-iteration; and structured `TccqBlock`/`TccqWhile` values for sequential
-recurrence. Every source backend consumes the same neutral handoff. The
-full phase-by-phase story — call semantics, operation registries,
-lowering, loop nests, bridges, backend planning, fusion — lives in
-[docs/architecture.md](docs/architecture.md), with the root direction in
-[docs/root.md](docs/root.md) and repo rules in [AGENTS.md](AGENTS.md).
+iteration; and structured `TccqBlock`/`TccqIf`/`TccqWhile` values for
+sequential recurrence. Every source backend consumes the same neutral
+handoff. The full phase-by-phase story — call semantics, operation
+registries, lowering, loop nests, bridges, backend planning, fusion —
+lives in [docs/architecture.md](docs/architecture.md), with the root
+direction in [docs/root.md](docs/root.md) and repo rules in
+[AGENTS.md](AGENTS.md).

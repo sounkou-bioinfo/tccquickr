@@ -2179,7 +2179,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           }
         }
         for (statement in block@statements) {
-          if (S7::S7_inherits(statement, TccqConditional)) {
+          if (S7::S7_inherits(statement, TccqIf)) {
             collect_block_locals(statement@consequent)
             collect_block_locals(statement@alternative)
           } else if (S7::S7_inherits(statement, TccqWhile)) {
@@ -2190,7 +2190,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       block_has_condition <- function(block) {
         any(vapply(block@statements, function(statement) {
-          if (S7::S7_inherits(statement, TccqConditional)) {
+          if (S7::S7_inherits(statement, TccqIf)) {
             return(TRUE)
           }
           if (S7::S7_inherits(statement, TccqWhile)) {
@@ -2813,7 +2813,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push(sprintf("%s = %s;", target, expression_text(statement@value, emit_context)))
           return(invisible(NULL))
         }
-        if (S7::S7_inherits(statement, TccqConditional)) {
+        if (S7::S7_inherits(statement, TccqIf)) {
           push("{")
           depth <<- depth + 1L
           emit_condition_value(statement@condition)
@@ -3353,7 +3353,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push(sprintf("%s = %s", target, expression_text(statement@value, emit_context)))
           return(invisible(NULL))
         }
-        if (S7::S7_inherits(statement, TccqConditional)) {
+        if (S7::S7_inherits(statement, TccqIf)) {
           push("block")
           depth <<- depth + 1L
           push("integer(c_int) :: condition_value")

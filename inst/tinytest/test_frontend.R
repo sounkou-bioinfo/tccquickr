@@ -695,6 +695,65 @@ expect_true(any(vapply(
   class = TccqCellReference
 )))
 
+conditional_recurrence <- function(n, pivot) {
+  declare(type(n = double(), pivot = double()))
+  iteration <- 0
+  total <- 0
+  while (iteration < n) {
+    iteration <- iteration + 1
+    if (iteration <= pivot) {
+      total <- total + iteration
+    } else {
+      total <- total - iteration
+    }
+  }
+  total
+}
+
+conditional_result <- tccq_analyze(conditional_recurrence, strict = TRUE)
+expect_true(conditional_result@success)
+conditional_while <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqWhile),
+  conditional_result@value@schedule@body@statements
+)[[1L]]
+procedural_if <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqIf),
+  conditional_while@body@statements
+)[[1L]]
+expect_false(S7::S7_inherits(procedural_if, TccqConditional))
+expect_true(S7::S7_inherits(procedural_if@consequent, TccqBlock))
+expect_true(S7::S7_inherits(procedural_if@alternative, TccqBlock))
+expect_equal(length(procedural_if@consequent@statements), 1L)
+expect_equal(length(procedural_if@alternative@statements), 1L)
+expect_true(procedural_if@effect@writes)
+expect_true(procedural_if@effect@may_error)
+
+conditional_without_else <- function(n) {
+  declare(type(n = double()))
+  iteration <- 0
+  total <- 0
+  while (iteration < n) {
+    iteration <- iteration + 1
+    if (iteration <= 2) total <- total + iteration
+  }
+  total
+}
+
+conditional_without_else_result <- tccq_analyze(
+  conditional_without_else,
+  strict = TRUE
+)
+expect_true(conditional_without_else_result@success)
+without_else_while <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqWhile),
+  conditional_without_else_result@value@schedule@body@statements
+)[[1L]]
+without_else_if <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqIf),
+  without_else_while@body@statements
+)[[1L]]
+expect_equal(length(without_else_if@alternative@statements), 0L)
+
 uninitialized_recurrence <- function(n) {
   declare(type(n = double()))
   total <- 0

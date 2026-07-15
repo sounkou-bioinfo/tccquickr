@@ -876,23 +876,23 @@ TccqAssignment <- S7::new_class(
   }
 )
 
-#' Neutral conditional statement
+#' Neutral procedural if statement
 #'
 #' @inheritParams TccqStatement
 #' @param condition Scalar logical condition expression.
 #' @param consequent Block evaluated when the condition is true.
 #' @param alternative Block evaluated when the condition is false.
-#' @param branch Source branch payload retaining R special-form semantics.
+#' @param semantics Evaluator facts for the originating `if` special form.
 #' @export
-TccqConditional <- S7::new_class(
-  "TccqConditional",
+TccqIf <- S7::new_class(
+  "TccqIf",
   package = "tccquickr",
   parent = TccqStatement,
   properties = list(
     condition = TccqExpression,
-    consequent = TccqValueBlock,
-    alternative = TccqValueBlock,
-    branch = TccqBranch
+    consequent = TccqBlock,
+    alternative = TccqBlock,
+    semantics = TccqCallSemantics
   ),
   validator = function(self) {
     problems <- character()
@@ -902,14 +902,61 @@ TccqConditional <- S7::new_class(
     ) {
       problems <- c(problems, "@condition must be a scalar logical expression")
     }
+    if (
+      !identical(self@semantics@call@name, "if") ||
+        !isTRUE(self@semantics@control) ||
+        !identical(self@semantics@forcing_policy, "special")
+    ) {
+      problems <- c(problems, "@semantics must describe the R `if` special form")
+    }
+    expected_effect <- Reduce(
+      tccq_effect_union,
+      list(
+        self@condition@effect,
+        self@consequent@effect,
+        self@alternative@effect,
+        tccq_effect(may_error = TRUE)
+      ),
+      init = tccq_effect()
+    )
+    if (!identical(self@effect, expected_effect)) {
+      problems <- c(problems, "@effect must include the condition, both arms, and condition error")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Value-producing neutral conditional
+#'
+#' This is the stricter value-producing form of `TccqIf`. Both arms must be
+#' value blocks writing the same target, and the retained [TccqBranch] must
+#' agree with the procedural control facts. The branch retains the effect of
+#' the source value; the statement effect covers only work left in its
+#' normalized arms after reductions or contractions have been extracted.
+#'
+#' @inheritParams TccqIf
+#' @param branch Source branch payload retaining R special-form semantics.
+#' @export
+TccqConditional <- S7::new_class(
+  "TccqConditional",
+  package = "tccquickr",
+  parent = TccqIf,
+  properties = list(branch = TccqBranch),
+  validator = function(self) {
+    problems <- character()
+    if (
+      !S7::S7_inherits(self@consequent, TccqValueBlock) ||
+        !S7::S7_inherits(self@alternative, TccqValueBlock)
+    ) {
+      problems <- c(problems, "value conditionals require value-producing arm blocks")
+    } else if (!identical(self@consequent@result, self@alternative@result)) {
+      problems <- c(problems, "both branch blocks must produce the same result target")
+    }
     if (!identical(self@condition@value_id, self@branch@condition)) {
       problems <- c(problems, "@condition value id must match @branch condition")
     }
-    if (!identical(self@consequent@result, self@alternative@result)) {
-      problems <- c(problems, "both branch blocks must produce the same result target")
-    }
-    if (!identical(self@effect, self@branch@effect)) {
-      problems <- c(problems, "@effect must match the source branch effect")
+    if (!identical(self@semantics, self@branch@semantics)) {
+      problems <- c(problems, "@semantics must match the source branch payload")
     }
     if (length(problems) > 0L) problems
   }
@@ -1035,7 +1082,37 @@ tccq_assignment <- function(id, target, value) {
   TccqAssignment(id = id, effect = effect, target = target, value = value)
 }
 
-#' Construct a neutral conditional
+#' Construct a neutral procedural if
+#'
+#' @inheritParams TccqIf
+#' @export
+tccq_if <- function(id, condition, consequent, alternative, semantics) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(condition, TccqExpression, "TccqExpression", "condition")
+  .tccq_check_s7(consequent, TccqBlock, "TccqBlock", "consequent")
+  .tccq_check_s7(alternative, TccqBlock, "TccqBlock", "alternative")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  effect <- Reduce(
+    tccq_effect_union,
+    list(
+      condition@effect,
+      consequent@effect,
+      alternative@effect,
+      tccq_effect(may_error = TRUE)
+    ),
+    init = tccq_effect()
+  )
+  TccqIf(
+    id = id,
+    effect = effect,
+    condition = condition,
+    consequent = consequent,
+    alternative = alternative,
+    semantics = semantics
+  )
+}
+
+#' Construct a value-producing neutral conditional
 #'
 #' @inheritParams TccqConditional
 #' @export
@@ -1051,12 +1128,23 @@ tccq_conditional <- function(
   .tccq_check_s7(consequent, TccqValueBlock, "TccqValueBlock", "consequent")
   .tccq_check_s7(alternative, TccqValueBlock, "TccqValueBlock", "alternative")
   .tccq_check_s7(branch, TccqBranch, "TccqBranch", "branch")
+  effect <- Reduce(
+    tccq_effect_union,
+    list(
+      condition@effect,
+      consequent@effect,
+      alternative@effect,
+      tccq_effect(may_error = TRUE)
+    ),
+    init = tccq_effect()
+  )
   TccqConditional(
     id = id,
-    effect = branch@effect,
+    effect = effect,
     condition = condition,
     consequent = consequent,
     alternative = alternative,
+    semantics = branch@semantics,
     branch = branch
   )
 }

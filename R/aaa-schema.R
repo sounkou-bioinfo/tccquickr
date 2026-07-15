@@ -812,6 +812,9 @@ TccqBranch <- S7::new_class(
     ) {
       problems <- c(problems, "@semantics must describe the R `if` special form")
     }
+    if (!isTRUE(self@effect@may_error)) {
+      problems <- c(problems, "branch effects must include a possible condition error")
+    }
     if (length(problems) > 0L) problems
   }
 )
@@ -2039,7 +2042,7 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
           if (identical(statement@target@kind, "cell")) {
             current_cells <- union(current_cells, statement@target@value_id)
           }
-        } else if (S7::S7_inherits(statement, TccqConditional)) {
+        } else if (S7::S7_inherits(statement, TccqIf)) {
           validate_expression(statement@condition, current_cells, statement@id)
           consequent_cells <- validate_block(
             statement@consequent,
@@ -2304,7 +2307,7 @@ tccq_branch <- function(
   alternative,
   type,
   semantics,
-  effect = tccq_effect(),
+  effect = tccq_effect(may_error = TRUE),
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")

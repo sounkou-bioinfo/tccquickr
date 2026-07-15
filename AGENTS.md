@@ -201,8 +201,14 @@ For the reset core, keep these rules explicit:
   Pure branches may nest in either result arm, directly as another branch's
   condition, or under pure elementwise operations. Loop-nest lowering turns
   value-producing control into `TccqValueBlock`, `TccqAssignment`, and
-  `TccqConditional` values over typed `TccqWriteTarget` destinations. It
-  normalizes control-valued operands left to right before their consumer. A
+  `TccqConditional` values over typed `TccqWriteTarget` destinations.
+  `TccqConditional` is the value-producing subtype of procedural `TccqIf`;
+  both share condition, arm-block, evaluator-semantics, and exact local-effect
+  contracts. The retained `TccqBranch` effect describes the original source
+  value and may be broader after guarded reductions or contractions have been
+  extracted into earlier nests. Do not require that source effect to equal the
+  normalized statement effect. The normalizer evaluates control-valued
+  operands left to right before their consumer. A
   value block explicitly names the result target produced by every terminal
   path;
   reducers and contractions consume a block-local result inside the reduction
@@ -232,11 +238,13 @@ For the reset core, keep these rules explicit:
   scalar state is explicit mutable `TccqCell` storage, distinct from immutable
   SSA `TccqLocalBinding` definitions; cell reads are neutral expressions and
   assignments carry write effects. C, Fortran, and Rtinycc must consume the
-  same typed program body. The current slice requires initialization before
-  loop entry and does not cover `for`, `repeat`, `break`, `next`, nested
-  sequential conditionals, or arrays. Numeric comparison implementations must
-  preserve `NA`/`NaN` in logical results so `while` and `if` can report R's
-  missing-condition error.
+  same typed program body. Procedural branches inside that body are `TccqIf`
+  statements over general `TccqBlock` arms; a missing `else` is an explicit
+  empty alternative block rather than a fabricated result. The current slice
+  requires initialization before loop entry and does not cover `for`,
+  `repeat`, `break`, `next`, or array-carried state. Numeric comparison
+  implementations must preserve `NA`/`NaN` in logical results so `while` and
+  `if` can report R's missing-condition error.
 - `TccqProgramSchedule` is the sole owner of top-level order. It carries either
   contiguous `TccqEvaluationStep` values or one structured `TccqValueBlock`,
   never both. Do not infer R evaluation order from value ids, source text, or a

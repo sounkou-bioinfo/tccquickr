@@ -1551,6 +1551,63 @@ tccq_lower_function <- function(
       if (call_name %in% c("<-", "=") && length(expr) == 3L) {
         return(lower_cell_assignment(expr, in_loop))
       }
+      if (identical(call_name, "if") && length(expr) %in% c(3L, 4L)) {
+        semantics <- take_semantics(expr, "if")
+        if (is.null(semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            "The `if` call has no matching evaluator facts in the frontend call index.",
+            expr
+          ))
+        }
+        condition <- lower_expression(expr[[2L]], state)
+        if (length(condition$diagnostics) > 0L) {
+          return(condition)
+        }
+        if (
+          !identical(condition$type@base, "logical") ||
+            condition$type@shape@rank != 0L
+        ) {
+          return(diagnostic_value(
+            "lowering.invalid_if_condition",
+            "An `if` condition must be a declared scalar logical value.",
+            expr[[2L]],
+            data = list(base = condition$type@base, rank = condition$type@shape@rank)
+          ))
+        }
+        condition_expression <- expression_for(condition$value_id)
+        if (!condition_expression@success) {
+          return(list(
+            value_id = NULL,
+            type = NULL,
+            diagnostics = condition_expression@diagnostics
+          ))
+        }
+        consequent <- lower_control_block(expr[[3L]], in_loop = in_loop)
+        if (length(consequent$diagnostics) > 0L) {
+          return(consequent)
+        }
+        alternative <- if (length(expr) == 4L) {
+          lower_control_block(expr[[4L]], in_loop = in_loop)
+        } else {
+          list(block = make_block(list()), diagnostics = list())
+        }
+        if (length(alternative$diagnostics) > 0L) {
+          return(alternative)
+        }
+        return(list(
+          value_id = condition$value_id,
+          type = condition$type,
+          statement = tccq_if(
+            next_statement_id(),
+            condition_expression@value,
+            consequent$block,
+            alternative$block,
+            semantics
+          ),
+          diagnostics = list()
+        ))
+      }
       if (identical(call_name, "while") && length(expr) == 3L) {
         semantics <- take_semantics(expr, "while")
         if (is.null(semantics)) {
@@ -1601,7 +1658,7 @@ tccq_lower_function <- function(
       }
       diagnostic_value(
         "lowering.unsupported_sequential_statement",
-        "Sequential blocks currently accept cell assignments and `while` statements.",
+        "Sequential blocks currently accept cell assignments, procedural `if`, and `while` statements.",
         expr,
         data = list(call = call_name)
       )

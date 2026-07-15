@@ -11,7 +11,7 @@ tccq_branch(
   alternative,
   type,
   semantics,
-  effect = tccq_effect(),
+  effect = tccq_effect(may_error = TRUE),
   attrs = list()
 )
 }
