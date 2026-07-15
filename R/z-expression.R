@@ -1,5 +1,59 @@
 TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation", "branch")
 
+#' Typed expression reference
+#'
+#' A reference names the logical source value read by a neutral expression.
+#' It keeps lexical binding, source symbol, slice, and affine access facts out
+#' of open-ended expression metadata. Physical allocation remains a separate
+#' storage-plan concern.
+#'
+#' @param source_value_id Logical value id supplying the referenced storage.
+#' @param symbol Optional source symbol, or an empty string when not applicable.
+#' @param binding Optional lexical binding represented by the reference.
+#' @param slice_offsets Zero-based slice offsets, or an empty integer vector.
+#' @param access Optional typed domain access attached by loop-nest planning.
+#' @export
+TccqExpressionReference <- S7::new_class(
+  "TccqExpressionReference",
+  package = "tccquickr",
+  properties = list(
+    source_value_id = S7::class_character,
+    symbol = S7::class_character,
+    binding = S7::new_union(NULL, TccqLocalBinding),
+    slice_offsets = S7::class_integer,
+    access = S7::new_union(NULL, TccqAccess)
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@source_value_id) != 1L ||
+        is.na(self@source_value_id) ||
+        !nzchar(self@source_value_id)
+    ) {
+      problems <- c(problems, "@source_value_id must be one non-empty string")
+    }
+    if (length(self@symbol) != 1L || is.na(self@symbol)) {
+      problems <- c(problems, "@symbol must be one non-missing string")
+    }
+    if (!is.integer(self@slice_offsets) || anyNA(self@slice_offsets)) {
+      problems <- c(problems, "@slice_offsets must be a non-missing integer vector")
+    }
+    if (
+      !is.null(self@binding) &&
+        !identical(self@binding@value_id, self@source_value_id)
+    ) {
+      problems <- c(problems, "@binding value id must match @source_value_id")
+    }
+    if (
+      !is.null(self@access) &&
+        !identical(self@access@value_id, self@source_value_id)
+    ) {
+      problems <- c(problems, "@access value id must match @source_value_id")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Backend-neutral expression tree
 #'
 #' `TccqExpression` is the small tree form consumed by source printers. It is
@@ -17,6 +71,7 @@ TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation", "branch")
 #' @param resolved_op Selected operation implementation for operation
 #'   expressions.
 #' @param branch Typed conditional payload for branch expressions.
+#' @param reference Typed source payload for reference expressions.
 #' @param attrs Structured metadata.
 #' @export
 TccqExpression <- S7::new_class(
@@ -32,6 +87,7 @@ TccqExpression <- S7::new_class(
     literal = S7::new_union(NULL, TccqLiteral),
     resolved_op = S7::new_union(NULL, TccqResolvedOp),
     branch = S7::new_union(NULL, TccqBranch),
+    reference = S7::new_union(NULL, TccqExpressionReference),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -60,17 +116,19 @@ TccqExpression <- S7::new_class(
     reference_has_payload <- length(self@inputs) > 0L ||
       !is.null(self@literal) ||
       !is.null(self@resolved_op) ||
-      !is.null(self@branch)
+      !is.null(self@branch) ||
+      is.null(self@reference)
     if (identical(self@kind, "reference") && reference_has_payload) {
       problems <- c(
         problems,
-        "reference expressions cannot have inputs, literals, or resolved operations"
+        "reference expressions need one reference and no inputs, literal, operation, or branch"
       )
     }
     literal_has_invalid_payload <- length(self@inputs) > 0L ||
       is.null(self@literal) ||
       !is.null(self@resolved_op) ||
-      !is.null(self@branch)
+      !is.null(self@branch) ||
+      !is.null(self@reference)
     if (identical(self@kind, "literal") && literal_has_invalid_payload) {
       problems <- c(
         problems,
@@ -80,7 +138,8 @@ TccqExpression <- S7::new_class(
     operation_has_invalid_payload <- length(self@inputs) == 0L ||
       !is.null(self@literal) ||
       is.null(self@resolved_op) ||
-      !is.null(self@branch)
+      !is.null(self@branch) ||
+      !is.null(self@reference)
     if (identical(self@kind, "operation") && operation_has_invalid_payload) {
       problems <- c(
         problems,
@@ -90,7 +149,8 @@ TccqExpression <- S7::new_class(
     branch_has_invalid_payload <- length(self@inputs) != 3L ||
       !is.null(self@literal) ||
       !is.null(self@resolved_op) ||
-      is.null(self@branch)
+      is.null(self@branch) ||
+      !is.null(self@reference)
     if (identical(self@kind, "branch") && branch_has_invalid_payload) {
       problems <- c(
         problems,
@@ -107,9 +167,55 @@ TccqExpression <- S7::new_class(
     if (!is.null(self@literal) && !identical(self@literal@type@base, self@type@base)) {
       problems <- c(problems, "@literal type base must match @type base")
     }
+    if (
+      !is.null(self@reference) &&
+        length(self@reference@slice_offsets) > 0L &&
+        length(self@reference@slice_offsets) != self@type@shape@rank
+    ) {
+      problems <- c(problems, "@reference slice offsets must match @type rank")
+    }
+    if (
+      !is.null(self@reference) &&
+        !is.null(self@reference@binding) &&
+        !identical(self@reference@binding@type, self@type)
+    ) {
+      problems <- c(problems, "@reference binding type must match @type")
+    }
     if (length(problems) > 0L) problems
   }
 )
+
+#' Construct a typed expression reference
+#'
+#' @inheritParams TccqExpressionReference
+#' @export
+tccq_expression_reference <- function(
+  source_value_id,
+  symbol = "",
+  binding = NULL,
+  slice_offsets = integer(),
+  access = NULL
+) {
+  .tccq_check_character_scalar(source_value_id, "source_value_id")
+  .tccq_check_character_or_empty(symbol, "symbol")
+  .tccq_check_optional_s7(binding, TccqLocalBinding, "TccqLocalBinding", "binding")
+  if (!is.integer(slice_offsets) || anyNA(slice_offsets)) {
+    tccq_abort(
+      "schema.invalid_expression_slice_offsets",
+      "`slice_offsets` must be a non-missing integer vector.",
+      phase = "schema",
+      path = "expression_reference.slice_offsets"
+    )
+  }
+  .tccq_check_optional_s7(access, TccqAccess, "TccqAccess", "access")
+  TccqExpressionReference(
+    source_value_id = source_value_id,
+    symbol = symbol,
+    binding = binding,
+    slice_offsets = slice_offsets,
+    access = access
+  )
+}
 
 #' Construct a backend-neutral expression
 #'
@@ -122,6 +228,7 @@ TccqExpression <- S7::new_class(
 #' @param literal Literal payload for literal expressions.
 #' @param resolved_op Selected implementation for operation expressions.
 #' @param branch Typed conditional payload for branch expressions.
+#' @param reference Typed source payload for reference expressions.
 #' @param attrs Structured metadata.
 #' @export
 tccq_expression <- function(
@@ -134,6 +241,7 @@ tccq_expression <- function(
   literal = NULL,
   resolved_op = NULL,
   branch = NULL,
+  reference = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -145,6 +253,12 @@ tccq_expression <- function(
   .tccq_check_optional_s7(literal, TccqLiteral, "TccqLiteral", "literal")
   .tccq_check_optional_s7(resolved_op, TccqResolvedOp, "TccqResolvedOp", "resolved_op")
   .tccq_check_optional_s7(branch, TccqBranch, "TccqBranch", "branch")
+  .tccq_check_optional_s7(
+    reference,
+    TccqExpressionReference,
+    "TccqExpressionReference",
+    "reference"
+  )
   .tccq_check_list(attrs, "attrs")
 
   TccqExpression(
@@ -157,6 +271,7 @@ tccq_expression <- function(
     literal = literal,
     resolved_op = resolved_op,
     branch = branch,
+    reference = reference,
     attrs = attrs
   )
 }
@@ -222,7 +337,10 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = value@op,
         type = value@type,
-        attrs = list(symbol = value@attrs$symbol, storage_value_id = current_value_id)
+        reference = tccq_expression_reference(
+          current_value_id,
+          symbol = value@attrs$symbol
+        )
       ))
     }
     if (S7::S7_inherits(value, TccqBindingReference)) {
@@ -232,9 +350,9 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = "local",
         type = value@type,
-        attrs = list(
-          binding = value@binding,
-          storage_value_id = value@binding@value_id
+        reference = tccq_expression_reference(
+          value@binding@value_id,
+          binding = value@binding
         )
       ))
     }
@@ -274,9 +392,9 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         value_id = current_value_id,
         op = "formal",
         type = value@type,
-        attrs = list(
+        reference = tccq_expression_reference(
+          source_value@id,
           symbol = source_value@attrs$symbol,
-          storage_value_id = source_value@id,
           slice_offsets = slice_offsets
         )
       ))
@@ -1042,7 +1160,7 @@ tccq_program_loop_nests <- function(program) {
       value_id = expression@value_id,
       op = "intermediate",
       type = expression@type,
-      attrs = list(storage_value_id = expression@value_id, intermediate = TRUE)
+      reference = tccq_expression_reference(expression@value_id)
     )
     replacements[[expression@value_id]] <- replacement
     replacement
@@ -1051,9 +1169,9 @@ tccq_program_loop_nests <- function(program) {
     if (
       identical(expression@kind, "reference") &&
         identical(expression@op, "local") &&
-        S7::S7_inherits(expression@attrs$binding, TccqLocalBinding)
+        S7::S7_inherits(expression@reference@binding, TccqLocalBinding)
     ) {
-      binding <- expression@attrs$binding
+      binding <- expression@reference@binding
       binding_storage <- storage_for(binding@value_id)
       if (!isTRUE(binding_storage@materialized)) {
         fused_definition <- fused_definitions[[binding@name]]
@@ -1128,10 +1246,14 @@ tccq_program_loop_nests <- function(program) {
       return(expression)
     }
     if (!identical(expression@kind, "operation")) {
-      storage_value_id <- expression@attrs$storage_value_id %||% expression@value_id
+      source_value_id <- if (is.null(expression@reference)) {
+        expression@value_id
+      } else {
+        expression@reference@source_value_id
+      }
       already_has_source_storage <- identical(expression@kind, "reference") &&
         expression@op %in% c("formal", "dim_symbol") &&
-        identical(storage_value_id, expression@value_id)
+        identical(source_value_id, expression@value_id)
       if (!is_root && definition_requires_materialization && !already_has_source_storage) {
         return(materialize(expression, guards, definition_binding))
       }
@@ -1226,7 +1348,7 @@ tccq_program_loop_nests <- function(program) {
       rank <- expression@type@shape@rank
       if (rank == 0L) {
         access <- tccq_access(
-          expression@attrs$storage_value_id %||% expression@value_id,
+          expression@reference@source_value_id,
           domain,
           kind = "scalar"
         )
@@ -1244,7 +1366,7 @@ tccq_program_loop_nests <- function(program) {
           vapply(iteration_dims, dim_signature, character(1))
         )
         if (aligned) {
-          offsets <- as.integer(expression@attrs$slice_offsets %||% integer())
+          offsets <- expression@reference@slice_offsets
           if (length(offsets) == 0L) {
             offsets <- rep(0L, rank)
           }
@@ -1253,14 +1375,14 @@ tccq_program_loop_nests <- function(program) {
           })
           access_kind <- if (any(offsets != 0L)) "slice" else "identity"
           access <- tccq_access(
-            expression@attrs$storage_value_id %||% expression@value_id,
+            expression@reference@source_value_id,
             domain,
             kind = access_kind,
             index_map = index_map
           )
         } else {
           access <- tccq_access(
-            expression@attrs$storage_value_id %||% expression@value_id,
+            expression@reference@source_value_id,
             domain,
             kind = "recycle",
             index_map = lapply(axis_names, function(name) tccq_index_expr(name, 0L)),
@@ -1268,7 +1390,9 @@ tccq_program_loop_nests <- function(program) {
           )
         }
       }
-      expression@attrs$access <- access
+      reference <- expression@reference
+      reference@access <- access
+      expression@reference <- reference
       return(expression)
     }
     if (identical(expression@kind, "branch")) {
@@ -1569,8 +1693,8 @@ tccq_program_loop_nests <- function(program) {
       "reference",
       type = target@type,
       op = "local",
-      attrs = list(
-        storage_value_id = target@value_id,
+      reference = tccq_expression_reference(
+        target@value_id,
         access = tccq_access(target@value_id, domain, kind = "scalar")
       )
     )

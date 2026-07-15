@@ -256,7 +256,8 @@ reference_expression <- tccq_expression(
   "reference",
   type = finite@type,
   value_id = "formal_0001",
-  op = "formal"
+  op = "formal",
+  reference = tccq_expression_reference("formal_0001", symbol = "x")
 )
 literal_expression <- tccq_expression(
   "value_0001",
@@ -301,7 +302,8 @@ condition_expression <- tccq_expression(
   "formal_flag",
   "reference",
   type = logical_scalar,
-  op = "formal"
+  op = "formal",
+  reference = tccq_expression_reference("formal_flag", symbol = "flag")
 )
 branch_expression <- tccq_expression(
   "value_0003",
@@ -312,6 +314,9 @@ branch_expression <- tccq_expression(
 )
 
 expect_true(S7::S7_inherits(reference_expression, TccqExpression))
+expect_true(S7::S7_inherits(reference_expression@reference, TccqExpressionReference))
+expect_equal(reference_expression@reference@source_value_id, "formal_0001")
+expect_equal(reference_expression@reference@symbol, "x")
 expect_true(S7::S7_inherits(operation_expression@resolved_op, TccqResolvedOp))
 expect_equal(operation_expression@inputs[[2L]]@literal@value, 1.5)
 expect_true(S7::S7_inherits(branch_value, TccqBranch))
@@ -507,8 +512,39 @@ bad_expression <- tryCatch(
 )
 expect_true(inherits(bad_expression, "error"))
 
+missing_reference_payload <- tryCatch(
+  tccq_expression(
+    "missing_reference_payload",
+    "reference",
+    type = finite@type,
+    op = "formal"
+  ),
+  error = identity
+)
+expect_true(inherits(missing_reference_payload, "error"))
+
+bad_slice_reference <- tryCatch(
+  tccq_expression(
+    "bad_slice_reference",
+    "reference",
+    type = finite@type,
+    op = "formal",
+    reference = tccq_expression_reference(
+      "formal_0001",
+      slice_offsets = c(0L, 1L)
+    )
+  ),
+  error = identity
+)
+expect_true(inherits(bad_slice_reference, "error"))
+
 domain <- tccq_domain("d_matrix", matrix_type@shape, axes = c("i", "j"))
 access <- tccq_access("m1", domain)
+bad_access_reference <- tryCatch(
+  tccq_expression_reference("formal_0001", access = access),
+  error = identity
+)
+expect_true(inherits(bad_access_reference, "error"))
 fusion <- tccq_fusion_group(
   "fg1",
   "map",

@@ -171,15 +171,19 @@ dimension symbols. Every executable top-level form is a typed
 `TccqEvaluationStep` in one contiguous `TccqProgramSchedule`, including
 expression statements whose values are not bound. Assignment steps carry a
 single-assignment `TccqLocalBinding`; the schedule, not value ids or source
-text, owns R evaluation order. Each step retains the exact local bindings read,
-because different lexical names may alias one lowered value. The loop-nest
-planner sees those reads as `TccqBindingReference` leaves rather than walking
-back into and re-evaluating their definition graphs. It visits schedule steps
-before the returned expression. A reduction defined before a later `if` therefore
-materializes once without that `if`'s guards; when the definition itself is
-conditional, its intermediate nests retain the definition's selected-arm
-guards. Later consumers reuse that schedule rather than moving evaluation to a
-use site.
+text, owns R evaluation order. Each neutral reference carries one typed
+`TccqExpressionReference` that distinguishes the expression value from the
+logical source value it reads and owns its optional symbol, lexical binding,
+slice offsets, and affine `TccqAccess`. That logical source is distinct from a
+later physical `TccqStorageAllocation`. Each step retains the exact local
+bindings read, because different lexical names may alias one lowered value. The
+loop-nest planner sees those reads as `TccqBindingReference` leaves rather than
+walking back into and re-evaluating their definition graphs. It visits schedule
+steps before the returned expression. A reduction defined before a later `if`
+therefore materializes once without that `if`'s guards; when the definition
+itself is conditional, its intermediate nests retain the definition's
+selected-arm guards. Later consumers reuse that schedule rather than moving
+evaluation to a use site.
 
 The first local fusion rule is intentionally stricter than textual
 `f(g(x))`. A definition is kept as an expression only when it has one exact

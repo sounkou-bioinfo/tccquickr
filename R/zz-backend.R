@@ -1996,7 +1996,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
     expression_text <- function(expression, emit_context) {
       if (identical(expression@kind, "reference")) {
-        access <- expression@attrs$access
+        access <- expression@reference@access
         if (!S7::S7_inherits(access, TccqAccess)) {
           tccq_abort(
             "backend.missing_access",

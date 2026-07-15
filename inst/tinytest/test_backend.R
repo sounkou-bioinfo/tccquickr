@@ -1376,7 +1376,7 @@ expect_equal(length(branch_reduction_nests@value), 2L)
 branch_reduction_guard <- branch_reduction_nests@value[[1L]]@guards[[1L]]
 expect_true(S7::S7_inherits(branch_reduction_guard, TccqLoopGuard))
 expect_true(branch_reduction_guard@selected)
-expect_equal(branch_reduction_guard@condition@attrs$access@kind, "scalar")
+expect_equal(branch_reduction_guard@condition@reference@access@kind, "scalar")
 expect_equal(length(branch_reduction_nests@value[[2L]]@guards), 0L)
 
 branch_reduction_both <- function(x, flag) {
@@ -3172,7 +3172,7 @@ expect_true(recycle_center_program@success)
 recycle_center_nests <- tccq_program_loop_nests(recycle_center_program@value)
 expect_true(recycle_center_nests@success)
 recycle_center_access <-
-  recycle_center_nests@value[[1L]]@body@inputs[[2L]]@attrs$access
+  recycle_center_nests@value[[1L]]@body@inputs[[2L]]@reference@access
 expect_equal(recycle_center_access@kind, "recycle")
 
 # R refuses non-conformable arrays; so does the domain policy.

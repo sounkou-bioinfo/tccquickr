@@ -35,8 +35,13 @@ Each target separates the full semantic value type from the scalar storage type
 written in one loop iteration, and C and Fortran declare that storage in the
 lexical source block that owns it. Each block names the target produced by every
 terminal path, so reductions and contractions can consume conditional elements
-inside the reducer scope. A reduction or contraction selected inside a
-branch arm becomes an intermediate loop nest with an ordered typed guard path;
+inside the reducer scope. Every neutral reference has a
+`TccqExpressionReference`: the logical source value, optional lexical binding
+and slice, and eventual typed domain access are one payload rather than
+expression attributes. This source identity is not a physical allocation and
+cannot be used as a storage-reuse hint. A reduction or contraction selected
+inside a branch arm becomes an intermediate loop nest with an ordered typed
+guard path;
 nested paths preserve outer-to-inner arm selection in every source backend.
 The same path scopes materialized storage. `TccqProgramSchedule` records every
 top-level evaluation in contiguous statement order, including unbound

@@ -257,9 +257,13 @@ from the lowered program: backend-neutral with-loops in the SAC lineage,
 intermediates first, the result nest last. Each nest carries ordered
 `TccqLoopAxis` values (`map` axes produce output positions, `reduce` axes fold
 into an accumulator), a value-expression or typed-statement-block body whose
-references carry typed `TccqAccess` maps of affine `TccqIndexExpr` values, an
-optional reducer with its identity, and an output access; intermediate nests
-additionally name the scalar or temporary buffer their result materializes.
+references carry `TccqExpressionReference` payloads. That payload separates the
+expression value id from its logical source value id and owns its optional
+symbol, lexical binding, slice offsets, and typed `TccqAccess` map of affine
+`TccqIndexExpr` values. It does not identify physical storage; that remains a
+`TccqStorageAllocation`. Each nest also carries an optional reducer with its
+identity and an output access; intermediate nests additionally name the scalar
+or temporary buffer their result materializes.
 Scalar programs, elementwise maps, full and per-axis reductions, contractions,
 stencils, control-valued results, and scalar- or buffer-intermediate
 compositions are all sequences of this one value, so C, Fortran, and Rtinycc

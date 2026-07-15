@@ -1347,10 +1347,10 @@ tccq_lower_function <- function(
         return(invisible(NULL))
       }
       if (S7::S7_inherits(value, TccqBindingReference)) {
-        storage_value_id <- value@binding@value_id
-        if (storage_value_id %in% names(last_use_positions)) {
-          last_use_positions[[storage_value_id]] <<- max(
-            last_use_positions[[storage_value_id]],
+        bound_value_id <- value@binding@value_id
+        if (bound_value_id %in% names(last_use_positions)) {
+          last_use_positions[[bound_value_id]] <<- max(
+            last_use_positions[[bound_value_id]],
             step_use_position
           )
         }

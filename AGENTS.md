@@ -397,9 +397,13 @@ For the reset core, keep these rules explicit:
   group temporaries by role alone or hide reuse assumptions in source printers.
   A non-materialized fused expression owns no allocation.
 - Source printers consume `TccqExpression` trees and `TccqBlock` statement
-  bodies built from lowered programs. Do not make C, Fortran, TinyCC, CUDA, or
-  graph printers rediscover expression or control semantics by walking raw
-  values and switching on operation strings.
+  bodies built from lowered programs. A reference must carry one typed
+  `TccqExpressionReference`; its source value id, symbol, lexical binding,
+  slice offsets, and `TccqAccess` must not return to expression `attrs`. The
+  source value id is logical provenance, not a physical allocation or reuse
+  hint. Do not make C, Fortran, TinyCC, CUDA, or graph printers rediscover
+  expression or control semantics by walking raw values and switching on
+  operation strings.
 - Operation-specific target spelling belongs to typed implementations through
   `tccq_op_render()` and `TccqOpRenderContext`, not backend-local `if`/`switch`
   ladders over operation names.
