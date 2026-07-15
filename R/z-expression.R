@@ -1062,6 +1062,88 @@ TccqRepeat <- S7::new_class(
   }
 )
 
+#' Neutral for statement
+#'
+#' A for loop evaluates one typed iterable and assigns each selected element to
+#' its iteration cell before evaluating the body. The iteration domain and
+#' access are explicit so source backends do not reconstruct traversal from R
+#' syntax. The current concrete slice accepts rank-1 atomic iterables.
+#'
+#' @inheritParams TccqLoop
+#' @param iterator Mutable scalar destination receiving each element.
+#' @param iterable Typed iterable expression carrying its domain access.
+#' @param domain Iteration domain evaluated by the loop.
+#' @export
+TccqFor <- S7::new_class(
+  "TccqFor",
+  package = "tccquickr",
+  parent = TccqLoop,
+  properties = list(
+    iterator = TccqWriteTarget,
+    iterable = TccqExpression,
+    domain = TccqDomain
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@semantics@call@name, "for")) {
+      problems <- c(problems, "@semantics must describe the R `for` special form")
+    }
+    if (
+      !identical(self@iterator@kind, "cell") ||
+        !S7::S7_inherits(self@iterator@binding, TccqCell) ||
+        self@iterator@type@shape@rank != 0L
+    ) {
+      problems <- c(problems, "@iterator must be a mutable scalar cell target")
+    }
+    if (self@iterable@type@shape@rank != 1L) {
+      problems <- c(problems, "@iterable must currently be a rank-1 value")
+    }
+    if (!identical(self@domain@shape, self@iterable@type@shape)) {
+      problems <- c(problems, "@domain shape must match the iterable shape")
+    }
+    if (!identical(self@iterator@type@base, self@iterable@type@base)) {
+      problems <- c(problems, "@iterator and @iterable must have the same base type")
+    }
+    access <- if (is.null(self@iterable@reference)) {
+      NULL
+    } else {
+      self@iterable@reference@access
+    }
+    if (
+      !S7::S7_inherits(access, TccqAccess) ||
+        !identical(access@domain, self@domain) ||
+        !identical(access@kind, "identity")
+    ) {
+      problems <- c(problems, "@iterable must carry an identity access over @domain")
+    }
+    if (
+      S7::S7_inherits(access, TccqAccess) &&
+        self@domain@shape@rank == 1L &&
+        length(self@domain@axes) == 1L
+    ) {
+      exact_identity <- length(access@index_map) == 1L &&
+        identical(access@index_map[[1L]]@axis, self@domain@axes[[1L]]) &&
+        identical(access@index_map[[1L]]@offset, 0L)
+      if (!exact_identity) {
+        problems <- c(problems, "@iterable identity access must select the current domain element")
+      }
+    }
+    expected_effect <- Reduce(
+      tccq_effect_union,
+      list(
+        self@iterable@effect,
+        self@body@effect,
+        tccq_effect(writes = TRUE)
+      ),
+      init = tccq_effect()
+    )
+    if (!identical(self@effect, expected_effect)) {
+      problems <- c(problems, "@effect must include iterable evaluation, iterator writes, and body effects")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Neutral loop transfer statement
 #'
 #' A transfer is structured control completion, not a read/write side effect.
@@ -1270,6 +1352,32 @@ tccq_repeat <- function(id, body, semantics) {
   .tccq_check_s7(body, TccqBlock, "TccqBlock", "body")
   .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
   TccqRepeat(id = id, effect = body@effect, body = body, semantics = semantics)
+}
+
+#' Construct a neutral for statement
+#'
+#' @inheritParams TccqFor
+#' @export
+tccq_for <- function(id, iterator, iterable, domain, body, semantics) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(iterator, TccqWriteTarget, "TccqWriteTarget", "iterator")
+  .tccq_check_s7(iterable, TccqExpression, "TccqExpression", "iterable")
+  .tccq_check_s7(domain, TccqDomain, "TccqDomain", "domain")
+  .tccq_check_s7(body, TccqBlock, "TccqBlock", "body")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  TccqFor(
+    id = id,
+    effect = Reduce(
+      tccq_effect_union,
+      list(iterable@effect, body@effect, tccq_effect(writes = TRUE)),
+      init = tccq_effect()
+    ),
+    body = body,
+    semantics = semantics,
+    iterator = iterator,
+    iterable = iterable,
+    domain = domain
+  )
 }
 
 #' Construct a neutral loop transfer

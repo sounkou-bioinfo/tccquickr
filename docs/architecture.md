@@ -155,9 +155,9 @@ elementwise expressions, full-domain rank-N reductions, per-axis reductions
 such as `colSums()` and `rowSums()`, `%*%` contractions, and rank-1 interior
 slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
 symbols. It also handles scalar loop-carried cells updated by `while` and
-`repeat` loops after explicit initialization, including nested procedural `if`
-statements and nearest-loop `break`/`next` transfers over typed blocks. Slice
-extents are typed
+`repeat` loops after explicit initialization, plus direct rank-1 atomic
+iteration through `for`, including nested procedural `if` statements and
+nearest-loop `break`/`next` transfers over typed blocks. Slice extents are typed
 affine dimensions (`n - 2` is a `TccqDim`
 fact, not a printed string), and slices themselves disappear into typed affine
 accesses rather than materializing values. Programs compose across loop
@@ -359,7 +359,12 @@ incompatible paths remain a classed loop-nest diagnostic.
 
 Sequential recurrence uses abstract `TccqLoop` over a plain `TccqBlock`.
 `TccqWhile` adds a condition evaluated before every iteration; `TccqRepeat`
-enters the body directly. Loop-carried state is explicit `TccqCell` storage:
+enters the body directly. `TccqFor` evaluates a typed iterable and assigns each
+selected element to its iteration cell. Its `TccqDomain` and `TccqAccess` own
+traversal, so printers do not reconstruct it from an R call. The first slice
+accepts direct rank-1 atomic references. The iterator is definitely initialized
+inside the body but not after the loop because its domain may be empty.
+Loop-carried state is explicit `TccqCell` storage:
 mutable by contract and distinct from immutable `TccqLocalBinding` definitions.
 Conditions and assignments reuse `TccqExpression`, so the C and Fortran
 printers consume one neutral program body and do not recover recurrence from
@@ -382,8 +387,8 @@ top-level order. Schedule construction verifies exact cell, local, and result
 targets, graph-consistent expression and target types, and initialization
 dominance before a backend sees the body.
 
-`for`, `switch`, vectorized `ifelse`, and idiomatic R surfaces such as `Map`,
-`lapply`,
+Scalar, range, list, and computed `for` iterables, `switch`, vectorized
+`ifelse`, and idiomatic R surfaces such as `Map`, `lapply`,
 `vapply`, `apply`, `Reduce`, and `Filter` are not just more function names to
 whitelist. They describe regions, exits, dominance, carried loop state, effect
 ordering, reducer legality, allocation, and possible boundary regions.

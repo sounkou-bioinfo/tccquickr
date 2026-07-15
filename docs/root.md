@@ -67,7 +67,10 @@ remains a refusal when its uses imply incompatible paths.
 
 Sequential recurrence now has a separate honest representation. Abstract
 `TccqLoop` owns the typed body shared by concrete `TccqWhile` and `TccqRepeat`
-statements, and loop-carried variables become mutable `TccqCell` storage rather
+statements. `TccqFor` adds a scalar iteration cell and a typed rank-1 iterable
+whose `TccqDomain`/`TccqAccess` owns element traversal. Its iterator is
+initialized inside the body but not after a potentially empty domain.
+Loop-carried variables become mutable `TccqCell` storage rather
 than fake SSA bindings or a special `TccqLoopNest` mode. `TccqLoopTransfer`
 represents nearest-loop `break` and `next` completion without pretending it is
 a read/write effect. Cell reads use the same neutral expressions as the array
@@ -103,8 +106,10 @@ allocation, and only when the earlier lifetime ends before the later
 definition. Directly dependent or simultaneously live buffers remain distinct.
 
 The remaining north-star pressure is richer loop and evaluator structure.
-Viterbi and smaller probes around `switch`, `for`, replacement calls, dispatch,
-promises, side effects, and interruption should fail with structured
-diagnostics until the compiler has typed facts for those concepts.
+Viterbi and smaller probes around `switch`, richer `for` iterables, replacement
+calls, dispatch, promises, side effects, and interruption should fail with
+structured diagnostics until the compiler has typed facts for those concepts.
+The accepted direct-vector `for` slice does not yet cover scalar, range, list,
+or computed iterables.
 The goal is not to accept more R by fallback; it is to make each new accepted
 program deepen the shared representation consumed by every backend.

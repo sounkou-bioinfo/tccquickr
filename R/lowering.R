@@ -1709,9 +1709,136 @@ tccq_lower_function <- function(
           diagnostics = list()
         ))
       }
+      if (identical(call_name, "for") && length(expr) == 4L) {
+        semantics <- take_semantics(expr, "for")
+        if (is.null(semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            "The `for` call has no matching evaluator facts in the frontend call index.",
+            expr
+          ))
+        }
+        if (!is.symbol(expr[[2L]])) {
+          return(diagnostic_value(
+            "lowering.invalid_for_iterator",
+            "A lowerable `for` iterator must be a simple local symbol.",
+            expr[[2L]]
+          ))
+        }
+        iterator_name <- as.character(expr[[2L]])
+        if (
+          iterator_name %in% state$formal_names ||
+            !is.null(state$local_bindings[[iterator_name]]) ||
+            !is.null(state$cells[[iterator_name]])
+        ) {
+          return(diagnostic_value(
+            "lowering.for_iterator_rebinding",
+            sprintf("For-loop iterator `%s` would rebind an existing compiler binding.", iterator_name),
+            expr[[2L]],
+            data = list(symbol = iterator_name)
+          ))
+        }
+
+        iterable_result <- lower_expression(expr[[3L]], state)
+        if (length(iterable_result$diagnostics) > 0L) {
+          return(iterable_result)
+        }
+        if (iterable_result$type@shape@rank != 1L) {
+          return(diagnostic_value(
+            "lowering.unsupported_for_iterable",
+            "The first typed `for` slice requires a rank-1 atomic iterable.",
+            expr[[3L]],
+            data = list(type = iterable_result$type)
+          ))
+        }
+        iterable_expression_result <- expression_for(iterable_result$value_id)
+        if (!iterable_expression_result@success) {
+          return(list(
+            value_id = NULL,
+            type = NULL,
+            diagnostics = iterable_expression_result@diagnostics
+          ))
+        }
+        iterable_expression <- iterable_expression_result@value
+        if (
+          !identical(iterable_expression@kind, "reference") ||
+            is.null(iterable_expression@reference) ||
+            length(iterable_expression@reference@slice_offsets) > 0L
+        ) {
+          return(diagnostic_value(
+            "lowering.unsupported_for_iterable_storage",
+            "The first typed `for` slice requires a direct stored-vector reference.",
+            expr[[3L]],
+            data = list(value_id = iterable_result$value_id)
+          ))
+        }
+
+        statement_id <- next_statement_id()
+        axis_name <- paste0(statement_id, "_axis")
+        domain <- tccq_domain(
+          paste0(statement_id, "_domain"),
+          iterable_result$type@shape,
+          axes = axis_name,
+          attrs = list(kind = "sequential_for")
+        )
+        iterable_reference <- iterable_expression@reference
+        iterable_expression <- tccq_expression(
+          id = iterable_expression@id,
+          kind = iterable_expression@kind,
+          value_id = iterable_expression@value_id,
+          op = iterable_expression@op,
+          type = iterable_expression@type,
+          effect = iterable_expression@effect,
+          reference = tccq_expression_reference(
+            iterable_reference@source_value_id,
+            symbol = iterable_reference@symbol,
+            binding = iterable_reference@binding,
+            access = tccq_access(
+              iterable_reference@source_value_id,
+              domain,
+              kind = "identity",
+              index_map = list(tccq_index_expr(axis_name))
+            )
+          )
+        )
+
+        state$cell_counter <- state$cell_counter + 1L
+        iterator <- tccq_cell(
+          iterator_name,
+          sprintf("cell_%04d", state$cell_counter),
+          tccq_type(iterable_result$type@base)
+        )
+        iterator_target <- tccq_write_target(
+          iterator@value_id,
+          iterator@type,
+          storage_type = iterator@storage_type,
+          kind = "cell",
+          binding = iterator
+        )
+        state$cells[[iterator_name]] <- iterator
+        state$cell_targets[[iterator_name]] <- iterator_target
+
+        body_result <- lower_control_block(expr[[4L]], in_loop = TRUE)
+        if (length(body_result$diagnostics) > 0L) {
+          return(body_result)
+        }
+        return(list(
+          value_id = iterable_result$value_id,
+          type = iterable_result$type,
+          statement = tccq_for(
+            statement_id,
+            iterator_target,
+            iterable_expression,
+            domain,
+            body_result$block,
+            semantics
+          ),
+          diagnostics = list()
+        ))
+      }
       diagnostic_value(
         "lowering.unsupported_sequential_statement",
-        "Sequential blocks currently accept cell assignments, procedural `if`, `while`, `repeat`, `break`, and `next` statements.",
+        "Sequential blocks currently accept cell assignments, procedural `if`, `for`, `while`, `repeat`, `break`, and `next` statements.",
         expr,
         data = list(call = call_name)
       )
@@ -1854,18 +1981,18 @@ tccq_lower_function <- function(
     function(call) call@name,
     character(1)
   ))
-  sequential_control_names <- c("while", "repeat", TCCQ_LOOP_TRANSFER_ACTIONS)
+  sequential_control_names <- c("for", "while", "repeat", TCCQ_LOOP_TRANSFER_ACTIONS)
   has_sequential_control <- any(sequential_control_names %in% executable_call_names)
   loop_calls <- Filter(
-    function(call) call@name %in% c("while", "repeat"),
+    function(call) call@name %in% c("for", "while", "repeat"),
     executable_calls
   )
   loop_cell_names <- unique(unlist(lapply(loop_calls, function(call) {
-    expected_length <- if (identical(call@name, "while")) 3L else 2L
+    expected_length <- switch(call@name, `for` = 4L, `while` = 3L, `repeat` = 2L)
     if (!is.call(call@expr) || length(call@expr) != expected_length) {
       return(character())
     }
-    body_position <- if (identical(call@name, "while")) 3L else 2L
+    body_position <- switch(call@name, `for` = 4L, `while` = 3L, `repeat` = 2L)
     body_calls <- tccq_collect_calls(call@expr[[body_position]])
     assignments <- Filter(
       function(body_call) {
@@ -1978,14 +2105,24 @@ tccq_lower_function <- function(
         control = intersect(sequential_control_names, executable_call_names)
       )
     )
-    return(new_plan(
-      values = state$values,
-      schedule = tccq_program_schedule(
+    schedule <- tryCatch(
+      tccq_program_schedule(
         steps = list(),
         result = sequential_result$value_id,
         values = state$values,
         body = sequential_result$body
       ),
+      tccq_error = identity
+    )
+    if (inherits(schedule, "tccq_error")) {
+      return(new_plan(
+        values = state$values,
+        diagnostics = list(tccq_condition_diagnostic(schedule))
+      ))
+    }
+    return(new_plan(
+      values = state$values,
+      schedule = schedule,
       regions = list(region),
       result = sequential_result$value_id,
       storage_plan = tccq_storage_plan(),

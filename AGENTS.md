@@ -245,9 +245,14 @@ For the reset core, keep these rules explicit:
   `break` and `next` are `TccqLoopTransfer` statements whose validated action
   targets the nearest enclosing loop. A transfer is control completion, not an
   ordinary `TccqEffect`; transformations must treat it as a terminator even
-  though it fabricates no read/write effect. The current slice requires scalar
-  cells to be initialized before loop entry and does not cover `for`, labeled
-  or nonlocal transfer, or array-carried state. Numeric comparison
+  though it fabricates no read/write effect. `TccqFor` owns a scalar iteration
+  cell, a typed iterable expression, and the `TccqDomain`/`TccqAccess` selecting
+  its current element. The first slice accepts direct rank-1 atomic iterables;
+  the iterator is definitely initialized in the body but not after a possibly
+  empty loop. Scalar, range, list, and computed iterables require their own
+  typed iteration semantics. The current slice requires scalar carried cells
+  to be initialized before loop entry and does not cover labeled or nonlocal
+  transfer or array-carried state. Numeric comparison
   implementations must preserve `NA`/`NaN` in logical results so `while` and
   `if` can report R's missing-condition error.
 - `TccqProgramSchedule` is the sole owner of top-level order. It carries either

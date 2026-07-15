@@ -51,7 +51,7 @@ tccq_backend_function_interface(
 
 \item{extents}{Ordered symbolic-extent bindings carried by the ABI.}
 
-\item{index_names}{Generated per-axis loop index names.}
+\item{index_names}{Generated data-parallel and structured loop index names.}
 
 \item{result_dims}{Typed result dimensions.}
 

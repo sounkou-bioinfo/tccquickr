@@ -2073,7 +2073,15 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
             )
           }
         } else if (S7::S7_inherits(statement, TccqLoop)) {
-          if (S7::S7_inherits(statement, TccqWhile)) {
+          loop_entry_cells <- current_cells
+          if (S7::S7_inherits(statement, TccqFor)) {
+            validate_expression(statement@iterable, current_cells, statement@id)
+            validate_target(statement@iterator, statement@id, current_local_targets)
+            loop_entry_cells <- union(
+              loop_entry_cells,
+              statement@iterator@value_id
+            )
+          } else if (S7::S7_inherits(statement, TccqWhile)) {
             validate_expression(statement@condition, current_cells, statement@id)
           } else if (!S7::S7_inherits(statement, TccqRepeat)) {
             tccq_abort(
@@ -2086,7 +2094,7 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
           }
           validate_block(
             statement@body,
-            current_cells,
+            loop_entry_cells,
             current_local_targets,
             loop_depth + 1L
           )

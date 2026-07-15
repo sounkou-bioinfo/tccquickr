@@ -253,7 +253,12 @@ used by the top-level SSA schedule. Cell reads remain neutral
 expressions; writes and concrete loop statements live in a typed
 `TccqValueBlock`. `break` and `next` become `TccqLoopTransfer`
 statements aimed at the nearest enclosing loop. They are typed control
-completion rather than fabricated read/write effects. A nested
+completion rather than fabricated read/write effects. `TccqFor` adds a
+scalar iteration cell and a typed iterable expression whose `TccqDomain`
+and `TccqAccess` select each element. The current executable slice
+accepts direct rank-1 atomic iterables. The iterator is initialized on
+entry to the body but remains uninitialized after a possibly empty loop,
+so post-loop reads are refused until non-emptiness is proven. A nested
 procedural `if` is a `TccqIf` whose consequent and alternative are
 general typed blocks; omitting `else` produces an explicit empty
 alternative block. C, Fortran, and Rtinycc consume that same structured
@@ -261,9 +266,10 @@ body without encoding recurrence as a `TccqLoopNest`. The body is the
 structured form of `TccqProgramSchedule`, so there is still one
 top-level owner of order; the schedule constructor validates result
 identity, graph references, exact cell and local ownership,
-graph-consistent target types, and initialization dominance. `for`,
-labeled or nonlocal transfer, and array-carried state remain structured
-refusals rather than emitter conventions.
+graph-consistent target types, and initialization dominance. Scalar,
+range, list, and computed iterables, labeled or nonlocal transfer, and
+array-carried state remain structured refusals rather than emitter
+conventions.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. A `TccqProgramSchedule` owns either

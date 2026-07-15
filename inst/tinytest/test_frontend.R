@@ -806,6 +806,70 @@ repeat_actions <- vapply(
 )
 expect_equal(sort(repeat_actions), c("break", "next"))
 
+vector_for_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (element in x) {
+    if (element < 0) next
+    total <- total + element
+  }
+  total
+}
+vector_for_result <- tccq_analyze(vector_for_sum, strict = TRUE)
+expect_true(vector_for_result@success)
+vector_for_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  vector_for_result@value@schedule@body@statements
+)[[1L]]
+expect_true(S7::S7_inherits(vector_for_loop, TccqLoop))
+expect_equal(vector_for_loop@iterator@binding@name, "element")
+expect_equal(vector_for_loop@iterator@type@shape@rank, 0L)
+expect_equal(vector_for_loop@iterable@type@shape@rank, 1L)
+expect_identical(
+  vector_for_loop@iterable@reference@access@domain,
+  vector_for_loop@domain
+)
+expect_equal(
+  vector_for_loop@iterable@reference@access@index_map[[1L]]@axis,
+  vector_for_loop@domain@axes
+)
+expect_true(any(vapply(
+  vector_for_loop@body@statements,
+  S7::S7_inherits,
+  logical(1),
+  class = TccqIf
+)))
+
+for_iterator_after_empty <- function(x) {
+  declare(type(x = double(n)))
+  for (element in x) {
+  }
+  element
+}
+for_iterator_after_empty_result <- tccq_analyze(for_iterator_after_empty)
+expect_false(for_iterator_after_empty_result@success)
+expect_true(any(vapply(
+  for_iterator_after_empty_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "schema.program_cell_use_before_definition")
+  },
+  logical(1)
+)))
+
+scalar_for <- function(x) {
+  declare(type(x = double()))
+  total <- 0
+  for (element in x) total <- total + element
+  total
+}
+scalar_for_result <- tccq_analyze(scalar_for)
+expect_false(scalar_for_result@success)
+expect_true(any(vapply(
+  scalar_for_result@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "lowering.unsupported_for_iterable"),
+  logical(1)
+)))
+
 uninitialized_recurrence <- function(n) {
   declare(type(n = double()))
   total <- 0

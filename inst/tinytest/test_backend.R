@@ -1322,6 +1322,39 @@ expect_true(grepl("break;", backend_source(repeat_c), fixed = TRUE))
 expect_true(grepl("cycle", backend_source(repeat_fortran), fixed = TRUE))
 expect_true(grepl("exit", backend_source(repeat_fortran), fixed = TRUE))
 
+vector_for_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (element in x) {
+    if (element < 0) next
+    total <- total + element
+  }
+  total
+}
+vector_for_program <- tccq_analyze(vector_for_sum, strict = TRUE)@value
+vector_for_c <- tccq_plan_backend(
+  vector_for_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+vector_for_fortran <- tccq_plan_backend(
+  vector_for_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(vector_for_c@success)
+expect_true(vector_for_fortran@success)
+vector_for_statement <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(vector_for_c)@body@statements
+)[[1L]]
+expect_identical(
+  backend_interface(vector_for_c)@index_names,
+  vector_for_statement@domain@axes
+)
+expect_true(grepl("for (int statement_", backend_source(vector_for_c), fixed = TRUE))
+expect_true(grepl("do statement_", backend_source(vector_for_fortran), fixed = TRUE))
+
 nonfinite_branch <- function(flag) {
   declare(type(flag = logical(), returns = double()))
   if (flag) NaN else Inf
@@ -3777,4 +3810,49 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(repeat_fortran_shared@success)
   check_repeat_recurrence(backend_callable(repeat_fortran_shared))
+}
+
+vector_for_inputs <- list(
+  numeric(),
+  c(1, 2, 3),
+  c(-1, 2, -3, 4)
+)
+vector_for_expected <- vapply(vector_for_inputs, vector_for_sum, numeric(1))
+check_vector_for <- function(callable) {
+  expect_equal(
+    vapply(vector_for_inputs, callable, numeric(1)),
+    vector_for_expected
+  )
+  missing_condition <- tryCatch(callable(c(1, NA_real_)), error = identity)
+  expect_true(inherits(missing_condition, "runtime.invalid_logical_condition"))
+}
+
+if (rtinycc_jit_available) {
+  vector_for_jit <- tccq_plan_backend(
+    vector_for_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(vector_for_jit@success)
+  check_vector_for(backend_callable(vector_for_jit))
+}
+
+if (can_build_shared_library("c")) {
+  vector_for_c_shared <- tccq_plan_backend(
+    vector_for_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(vector_for_c_shared@success)
+  check_vector_for(backend_callable(vector_for_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  vector_for_fortran_shared <- tccq_plan_backend(
+    vector_for_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(vector_for_fortran_shared@success)
+  check_vector_for(backend_callable(vector_for_fortran_shared))
 }

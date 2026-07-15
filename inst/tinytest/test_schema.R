@@ -501,6 +501,75 @@ expect_equal(next_statement@action, "next")
 expect_identical(repeat_statement@effect, repeat_body@effect)
 expect_identical(break_statement@effect, tccq_effect())
 
+for_type <- tccq_type("double", tccq_shape(tccq_dim_symbol("n")))
+for_domain <- tccq_domain(
+  "domain_for",
+  for_type@shape,
+  axes = "for_axis",
+  attrs = list(kind = "sequential_for")
+)
+for_iterable <- tccq_expression(
+  "formal_for",
+  "reference",
+  type = for_type,
+  op = "formal",
+  effect = tccq_effect(reads = TRUE),
+  reference = tccq_expression_reference(
+    "formal_for",
+    symbol = "x",
+    access = tccq_access(
+      "formal_for",
+      for_domain,
+      index_map = list(tccq_index_expr("for_axis"))
+    )
+  )
+)
+for_iterator <- tccq_cell("element", "cell_element", tccq_type("double"))
+for_iterator_target <- tccq_write_target(
+  for_iterator@value_id,
+  for_iterator@type,
+  kind = "cell",
+  binding = for_iterator
+)
+for_statement <- tccq_for(
+  "statement_for",
+  for_iterator_target,
+  for_iterable,
+  for_domain,
+  repeat_body,
+  tccq_call_semantics(tccq_call(
+    "for",
+    expr = quote(for (element in x) break)
+  ))
+)
+expect_true(S7::S7_inherits(for_statement, TccqLoop))
+expect_true(S7::S7_inherits(for_statement, TccqFor))
+expect_identical(for_statement@domain, for_domain)
+expect_identical(for_statement@iterator@binding, for_iterator)
+expect_true(for_statement@effect@reads)
+expect_true(for_statement@effect@writes)
+
+mismatched_for_domain <- tryCatch(
+  tccq_for(
+    "statement_for_mismatched_domain",
+    for_iterator_target,
+    for_iterable,
+    tccq_domain(
+      "other_domain_for",
+      for_type@shape,
+      axes = "other_for_axis",
+      attrs = list(kind = "sequential_for")
+    ),
+    repeat_body,
+    tccq_call_semantics(tccq_call(
+      "for",
+      expr = quote(for (element in x) break)
+    ))
+  ),
+  error = identity
+)
+expect_true(inherits(mismatched_for_domain, "error"))
+
 counter_initialization <- tccq_assignment(
   "statement_counter_initialization",
   counter_target,

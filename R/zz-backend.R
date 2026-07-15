@@ -304,7 +304,7 @@ TccqBackendErrorChannel <- S7::new_class(
 #' @param result_name Generated result/output variable name, or empty string.
 #' @param domain Loop-nest iteration domain, or `NULL`.
 #' @param extents Ordered symbolic-extent bindings carried by the ABI.
-#' @param index_names Generated per-axis loop index names.
+#' @param index_names Generated data-parallel and structured loop index names.
 #' @param result_dims Typed result dimensions.
 #' @param result_count_name Generated result element-count parameter name, or
 #'   empty string for scalar results.
@@ -2171,7 +2171,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         local_targets[[length(local_targets) + 1L]] <- accumulator_target
         local_value_ids <- c(local_value_ids, accumulator_target@value_id)
       }
-      collect_block_locals <- function(block) {
+      statement_index_names <- character()
+      structured_body_has_condition <- FALSE
+      walk_block <- function(block) {
         for (local_target in block@locals) {
           if (!local_target@value_id %in% local_value_ids) {
             local_targets[[length(local_targets) + 1L]] <<- local_target
@@ -2180,35 +2182,31 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         for (statement in block@statements) {
           if (S7::S7_inherits(statement, TccqIf)) {
-            collect_block_locals(statement@consequent)
-            collect_block_locals(statement@alternative)
+            structured_body_has_condition <<- TRUE
+            walk_block(statement@consequent)
+            walk_block(statement@alternative)
           } else if (S7::S7_inherits(statement, TccqLoop)) {
-            collect_block_locals(statement@body)
+            if (S7::S7_inherits(statement, TccqWhile)) {
+              structured_body_has_condition <<- TRUE
+            }
+            if (S7::S7_inherits(statement, TccqFor)) {
+              statement_index_names <<- c(
+                statement_index_names,
+                statement@domain@axes
+              )
+            }
+            walk_block(statement@body)
           }
         }
         invisible(NULL)
       }
-      block_has_condition <- function(block) {
-        any(vapply(block@statements, function(statement) {
-          if (S7::S7_inherits(statement, TccqIf)) {
-            return(TRUE)
-          }
-          if (S7::S7_inherits(statement, TccqWhile)) {
-            return(TRUE)
-          }
-          if (S7::S7_inherits(statement, TccqLoop)) {
-            return(block_has_condition(statement@body))
-          }
-          FALSE
-        }, logical(1)))
-      }
       for (nest in nests) {
         if (S7::S7_inherits(nest@body, TccqValueBlock)) {
-          collect_block_locals(nest@body)
+          walk_block(nest@body)
         }
       }
       if (structured_body) {
-        collect_block_locals(body)
+        walk_block(body)
       }
       accumulator_names <- c_identifier("accumulator", seq_along(accumulator_targets))
       statement_local_count <- length(local_targets) - length(accumulator_targets)
@@ -2268,18 +2266,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         }
       }
-      index_names <- unique(unlist(lapply(nests, function(nest) {
-        vapply(nest@axes, function(axis) axis@name, character(1))
-      }))) %||% character()
+      index_names <- unique(c(
+        unlist(lapply(nests, function(nest) {
+          vapply(nest@axes, function(axis) axis@name, character(1))
+        })) %||% character(),
+        statement_index_names
+      ))
       result_rank <- result@type@shape@rank
       has_condition <- any(vapply(
         nests,
         function(nest) {
-          length(nest@guards) > 0L ||
-            (S7::S7_inherits(nest@body, TccqValueBlock) && block_has_condition(nest@body))
+            length(nest@guards) > 0L
         },
         logical(1)
-      )) || (structured_body && block_has_condition(body))
+      )) || structured_body_has_condition
       runtime_diagnostics <- if (has_condition) {
         list(tccq_diagnostic(
           "runtime.invalid_logical_condition",
@@ -2860,6 +2860,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push("}")
           return(invisible(NULL))
         }
+        if (S7::S7_inherits(statement, TccqFor)) {
+          axis_name <- statement@domain@axes[[1L]]
+          extent <- extent_text(
+            statement@domain@shape@dims[[1L]],
+            emit_context$extent_by_symbol
+          )
+          iterator_name <- emit_context$source_name_by_value_id[[
+            statement@iterator@value_id
+          ]]
+          push(sprintf(
+            "for (int %s = 0; %s < %s; ++%s) {",
+            axis_name,
+            axis_name,
+            extent,
+            axis_name
+          ))
+          depth <<- depth + 1L
+          push(sprintf(
+            "%s = %s;",
+            iterator_name,
+            expression_text(statement@iterable, emit_context)
+          ))
+          emit_statement_block(statement@body, result_target)
+          depth <<- depth - 1L
+          push("}")
+          return(invisible(NULL))
+        }
         tccq_abort(
           "backend.unsupported_statement",
           "The source backend cannot emit this neutral statement class.",
@@ -3410,6 +3437,31 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (S7::S7_inherits(statement, TccqRepeat)) {
           push("do")
           depth <<- depth + 1L
+          emit_statement_block(statement@body, result_target)
+          depth <<- depth - 1L
+          push("end do")
+          return(invisible(NULL))
+        }
+        if (S7::S7_inherits(statement, TccqFor)) {
+          axis_name <- statement@domain@axes[[1L]]
+          extent <- extent_text(
+            statement@domain@shape@dims[[1L]],
+            emit_context$extent_by_symbol
+          )
+          iterator_name <- emit_context$source_name_by_value_id[[
+            statement@iterator@value_id
+          ]]
+          push(sprintf(
+            "do %s = 0_c_int, %s - 1_c_int",
+            axis_name,
+            extent
+          ))
+          depth <<- depth + 1L
+          push(sprintf(
+            "%s = %s",
+            iterator_name,
+            expression_text(statement@iterable, emit_context)
+          ))
           emit_statement_block(statement@body, result_target)
           depth <<- depth - 1L
           push("end do")
