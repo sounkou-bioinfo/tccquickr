@@ -435,20 +435,25 @@ statement_products <- tccq_backend_products(
   loop_nest = statement_nest,
   loop_nests = list(statement_nest)
 )
+statement_local_binding <- tccq_backend_value_binding(
+  "local_0001",
+  "formal_flag",
+  logical_scalar,
+  role = "local"
+)
 statement_interface <- tccq_backend_function_interface(
   symbol = "statement_kernel",
   source_language = "c",
   kind = "scalar",
-  local_names = "local_0001",
-  local_value_ids = "formal_flag",
-  local_storage_types = list(logical_scalar),
+  locals = list(statement_local_binding),
   result_value_id = "value_0003",
   result_type = finite@type,
   result_name = "result_0001"
 )
 
 expect_true(S7::S7_inherits(statement_products@body, TccqBlock))
-expect_equal(statement_interface@local_storage_types[[1L]]@base, "logical")
+expect_true(S7::S7_inherits(statement_interface@locals[[1L]], TccqBackendValueBinding))
+expect_equal(statement_interface@locals[[1L]]@source_type@base, "logical")
 expect_true(S7::S7_inherits(loop_guard, TccqLoopGuard))
 expect_true(loop_guard@selected)
 expect_identical(guarded_statement_nest@guards[[1L]], loop_guard)
@@ -487,9 +492,13 @@ bad_statement_interface <- tryCatch(
     symbol = "bad_statement_kernel",
     source_language = "c",
     kind = "scalar",
-    local_names = "local_0001",
-    local_value_ids = character(),
-    local_storage_types = list(logical_scalar),
+    parameters = list(tccq_backend_value_binding(
+      "local_0001",
+      "formal_other",
+      logical_scalar,
+      role = "parameter"
+    )),
+    locals = list(statement_local_binding),
     result_value_id = "value_0003",
     result_type = finite@type,
     result_name = "result_0001"
@@ -686,10 +695,20 @@ second_storage_slot <- tccq_storage_slot(
   allocation = allocation
 )
 shared_storage_plan <- tccq_storage_plan(list(storage_slot, second_storage_slot))
+allocation_binding <- tccq_backend_allocation_binding(
+  "intermediate_0001",
+  allocation,
+  list(storage_slot, second_storage_slot)
+)
+extent_binding <- tccq_backend_extent_binding("extent_n", "n")
 expect_equal(
   vapply(shared_storage_plan@slots, function(slot) slot@allocation@id, character(1)),
   rep("allocation_0001", 2L)
 )
+expect_true(S7::S7_inherits(allocation_binding, TccqBackendAllocationBinding))
+expect_equal(length(allocation_binding@slots), 2L)
+expect_true(S7::S7_inherits(extent_binding, TccqBackendExtentBinding))
+expect_equal(extent_binding@symbol, "n")
 
 conflicting_allocation <- tccq_storage_allocation(
   "allocation_0001",
@@ -714,6 +733,15 @@ conflicting_storage_plan <- tryCatch(
   error = identity
 )
 expect_true(inherits(conflicting_storage_plan, "error"))
+conflicting_allocation_binding <- tryCatch(
+  tccq_backend_allocation_binding(
+    "intermediate_bad",
+    allocation,
+    list(storage_slot, conflicting_allocation_slot)
+  ),
+  error = identity
+)
+expect_true(inherits(conflicting_allocation_binding, "error"))
 
 overlapping_lifetime <- tccq_storage_lifetime(
   "value_0003",

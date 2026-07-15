@@ -287,12 +287,16 @@ to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
 The generated callable boundary is a second explicit plan value:
 `TccqBackendFunctionInterface`. It records the source symbol, scalar or
-loop-nest shape, ABI, parameter names, lowered parameter value ids, result
-value id, parameter and result `TccqType` values, result placement, the
-loop-nest iteration domain, one extent
-parameter per symbolic dimension (`n` becomes `int extent_n`, deduplicated
-across arguments), per-axis loop index names, typed result dimensions, the
-result element-count parameter, and the reduction accumulator name. C,
+loop-nest shape, ABI, result identity and type, result placement, and the
+loop-nest iteration domain. Each ABI parameter or scalar local is one
+`TccqBackendValueBinding` containing its generated name, neutral value id, and
+source type. Each `TccqBackendAllocationBinding` pairs one generated name with
+one physical allocation and all materialized slots sharing it. Each
+`TccqBackendExtentBinding` pairs a symbolic dimension with its generated ABI
+parameter (`n` becomes `int extent_n`, deduplicated across arguments). Per-axis
+loop index names, typed result dimensions, and the result element-count
+parameter complete the interface. No mapping depends on synchronized parallel
+vectors. C,
 Rtinycc, and Fortran consume that same interface before concrete source is
 emitted, and the generated R boundary wrappers bind each extent symbol from
 the first argument shape that declares it, then check every other occurrence —

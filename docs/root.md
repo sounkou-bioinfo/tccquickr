@@ -20,8 +20,11 @@ reductions, axis reductions, contractions, intermediate materialization,
 dimension symbols, and rank-mixed recycling are represented before printing.
 Each `TccqLoopNest` owns one typed materialized storage slot and reductions own
 a separate typed scalar accumulator target. Generated local and intermediate
-names are backend-interface bindings to those values; they are not loop-nest
-attributes or operation-name conventions. The storage slot is the single owner
+names are backend-interface bindings to those values; parameters and scalar
+locals bind name, value identity, and type together, allocation bindings own
+all slots sharing one physical allocation, and extent bindings pair one
+dimension symbol with one ABI name. None of these mappings is a parallel-array
+convention. The storage slot is the single owner
 of a nest result's identity and type. A materialized temporary slot additionally
 owns a `TccqStorageAllocation`, and non-overlapping same-typed buffer lifetimes
 may share that physical identity. C, TinyCC, and Fortran consume the same

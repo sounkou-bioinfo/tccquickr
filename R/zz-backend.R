@@ -21,6 +21,7 @@ TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "loop_nest")
 TCCQ_BACKEND_FUNCTION_ABIS <- c("c", "fortran_bind_c")
 TCCQ_BACKEND_RESULT_PLACEMENTS <- c("return", "output_argument")
 TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable", "native_callable")
+TCCQ_BACKEND_VALUE_BINDING_ROLES <- c("parameter", "local")
 
 #' Backend planning context
 #'
@@ -118,35 +119,149 @@ TccqBridgePlan <- S7::new_class(
   }
 )
 
+#' Backend value binding
+#'
+#' A value binding assigns one generated source identifier and source type to a
+#' neutral value. Parameters and scalar locals share this representation so
+#' their names, identities, and types cannot drift in parallel arrays.
+#'
+#' @param source_name Generated source identifier.
+#' @param value_id Neutral value id.
+#' @param source_type Type represented by the generated identifier.
+#' @param role Whether the identifier is an ABI parameter or scalar local.
+#' @export
+TccqBackendValueBinding <- S7::new_class(
+  "TccqBackendValueBinding",
+  package = "tccquickr",
+  properties = list(
+    source_name = S7::class_character,
+    value_id = S7::class_character,
+    source_type = TccqType,
+    role = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@source_name) != 1L || is.na(self@source_name) || !nzchar(self@source_name)) {
+      problems <- c(problems, "@source_name must be a single non-empty string")
+    }
+    if (length(self@value_id) != 1L || is.na(self@value_id) || !nzchar(self@value_id)) {
+      problems <- c(problems, "@value_id must be a single non-empty string")
+    }
+    if (
+      length(self@role) != 1L ||
+        is.na(self@role) ||
+        !self@role %in% TCCQ_BACKEND_VALUE_BINDING_ROLES
+    ) {
+      problems <- c(problems, "@role must be `parameter` or `local`")
+    }
+    if (identical(self@role, "local") && self@source_type@shape@rank != 0L) {
+      problems <- c(problems, "local backend value bindings must have scalar source types")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Backend allocation binding
+#'
+#' An allocation binding assigns one generated source identifier to one typed
+#' physical allocation. Every materialized slot sharing that allocation is
+#' carried by the same binding.
+#'
+#' @param source_name Generated source identifier.
+#' @param allocation Physical allocation represented by the identifier.
+#' @param slots Materialized temporary slots sharing the allocation.
+#' @export
+TccqBackendAllocationBinding <- S7::new_class(
+  "TccqBackendAllocationBinding",
+  package = "tccquickr",
+  properties = list(
+    source_name = S7::class_character,
+    allocation = TccqStorageAllocation,
+    slots = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@source_name) != 1L || is.na(self@source_name) || !nzchar(self@source_name)) {
+      problems <- c(problems, "@source_name must be a single non-empty string")
+    }
+    slots_are_typed <- vapply(
+      self@slots,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqStorageSlot
+    )
+    if (length(self@slots) == 0L || !all(slots_are_typed)) {
+      problems <- c(problems, "@slots must contain at least one <TccqStorageSlot> value")
+    }
+    if (all(slots_are_typed) && length(self@slots) > 0L) {
+      value_ids <- vapply(self@slots, function(slot) slot@value_id, character(1))
+      if (anyDuplicated(value_ids)) {
+        problems <- c(problems, "@slots must have unique value ids")
+      }
+      valid_slots <- vapply(self@slots, function(slot) {
+        identical(slot@role, "temporary") &&
+          isTRUE(slot@materialized) &&
+          S7::S7_inherits(slot@allocation, TccqStorageAllocation) &&
+          identical(slot@allocation, self@allocation)
+      }, logical(1))
+      if (!all(valid_slots)) {
+        problems <- c(
+          problems,
+          "@slots must be materialized temporaries owning the bound allocation"
+        )
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Backend extent binding
+#'
+#' An extent binding assigns one generated ABI parameter to one declared
+#' dimension symbol.
+#'
+#' @param source_name Generated extent parameter name.
+#' @param symbol Declared dimension symbol.
+#' @export
+TccqBackendExtentBinding <- S7::new_class(
+  "TccqBackendExtentBinding",
+  package = "tccquickr",
+  properties = list(
+    source_name = S7::class_character,
+    symbol = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@source_name) != 1L || is.na(self@source_name) || !nzchar(self@source_name)) {
+      problems <- c(problems, "@source_name must be a single non-empty string")
+    }
+    if (length(self@symbol) != 1L || is.na(self@symbol) || !nzchar(self@symbol)) {
+      problems <- c(problems, "@symbol must be a single non-empty string")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Backend function interface
 #'
 #' A backend function interface is the source-level callable boundary consumed
-#' by C, Rtinycc, Fortran, and later source printers. It records the generated
-#' symbol, ABI, formal parameter mapping, result placement, the loop-nest
-#' iteration domain, one extent parameter per symbolic dimension, per-axis loop
-#' index names, typed result dimensions, generated scalar-local mappings, and
-#' materialized intermediate-slot mappings before concrete syntax is emitted.
+#' by C, Rtinycc, Fortran, and later source printers. Generated parameters,
+#' scalar locals, physical allocations, and extents are closed typed bindings;
+#' positional arrays are not an interface protocol.
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
 #' @param kind Function shape: `scalar` or `loop_nest`.
 #' @param abi Callable ABI.
-#' @param parameter_names Generated parameter names.
-#' @param parameter_value_ids Lowered value ids corresponding to parameters.
-#' @param parameter_types Declared semantic types corresponding to parameters.
-#' @param local_names Generated scalar-local names.
-#' @param local_value_ids Neutral value ids corresponding to locals.
-#' @param local_storage_types Scalar storage types corresponding to locals.
-#' @param intermediate_names Generated physical-allocation names for materialized
-#'   intermediate slots. Slots sharing an allocation repeat the same name.
-#' @param intermediate_slots Typed materialized intermediate storage slots.
+#' @param parameters Ordered ABI parameter bindings.
+#' @param locals Ordered scalar-local bindings.
+#' @param allocations Ordered physical-allocation bindings.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
 #' @param domain Loop-nest iteration domain, or `NULL`.
-#' @param extent_symbols Symbolic dimension names carried by the ABI.
-#' @param extent_names Generated extent parameter names, one per symbol.
+#' @param extents Ordered symbolic-extent bindings carried by the ABI.
 #' @param index_names Generated per-axis loop index names.
 #' @param result_dims Typed result dimensions.
 #' @param result_count_name Generated result element-count parameter name, or
@@ -160,21 +275,15 @@ TccqBackendFunctionInterface <- S7::new_class(
     source_language = S7::class_character,
     kind = S7::class_character,
     abi = S7::class_character,
-    parameter_names = S7::class_character,
-    parameter_value_ids = S7::class_character,
-    parameter_types = S7::class_list,
-    local_names = S7::class_character,
-    local_value_ids = S7::class_character,
-    local_storage_types = S7::class_list,
-    intermediate_names = S7::class_character,
-    intermediate_slots = S7::class_list,
+    parameters = S7::class_list,
+    locals = S7::class_list,
+    allocations = S7::class_list,
     result_value_id = S7::class_character,
     result_type = TccqType,
     result_placement = S7::class_character,
     result_name = S7::class_character,
     domain = S7::new_union(NULL, TccqDomain),
-    extent_symbols = S7::class_character,
-    extent_names = S7::class_character,
+    extents = S7::class_list,
     index_names = S7::class_character,
     result_dims = S7::class_list,
     result_count_name = S7::class_character
@@ -228,135 +337,103 @@ TccqBackendFunctionInterface <- S7::new_class(
     ) {
       problems <- c(problems, "@result_placement must be one supported result placement")
     }
-    if (length(self@parameter_names) != length(self@parameter_value_ids)) {
-      problems <- c(problems, "@parameter_names and @parameter_value_ids must have the same length")
-    }
-    if (length(self@parameter_names) != length(self@parameter_types)) {
-      problems <- c(problems, "@parameter_names and @parameter_types must have the same length")
-    }
-    if (anyNA(self@parameter_names) || any(!nzchar(self@parameter_names))) {
-      problems <- c(problems, "@parameter_names must contain non-empty strings")
-    }
-    if (anyNA(self@parameter_value_ids) || any(!nzchar(self@parameter_value_ids))) {
-      problems <- c(problems, "@parameter_value_ids must contain non-empty value ids")
-    }
-    parameter_types_are_typed <- vapply(
-      self@parameter_types,
+    parameters_are_typed <- vapply(
+      self@parameters,
       S7::S7_inherits,
       logical(1),
-      class = TccqType
+      class = TccqBackendValueBinding
     )
-    if (!all(parameter_types_are_typed)) {
-      problems <- c(problems, "@parameter_types must contain only <TccqType> values")
-    }
-    if (
-      length(self@local_names) != length(self@local_value_ids) ||
-        length(self@local_names) != length(self@local_storage_types)
-    ) {
-      problems <- c(
-        problems,
-        "@local_names, @local_value_ids, and @local_storage_types must have the same length"
-      )
-    }
-    if (anyNA(self@local_names) || any(!nzchar(self@local_names)) || anyDuplicated(self@local_names)) {
-      problems <- c(problems, "@local_names must contain unique non-empty strings")
-    }
-    if (
-      anyNA(self@local_value_ids) ||
-        any(!nzchar(self@local_value_ids)) ||
-        anyDuplicated(self@local_value_ids)
-    ) {
-      problems <- c(problems, "@local_value_ids must contain unique non-empty value ids")
-    }
-    local_storage_types_are_typed <- vapply(
-      self@local_storage_types,
-      S7::S7_inherits,
-      logical(1),
-      class = TccqType
-    )
-    if (!all(local_storage_types_are_typed)) {
-      problems <- c(problems, "@local_storage_types must contain only <TccqType> values")
-    }
-    if (all(local_storage_types_are_typed) && any(vapply(
-      self@local_storage_types,
-      function(type) type@shape@rank != 0L,
+    if (!all(parameters_are_typed) || any(vapply(
+      self@parameters[parameters_are_typed],
+      function(binding) !identical(binding@role, "parameter"),
       logical(1)
     ))) {
-      problems <- c(problems, "@local_storage_types must contain only scalar values")
+      problems <- c(problems, "@parameters must contain only parameter value bindings")
     }
-    if (length(self@intermediate_names) != length(self@intermediate_slots)) {
-      problems <- c(problems, "@intermediate_names and @intermediate_slots must have the same length")
-    }
-    if (
-      anyNA(self@intermediate_names) ||
-        any(!nzchar(self@intermediate_names))
-    ) {
-      problems <- c(problems, "@intermediate_names must contain non-empty strings")
-    }
-    intermediate_slots_are_typed <- vapply(
-      self@intermediate_slots,
+    locals_are_typed <- vapply(
+      self@locals,
       S7::S7_inherits,
       logical(1),
-      class = TccqStorageSlot
+      class = TccqBackendValueBinding
     )
-    if (!all(intermediate_slots_are_typed)) {
-      problems <- c(problems, "@intermediate_slots must contain only <TccqStorageSlot> values")
+    if (!all(locals_are_typed) || any(vapply(
+      self@locals[locals_are_typed],
+      function(binding) !identical(binding@role, "local"),
+      logical(1)
+    ))) {
+      problems <- c(problems, "@locals must contain only local value bindings")
     }
-    if (all(intermediate_slots_are_typed)) {
-      intermediate_value_ids <- vapply(
-        self@intermediate_slots,
-        function(slot) slot@value_id,
+    allocations_are_typed <- vapply(
+      self@allocations,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqBackendAllocationBinding
+    )
+    if (!all(allocations_are_typed)) {
+      problems <- c(problems, "@allocations must contain only <TccqBackendAllocationBinding> values")
+    }
+    extents_are_typed <- vapply(
+      self@extents,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqBackendExtentBinding
+    )
+    if (!all(extents_are_typed)) {
+      problems <- c(problems, "@extents must contain only <TccqBackendExtentBinding> values")
+    }
+    value_bindings <- c(self@parameters[parameters_are_typed], self@locals[locals_are_typed])
+    if (length(value_bindings) > 0L) {
+      value_ids <- vapply(value_bindings, function(binding) binding@value_id, character(1))
+      if (anyDuplicated(value_ids)) {
+        problems <- c(problems, "parameter and local bindings must have unique value ids")
+      }
+    }
+    if (all(allocations_are_typed) && length(self@allocations) > 0L) {
+      allocation_ids <- vapply(
+        self@allocations,
+        function(binding) binding@allocation@id,
         character(1)
       )
-      if (anyDuplicated(intermediate_value_ids)) {
-        problems <- c(problems, "@intermediate_slots must have unique value ids")
+      if (anyDuplicated(allocation_ids)) {
+        problems <- c(problems, "@allocations must have unique physical allocation ids")
       }
-      if (any(vapply(
-        self@intermediate_slots,
-        function(slot) !identical(slot@role, "temporary") || !isTRUE(slot@materialized),
-        logical(1)
-      ))) {
-        problems <- c(problems, "@intermediate_slots must be materialized temporary slots")
-      }
-      allocations_are_present <- vapply(
-        self@intermediate_slots,
-        function(slot) !is.null(slot@allocation),
-        logical(1)
-      )
-      if (!all(allocations_are_present)) {
-        problems <- c(problems, "@intermediate_slots must carry physical allocations")
-      } else {
-        allocation_ids <- vapply(
-          self@intermediate_slots,
-          function(slot) slot@allocation@id,
-          character(1)
-        )
-        allocation_names <- split(self@intermediate_names, allocation_ids)
-        if (any(vapply(allocation_names, function(names) length(unique(names)) != 1L, logical(1)))) {
-          problems <- c(problems, "one allocation id must have one generated name")
-        }
-        named_allocations <- split(allocation_ids, self@intermediate_names)
-        if (any(vapply(named_allocations, function(ids) length(unique(ids)) != 1L, logical(1)))) {
-          problems <- c(problems, "one generated name must identify one allocation")
-        }
+      slot_value_ids <- unlist(lapply(
+        self@allocations,
+        function(binding) vapply(binding@slots, function(slot) slot@value_id, character(1))
+      ), use.names = FALSE)
+      if (anyDuplicated(slot_value_ids)) {
+        problems <- c(problems, "allocation bindings must not share storage slots")
       }
     }
-    if (length(self@extent_symbols) != length(self@extent_names)) {
-      problems <- c(problems, "@extent_symbols and @extent_names must have the same length")
+    if (all(extents_are_typed) && length(self@extents) > 0L) {
+      extent_symbols <- vapply(self@extents, function(binding) binding@symbol, character(1))
+      if (anyDuplicated(extent_symbols)) {
+        problems <- c(problems, "@extents must have unique dimension symbols")
+      }
     }
-    if (anyNA(self@extent_symbols) || any(!nzchar(self@extent_symbols)) || anyDuplicated(self@extent_symbols)) {
-      problems <- c(problems, "@extent_symbols must contain unique non-empty symbols")
-    }
-    if (anyNA(self@extent_names) || any(!nzchar(self@extent_names)) || anyDuplicated(self@extent_names)) {
-      problems <- c(problems, "@extent_names must contain unique non-empty parameter names")
+    generated_names <- c(
+      vapply(value_bindings, function(binding) binding@source_name, character(1)),
+      if (all(allocations_are_typed)) {
+        vapply(self@allocations, function(binding) binding@source_name, character(1))
+      },
+      if (all(extents_are_typed)) {
+        vapply(self@extents, function(binding) binding@source_name, character(1))
+      },
+      self@index_names,
+      self@result_name,
+      self@result_count_name
+    )
+    generated_names <- generated_names[nzchar(generated_names)]
+    if (anyDuplicated(generated_names)) {
+      problems <- c(problems, "generated function-scope identifiers must be unique")
     }
     if (!is.null(self@domain)) {
       if (length(self@index_names) < self@domain@shape@rank) {
         problems <- c(problems, "@index_names must cover at least the @domain rank")
       }
-      if (anyNA(self@index_names) || any(!nzchar(self@index_names))) {
-        problems <- c(problems, "@index_names must contain non-empty strings")
-      }
+    }
+    if (anyNA(self@index_names) || any(!nzchar(self@index_names)) || anyDuplicated(self@index_names)) {
+      problems <- c(problems, "@index_names must contain unique non-empty strings")
     }
     result_dims_are_typed <- vapply(self@result_dims, S7::S7_inherits, logical(1), class = TccqDim)
     if (!all(result_dims_are_typed)) {
@@ -959,53 +1036,66 @@ tccq_bridge_plan <- function(
   )
 }
 
+#' Construct a backend value binding
+#'
+#' @inheritParams TccqBackendValueBinding
+#' @export
+tccq_backend_value_binding <- function(source_name, value_id, source_type, role) {
+  .tccq_check_character_scalar(source_name, "source_name")
+  .tccq_check_character_scalar(value_id, "value_id")
+  .tccq_check_s7(source_type, TccqType, "TccqType", "source_type")
+  .tccq_check_character_scalar(role, "role")
+  TccqBackendValueBinding(
+    source_name = source_name,
+    value_id = value_id,
+    source_type = source_type,
+    role = role
+  )
+}
+
+#' Construct a backend allocation binding
+#'
+#' @inheritParams TccqBackendAllocationBinding
+#' @export
+tccq_backend_allocation_binding <- function(source_name, allocation, slots) {
+  .tccq_check_character_scalar(source_name, "source_name")
+  .tccq_check_s7(allocation, TccqStorageAllocation, "TccqStorageAllocation", "allocation")
+  .tccq_check_list_of(slots, TccqStorageSlot, "TccqStorageSlot", "slots")
+  TccqBackendAllocationBinding(
+    source_name = source_name,
+    allocation = allocation,
+    slots = slots
+  )
+}
+
+#' Construct a backend extent binding
+#'
+#' @inheritParams TccqBackendExtentBinding
+#' @export
+tccq_backend_extent_binding <- function(source_name, symbol) {
+  .tccq_check_character_scalar(source_name, "source_name")
+  .tccq_check_character_scalar(symbol, "symbol")
+  TccqBackendExtentBinding(source_name = source_name, symbol = symbol)
+}
+
 #' Construct a backend function interface
 #'
-#' @param symbol Generated function symbol.
-#' @param source_language Source language consumed by the printer.
-#' @param kind Function shape: `scalar` or `loop_nest`.
-#' @param abi Callable ABI.
-#' @param parameter_names Generated parameter names.
-#' @param parameter_value_ids Lowered value ids corresponding to parameters.
-#' @param parameter_types Declared semantic types corresponding to parameters.
-#' @param local_names Generated scalar-local names.
-#' @param local_value_ids Neutral value ids corresponding to locals.
-#' @param local_storage_types Scalar storage types corresponding to locals.
-#' @param intermediate_names Generated physical-allocation names for materialized
-#'   intermediate slots. Slots sharing an allocation repeat the same name.
-#' @param intermediate_slots Typed materialized intermediate storage slots.
-#' @param result_value_id Lowered result value id.
-#' @param result_type Declared semantic result type.
-#' @param result_placement Whether the result is returned or passed by output argument.
-#' @param result_name Generated result/output variable name, or empty string.
-#' @param domain Loop-nest iteration domain, or `NULL`.
-#' @param extent_symbols Symbolic dimension names carried by the ABI.
-#' @param extent_names Generated extent parameter names, one per symbol.
-#' @param index_names Generated per-axis loop index names.
-#' @param result_dims Typed result dimensions.
-#' @param result_count_name Generated result element-count parameter name, or
-#'   empty string for scalar results.
+#' @inheritParams TccqBackendFunctionInterface
 #' @export
 tccq_backend_function_interface <- function(
   symbol,
   source_language,
   kind,
   abi = "",
-  parameter_names = character(),
-  parameter_value_ids = character(),
-  parameter_types = list(),
-  local_names = character(),
-  local_value_ids = character(),
-  local_storage_types = list(),
-  intermediate_names = character(),
-  intermediate_slots = list(),
+  parameters = list(),
+  locals = list(),
+  allocations = list(),
   result_value_id,
   result_type,
   result_placement = "return",
   result_name = "",
   domain = NULL,
-  extent_symbols = character(),
-  extent_names = character(),
+  extents = list(),
   index_names = character(),
   result_dims = list(),
   result_count_name = ""
@@ -1049,106 +1139,19 @@ tccq_backend_function_interface <- function(
       data = list(abi = abi, supported = TCCQ_BACKEND_FUNCTION_ABIS)
     )
   }
-  if (!is.character(parameter_names) || anyNA(parameter_names) || any(!nzchar(parameter_names))) {
-    tccq_abort(
-      "schema.invalid_backend_function_parameters",
-      "`parameter_names` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.parameter_names"
-    )
-  }
-  if (
-    !is.character(parameter_value_ids) ||
-      anyNA(parameter_value_ids) ||
-      any(!nzchar(parameter_value_ids))
-  ) {
-    tccq_abort(
-      "schema.invalid_backend_function_parameters",
-      "`parameter_value_ids` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.parameter_value_ids"
-    )
-  }
-  if (length(parameter_names) != length(parameter_value_ids)) {
-    tccq_abort(
-      "schema.invalid_backend_function_parameters",
-      "`parameter_names` and `parameter_value_ids` must have the same length.",
-      phase = "schema",
-      path = "backend_function.parameters"
-    )
-  }
-  .tccq_check_list_of(parameter_types, TccqType, "TccqType", "parameter_types")
-  if (length(parameter_names) != length(parameter_types)) {
-    tccq_abort(
-      "schema.invalid_backend_function_parameters",
-      "`parameter_names` and `parameter_types` must have the same length.",
-      phase = "schema",
-      path = "backend_function.parameters"
-    )
-  }
-  if (!is.character(local_names) || anyNA(local_names) || any(!nzchar(local_names))) {
-    tccq_abort(
-      "schema.invalid_backend_function_locals",
-      "`local_names` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.local_names"
-    )
-  }
-  if (
-    !is.character(local_value_ids) ||
-      anyNA(local_value_ids) ||
-      any(!nzchar(local_value_ids))
-  ) {
-    tccq_abort(
-      "schema.invalid_backend_function_locals",
-      "`local_value_ids` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.local_value_ids"
-    )
-  }
   .tccq_check_list_of(
-    local_storage_types,
-    TccqType,
-    "TccqType",
-    "local_storage_types"
+    parameters,
+    TccqBackendValueBinding,
+    "TccqBackendValueBinding",
+    "parameters"
   )
-  if (
-    length(local_names) != length(local_value_ids) ||
-      length(local_names) != length(local_storage_types)
-  ) {
-    tccq_abort(
-      "schema.invalid_backend_function_locals",
-      "`local_names`, `local_value_ids`, and `local_storage_types` must have the same length.",
-      phase = "schema",
-      path = "backend_function.locals"
-    )
-  }
-  if (
-    !is.character(intermediate_names) ||
-    anyNA(intermediate_names) ||
-      any(!nzchar(intermediate_names))
-  ) {
-    tccq_abort(
-      "schema.invalid_backend_function_intermediates",
-      "`intermediate_names` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.intermediate_names"
-    )
-  }
+  .tccq_check_list_of(locals, TccqBackendValueBinding, "TccqBackendValueBinding", "locals")
   .tccq_check_list_of(
-    intermediate_slots,
-    TccqStorageSlot,
-    "TccqStorageSlot",
-    "intermediate_slots"
+    allocations,
+    TccqBackendAllocationBinding,
+    "TccqBackendAllocationBinding",
+    "allocations"
   )
-  if (length(intermediate_names) != length(intermediate_slots)) {
-    tccq_abort(
-      "schema.invalid_backend_function_intermediates",
-      "`intermediate_names` and `intermediate_slots` must have the same length.",
-      phase = "schema",
-      path = "backend_function.intermediates"
-    )
-  }
   .tccq_check_character_scalar(result_value_id, "result_value_id")
   .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
   .tccq_check_character_scalar(result_placement, "result_placement")
@@ -1166,22 +1169,7 @@ tccq_backend_function_interface <- function(
   }
   .tccq_check_character_or_empty(result_name, "result_name")
   .tccq_check_optional_s7(domain, TccqDomain, "TccqDomain", "domain")
-  if (!is.character(extent_symbols) || anyNA(extent_symbols) || any(!nzchar(extent_symbols))) {
-    tccq_abort(
-      "schema.invalid_backend_function_extents",
-      "`extent_symbols` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.extent_symbols"
-    )
-  }
-  if (!is.character(extent_names) || anyNA(extent_names) || any(!nzchar(extent_names))) {
-    tccq_abort(
-      "schema.invalid_backend_function_extents",
-      "`extent_names` must contain non-empty strings.",
-      phase = "schema",
-      path = "backend_function.extent_names"
-    )
-  }
+  .tccq_check_list_of(extents, TccqBackendExtentBinding, "TccqBackendExtentBinding", "extents")
   if (!is.character(index_names) || anyNA(index_names) || any(!nzchar(index_names))) {
     tccq_abort(
       "schema.invalid_backend_function_indexes",
@@ -1198,21 +1186,15 @@ tccq_backend_function_interface <- function(
     source_language = source_language,
     kind = kind,
     abi = abi,
-    parameter_names = parameter_names,
-    parameter_value_ids = parameter_value_ids,
-    parameter_types = parameter_types,
-    local_names = local_names,
-    local_value_ids = local_value_ids,
-    local_storage_types = local_storage_types,
-    intermediate_names = intermediate_names,
-    intermediate_slots = intermediate_slots,
+    parameters = parameters,
+    locals = locals,
+    allocations = allocations,
     result_value_id = result_value_id,
     result_type = result_type,
     result_placement = result_placement,
     result_name = result_name,
     domain = domain,
-    extent_symbols = extent_symbols,
-    extent_names = extent_names,
+    extents = extents,
     index_names = index_names,
     result_dims = result_dims,
     result_count_name = result_count_name
@@ -2075,7 +2057,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
       parameter_names <- c_identifier("input", seq_along(formals))
-      parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
+      parameters <- unname(Map(function(source_name, value) {
+        tccq_backend_value_binding(
+          source_name,
+          value@id,
+          value@type,
+          role = "parameter"
+        )
+      }, parameter_names, formals))
       accumulator_targets <- Filter(
         function(target) !is.null(target),
         lapply(nests, function(nest) nest@accumulator)
@@ -2112,6 +2101,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         accumulator_names,
         c_identifier("local", seq_len(statement_local_count))
       )
+      locals <- unname(Map(function(source_name, target) {
+        tccq_backend_value_binding(
+          source_name,
+          target@value_id,
+          target@storage_type,
+          role = "local"
+        )
+      }, local_names, local_targets))
       intermediate_allocation_ids <- vapply(
         intermediate_nests,
         function(nest) nest@storage@allocation@id,
@@ -2122,8 +2119,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         c_identifier("intermediate", seq_along(allocation_ids)),
         allocation_ids
       )
-      intermediate_names <- unname(allocation_names[intermediate_allocation_ids])
+      allocations <- lapply(allocation_ids, function(allocation_id) {
+        slots <- lapply(
+          intermediate_nests[intermediate_allocation_ids == allocation_id],
+          function(nest) nest@storage
+        )
+        tccq_backend_allocation_binding(
+          unname(allocation_names[[allocation_id]]),
+          slots[[1L]]@allocation,
+          slots
+        )
+      })
       extents <- extent_plan(formals, nests)
+      extent_bindings <- unname(Map(function(symbol, source_name) {
+        tccq_backend_extent_binding(source_name, symbol)
+      }, extents$symbols, extents$names))
       kind <- if (length(result_nest@axes) == 0L) "scalar" else "loop_nest"
       for (nest in nests) {
         roles <- vapply(nest@axes, function(axis) axis@role, character(1))
@@ -2148,14 +2158,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         source_language = source_language,
         kind = kind,
         abi = if (identical(source_language, "fortran")) "fortran_bind_c" else "c",
-        parameter_names = parameter_names,
-        parameter_value_ids = parameter_value_ids,
-        parameter_types = lapply(formals, function(value) value@type),
-        local_names = local_names,
-        local_value_ids = local_value_ids,
-        local_storage_types = lapply(local_targets, function(target) target@storage_type),
-        intermediate_names = intermediate_names,
-        intermediate_slots = lapply(intermediate_nests, function(nest) nest@storage),
+        parameters = parameters,
+        locals = locals,
+        allocations = allocations,
         result_value_id = result@id,
         result_type = result@type,
         result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
@@ -2171,8 +2176,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           ""
         },
         domain = if (identical(kind, "scalar")) NULL else result_nest@domain,
-        extent_symbols = extents$symbols,
-        extent_names = extents$names,
+        extents = extent_bindings,
         index_names = index_names,
         result_dims = result@type@shape@dims,
         result_count_name = if (result_rank > 0L) "result_count_0001" else ""
@@ -2180,27 +2184,44 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     }
 
     new_emit_context <- function(interface, formals, language) {
-      extent_by_symbol <- as.list(stats::setNames(interface@extent_names, interface@extent_symbols))
-      source_name_by_value_id <- as.list(stats::setNames(
-        interface@parameter_names,
-        interface@parameter_value_ids
-      ))
-      source_name_by_value_id[interface@local_value_ids] <- as.list(interface@local_names)
-      intermediate_value_ids <- vapply(
-        interface@intermediate_slots,
-        function(slot) slot@value_id,
-        character(1)
-      )
-      source_name_by_value_id[intermediate_value_ids] <- as.list(interface@intermediate_names)
+      extent_symbols <- vapply(interface@extents, function(binding) binding@symbol, character(1))
+      extent_names <- vapply(interface@extents, function(binding) binding@source_name, character(1))
+      extent_by_symbol <- as.list(stats::setNames(extent_names, extent_symbols))
+      value_bindings <- c(interface@parameters, interface@locals)
+      value_ids <- vapply(value_bindings, function(binding) binding@value_id, character(1))
+      source_names <- vapply(value_bindings, function(binding) binding@source_name, character(1))
+      source_name_by_value_id <- as.list(stats::setNames(source_names, value_ids))
+      for (allocation_binding in interface@allocations) {
+        allocation_value_ids <- vapply(
+          allocation_binding@slots,
+          function(slot) slot@value_id,
+          character(1)
+        )
+        source_name_by_value_id[allocation_value_ids] <- as.list(rep(
+          allocation_binding@source_name,
+          length(allocation_value_ids)
+        ))
+      }
       storage_type_by_value_id <- lapply(
         stats::setNames(formals, vapply(formals, function(value) value@id, character(1))),
         function(value) value@type
       )
-      storage_type_by_value_id[interface@local_value_ids] <- interface@local_storage_types
-      storage_type_by_value_id[intermediate_value_ids] <- lapply(
-        interface@intermediate_slots,
-        function(slot) slot@type
+      local_value_ids <- vapply(interface@locals, function(binding) binding@value_id, character(1))
+      storage_type_by_value_id[local_value_ids] <- lapply(
+        interface@locals,
+        function(binding) binding@source_type
       )
+      for (allocation_binding in interface@allocations) {
+        allocation_value_ids <- vapply(
+          allocation_binding@slots,
+          function(slot) slot@value_id,
+          character(1)
+        )
+        storage_type_by_value_id[allocation_value_ids] <- lapply(
+          allocation_binding@slots,
+          function(slot) slot@type
+        )
+      }
       list(
         extent_by_symbol = extent_by_symbol,
         source_name_by_value_id = source_name_by_value_id,
@@ -2421,6 +2442,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     emit_c_source <- function(interface, nests, result, formals) {
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
+      parameter_names <- vapply(
+        interface@parameters,
+        function(binding) binding@source_name,
+        character(1)
+      )
+      extent_names <- vapply(
+        interface@extents,
+        function(binding) binding@source_name,
+        character(1)
+      )
       emit_context <- new_emit_context(interface, formals, "c")
       emit_context <- register_dim_symbols(emit_context)
       intermediate_plans <- lapply(
@@ -2442,10 +2473,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           sprintf("const double *%s", parameter_name)
         }
-      }, formals, interface@parameter_names), use.names = FALSE)
+      }, formals, parameter_names), use.names = FALSE)
       signature_declarations <- c(
         parameter_declarations,
-        if (length(interface@extent_names) > 0L) sprintf("int %s", interface@extent_names),
+        if (length(extent_names) > 0L) sprintf("int %s", extent_names),
         if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
       )
       returns_buffer <- result@type@shape@rank > 0L
@@ -2751,6 +2782,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     emit_fortran_source <- function(interface, nests, result, formals) {
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
+      parameter_names <- vapply(
+        interface@parameters,
+        function(binding) binding@source_name,
+        character(1)
+      )
+      extent_names <- vapply(
+        interface@extents,
+        function(binding) binding@source_name,
+        character(1)
+      )
       emit_context <- new_emit_context(interface, formals, "fortran")
       emit_context <- register_dim_symbols(emit_context)
       intermediate_plans <- lapply(
@@ -2768,7 +2809,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       plan <- loop_plan(interface, result_nest, emit_context)
       returns_buffer <- result@type@shape@rank > 0L
       domain_parameter_names <- c(
-        interface@extent_names,
+        extent_names,
         if (nzchar(interface@result_count_name)) interface@result_count_name
       )
       value_declarations <- unlist(Map(function(value, parameter_name) {
@@ -2777,14 +2818,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
         }
-      }, formals, interface@parameter_names), use.names = FALSE)
+      }, formals, parameter_names), use.names = FALSE)
       header <- if (returns_buffer) {
         c(
           sprintf(
             "subroutine %s(%s) &",
             interface@symbol,
             paste(
-              c(interface@parameter_names, domain_parameter_names, interface@result_name),
+              c(parameter_names, domain_parameter_names, interface@result_name),
               collapse = ", "
             )
           ),
@@ -2795,7 +2836,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           sprintf(
             "function %s(%s) &",
             interface@symbol,
-            paste(c(interface@parameter_names, domain_parameter_names), collapse = ", ")
+            paste(c(parameter_names, domain_parameter_names), collapse = ", ")
           ),
           sprintf("  bind(c, name = \"%s\") result(%s)", interface@symbol, interface@result_name)
         )
@@ -2803,7 +2844,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         sprintf(
           "function %s(%s) bind(c, name = \"%s\") result(%s)",
           interface@symbol,
-          paste(interface@parameter_names, collapse = ", "),
+          paste(parameter_names, collapse = ", "),
           interface@symbol,
           interface@result_name
         )
@@ -3135,10 +3176,24 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     emit_call_wrapper_source <- function(interface, result, formals) {
       symbol <- interface@symbol
       wrapper_symbol <- paste0(symbol, "_call")
-      parameter_names <- interface@parameter_names
+      parameter_names <- vapply(
+        interface@parameters,
+        function(binding) binding@source_name,
+        character(1)
+      )
+      extent_symbols <- vapply(
+        interface@extents,
+        function(binding) binding@symbol,
+        character(1)
+      )
+      extent_names <- vapply(
+        interface@extents,
+        function(binding) binding@source_name,
+        character(1)
+      )
       extent_name_by_symbol <- as.list(stats::setNames(
-        interface@extent_names,
-        interface@extent_symbols
+        extent_names,
+        extent_symbols
       ))
       result_rank <- result@type@shape@rank
       returns_buffer <- result_rank > 0L
@@ -3152,7 +3207,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }, formals, parameter_names), use.names = FALSE)
       kernel_parameters <- c(
         kernel_parameters,
-        if (length(interface@extent_names) > 0L) sprintf("int %s", interface@extent_names),
+        if (length(extent_names) > 0L) sprintf("int %s", extent_names),
         if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
       )
       prototype <- if (identical(interface@result_placement, "output_argument")) {
@@ -3317,7 +3372,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           }
         }
       }
-      unbound_symbols <- setdiff(interface@extent_symbols, bound_symbols)
+      unbound_symbols <- setdiff(extent_symbols, bound_symbols)
       if (length(unbound_symbols) > 0L) {
         tccq_abort(
           "backend.unbound_extent_symbol",
@@ -3328,7 +3383,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         )
       }
 
-      call_arguments <- c(parameter_names, interface@extent_names)
+      call_arguments <- c(parameter_names, extent_names)
       if (returns_buffer) {
         lines <- c(lines, "  R_xlen_t result_element_count = 1;")
         result_extent_vars <- sprintf("result_extent_%04d", seq_len(result_rank))
@@ -3421,6 +3476,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
     compile_with_rtinycc <- function(plan, interface, result, formals) {
       symbol <- interface@symbol
+      extent_symbols <- vapply(
+        interface@extents,
+        function(binding) binding@symbol,
+        character(1)
+      )
       if (!requireNamespace("Rtinycc", quietly = TRUE)) {
         diagnostic <- tccq_diagnostic(
           "backend.rtinycc_unavailable",
@@ -3440,8 +3500,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         if (identical(value@type@base, "logical")) "bool" else "f64"
       })
-      if (length(interface@extent_names) > 0L) {
-        ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), length(interface@extent_names)))
+      if (length(interface@extents) > 0L) {
+        ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), length(interface@extents)))
       }
       if (returns_buffer) {
         ffi_arg_types <- c(ffi_arg_types, list("i32"))
@@ -3562,7 +3622,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             }
           }
         }
-        extent_values <- vapply(interface@extent_symbols, function(symbol_name) {
+        extent_values <- vapply(extent_symbols, function(symbol_name) {
           value <- bound_extents[[symbol_name]]
           if (is.null(value)) {
             tccq_abort(

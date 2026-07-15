@@ -207,16 +207,18 @@ pure elementwise operations. The normalizer evaluates each
 control-valued operand into a block-owned write target before its
 consumer. That target retains the full semantic array type while
 carrying the scalar storage type actually written in each loop
-iteration; the shared function interface assigns its generated name.
-Every block names the write target produced by its terminal paths. A
-reducer or contraction can therefore consume a conditional element from
-a block-local target while the target is still in scope. A reduction or
-contraction selected inside an arm becomes an intermediate loop nest
-carrying an ordered typed guard path, so nested branches execute and
-materialize only the selected nests. The guard path is the storage
-execution scope: extraction rejects an unscheduled value reached through
-incompatible paths, C uses nullable owned buffers, and Fortran uses
-guarded allocatable arrays.
+iteration; the shared function interface assigns its generated name
+through a typed value binding. ABI parameters, scalar locals, physical
+allocations, and symbolic extents are bindings rather than parallel
+name/id/type arrays. Every block names the write target produced by its
+terminal paths. A reducer or contraction can therefore consume a
+conditional element from a block-local target while the target is still
+in scope. A reduction or contraction selected inside an arm becomes an
+intermediate loop nest carrying an ordered typed guard path, so nested
+branches execute and materialize only the selected nests. The guard path
+is the storage execution scope: extraction rejects an unscheduled value
+reached through incompatible paths, C uses nullable owned buffers, and
+Fortran uses guarded allocatable arrays.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. Every executable top-level form is a typed

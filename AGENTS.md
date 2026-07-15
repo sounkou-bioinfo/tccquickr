@@ -310,9 +310,12 @@ For the reset core, keep these rules explicit:
   Do not hide `SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> buffer`,
   `buffer -> SEXP`, or R call-evaluation boundaries inside emitted strings.
 - Backend planning must also make generated callable shape explicit through
-  `TccqBackendFunctionInterface`, including ordered parameter `TccqType` values
-  and the result `TccqType`, generated names and types for neutral scalar locals,
-  and generated names paired with typed materialized intermediate slots. Do not
+  `TccqBackendFunctionInterface`. Parameters and scalar locals are
+  `TccqBackendValueBinding` values, physical allocations are
+  `TccqBackendAllocationBinding` values owning every materialized slot sharing
+  that allocation, and symbolic extents are `TccqBackendExtentBinding` values.
+  Do not split generated names, value ids, types, slots, allocation ids, or
+  extent symbols into parallel vectors whose meaning depends on position. Do not
   make C, Rtinycc, Fortran, or later source printers independently infer
   scalar/map/reduction/axis-reduction shape, generated parameter, local, or
   intermediate mapping, semantic types, ABI, result placement, generated result

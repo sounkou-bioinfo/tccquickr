@@ -9,21 +9,15 @@ tccq_backend_function_interface(
   source_language,
   kind,
   abi = "",
-  parameter_names = character(),
-  parameter_value_ids = character(),
-  parameter_types = list(),
-  local_names = character(),
-  local_value_ids = character(),
-  local_storage_types = list(),
-  intermediate_names = character(),
-  intermediate_slots = list(),
+  parameters = list(),
+  locals = list(),
+  allocations = list(),
   result_value_id,
   result_type,
   result_placement = "return",
   result_name = "",
   domain = NULL,
-  extent_symbols = character(),
-  extent_names = character(),
+  extents = list(),
   index_names = character(),
   result_dims = list(),
   result_count_name = ""
@@ -38,22 +32,11 @@ tccq_backend_function_interface(
 
 \item{abi}{Callable ABI.}
 
-\item{parameter_names}{Generated parameter names.}
+\item{parameters}{Ordered ABI parameter bindings.}
 
-\item{parameter_value_ids}{Lowered value ids corresponding to parameters.}
+\item{locals}{Ordered scalar-local bindings.}
 
-\item{parameter_types}{Declared semantic types corresponding to parameters.}
-
-\item{local_names}{Generated scalar-local names.}
-
-\item{local_value_ids}{Neutral value ids corresponding to locals.}
-
-\item{local_storage_types}{Scalar storage types corresponding to locals.}
-
-\item{intermediate_names}{Generated physical-allocation names for materialized
-intermediate slots. Slots sharing an allocation repeat the same name.}
-
-\item{intermediate_slots}{Typed materialized intermediate storage slots.}
+\item{allocations}{Ordered physical-allocation bindings.}
 
 \item{result_value_id}{Lowered result value id.}
 
@@ -65,9 +48,7 @@ intermediate slots. Slots sharing an allocation repeat the same name.}
 
 \item{domain}{Loop-nest iteration domain, or \code{NULL}.}
 
-\item{extent_symbols}{Symbolic dimension names carried by the ABI.}
-
-\item{extent_names}{Generated extent parameter names, one per symbol.}
+\item{extents}{Ordered symbolic-extent bindings carried by the ABI.}
 
 \item{index_names}{Generated per-axis loop index names.}
 

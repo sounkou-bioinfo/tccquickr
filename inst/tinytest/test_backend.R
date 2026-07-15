@@ -312,11 +312,17 @@ expect_equal(c_interface@result_placement, "return")
 expect_equal(c_interface@result_name, "output")
 expect_true(S7::S7_inherits(c_interface@domain, TccqDomain))
 expect_equal(c_interface@domain@shape@rank, 1L)
-expect_equal(c_interface@extent_symbols, "n")
-expect_equal(c_interface@extent_names, "extent_n")
+expect_equal(vapply(c_interface@extents, function(binding) binding@symbol, character(1)), "n")
+expect_equal(
+  vapply(c_interface@extents, function(binding) binding@source_name, character(1)),
+  "extent_n"
+)
 expect_equal(c_interface@index_names, "axis_0001")
 expect_equal(c_interface@result_count_name, "result_count_0001")
-expect_equal(c_interface@parameter_value_ids, c("formal_0001", "formal_0002"))
+expect_equal(
+  vapply(c_interface@parameters, function(binding) binding@value_id, character(1)),
+  c("formal_0001", "formal_0002")
+)
 expect_true(S7::S7_inherits(c_products@loop_nest, TccqLoopNest))
 expect_equal(
   vapply(c_products@loop_nest@axes, function(axis) axis@role, character(1)),
@@ -379,8 +385,14 @@ expect_equal(matrix_c_interface@kind, "loop_nest")
 expect_equal(matrix_c_interface@result_type@shape@rank, 2L)
 expect_true(S7::S7_inherits(matrix_c_interface@domain, TccqDomain))
 expect_equal(matrix_c_interface@domain@shape@rank, 2L)
-expect_equal(matrix_c_interface@extent_symbols, c("n", "p"))
-expect_equal(matrix_c_interface@extent_names, c("extent_n", "extent_p"))
+expect_equal(
+  vapply(matrix_c_interface@extents, function(binding) binding@symbol, character(1)),
+  c("n", "p")
+)
+expect_equal(
+  vapply(matrix_c_interface@extents, function(binding) binding@source_name, character(1)),
+  c("extent_n", "extent_p")
+)
 expect_equal(matrix_c_interface@index_names, c("axis_0001", "axis_0002"))
 expect_true(S7::S7_inherits(backend_products(matrix_c_source_plan)@body, TccqExpression))
 expect_equal(backend_products(matrix_c_source_plan)@body@type@shape@rank, 2L)
@@ -400,7 +412,10 @@ expect_equal(matrix_fortran_interface@kind, "loop_nest")
 expect_equal(matrix_fortran_interface@result_type@shape@rank, 2L)
 expect_true(S7::S7_inherits(matrix_fortran_interface@domain, TccqDomain))
 expect_equal(matrix_fortran_interface@domain@shape@rank, 2L)
-expect_equal(matrix_fortran_interface@extent_names, c("extent_n", "extent_p"))
+expect_equal(
+  vapply(matrix_fortran_interface@extents, function(binding) binding@source_name, character(1)),
+  c("extent_n", "extent_p")
+)
 
 matrix_x <- matrix(c(1, 4, 9, 16), nrow = 2)
 matrix_y <- matrix(c(10, 20, 30, 40), nrow = 2)
@@ -742,15 +757,18 @@ reduction_c_accumulator_id <- backend_products(
   reduction_c_source_plan
 )@loop_nest@accumulator@value_id
 expect_equal(
-  reduction_c_interface@local_names[[match(
+  vapply(reduction_c_interface@locals, function(binding) binding@source_name, character(1))[[match(
     reduction_c_accumulator_id,
-    reduction_c_interface@local_value_ids
+    vapply(reduction_c_interface@locals, function(binding) binding@value_id, character(1))
   )]],
   "accumulator_0001"
 )
 expect_true(S7::S7_inherits(reduction_c_interface@domain, TccqDomain))
 expect_equal(reduction_c_interface@domain@shape@rank, 1L)
-expect_equal(reduction_c_interface@extent_names, "extent_n")
+expect_equal(
+  vapply(reduction_c_interface@extents, function(binding) binding@source_name, character(1)),
+  "extent_n"
+)
 expect_equal(reduction_c_interface@result_count_name, "")
 expect_equal(length(reduction_c_interface@result_dims), 0L)
 expect_equal(length(reduction_c_source_plan@value@bridges), 3L)
@@ -803,7 +821,14 @@ expect_equal(matrix_reduction_c_interface@kind, "loop_nest")
 expect_equal(matrix_reduction_c_interface@result_type@shape@rank, 0L)
 expect_true(S7::S7_inherits(matrix_reduction_c_interface@domain, TccqDomain))
 expect_equal(matrix_reduction_c_interface@domain@shape@rank, 2L)
-expect_equal(matrix_reduction_c_interface@extent_names, c("extent_n", "extent_p"))
+expect_equal(
+  vapply(
+    matrix_reduction_c_interface@extents,
+    function(binding) binding@source_name,
+    character(1)
+  ),
+  c("extent_n", "extent_p")
+)
 
 matrix_reduction_fortran_source_plan <- tccq_plan_backend(
   matrix_reduction_program@value,
@@ -816,7 +841,14 @@ expect_equal(matrix_reduction_fortran_interface@kind, "loop_nest")
 expect_equal(matrix_reduction_fortran_interface@result_type@shape@rank, 0L)
 expect_true(S7::S7_inherits(matrix_reduction_fortran_interface@domain, TccqDomain))
 expect_equal(matrix_reduction_fortran_interface@domain@shape@rank, 2L)
-expect_equal(matrix_reduction_fortran_interface@extent_names, c("extent_n", "extent_p"))
+expect_equal(
+  vapply(
+    matrix_reduction_fortran_interface@extents,
+    function(binding) binding@source_name,
+    character(1)
+  ),
+  c("extent_n", "extent_p")
+)
 
 matrix_reduction_expected <- sum(exp(matrix_x) * matrix_y)
 
@@ -845,15 +877,18 @@ column_axis_c_source <- backend_source(column_axis_c_source_plan)
 column_axis_c_interface <- backend_interface(column_axis_c_source_plan)
 expect_equal(column_axis_c_interface@kind, "loop_nest")
 expect_equal(column_axis_c_interface@domain@shape@rank, 2L)
-expect_equal(column_axis_c_interface@extent_names, c("extent_n", "extent_p"))
+expect_equal(
+  vapply(column_axis_c_interface@extents, function(binding) binding@source_name, character(1)),
+  c("extent_n", "extent_p")
+)
 expect_equal(column_axis_c_interface@result_count_name, "result_count_0001")
 column_axis_accumulator_id <- backend_products(
   column_axis_c_source_plan
 )@loop_nest@accumulator@value_id
 expect_equal(
-  column_axis_c_interface@local_names[[match(
+  vapply(column_axis_c_interface@locals, function(binding) binding@source_name, character(1))[[match(
     column_axis_accumulator_id,
-    column_axis_c_interface@local_value_ids
+    vapply(column_axis_c_interface@locals, function(binding) binding@value_id, character(1))
   )]],
   "accumulator_0001"
 )
@@ -1111,11 +1146,15 @@ expect_true(branch_fortran_plan@success)
 branch_c_interface <- backend_interface(branch_c_plan)
 branch_fortran_interface <- backend_interface(branch_fortran_plan)
 expect_equal(
-  vapply(branch_c_interface@parameter_types, function(type) type@base, character(1)),
+  vapply(
+    branch_c_interface@parameters,
+    function(binding) binding@source_type@base,
+    character(1)
+  ),
   c("double", "logical")
 )
 expect_equal(branch_c_interface@result_type@base, "double")
-expect_equal(branch_fortran_interface@parameter_types[[2L]]@base, "logical")
+expect_equal(branch_fortran_interface@parameters[[2L]]@source_type@base, "logical")
 expect_true(grepl("bool input_0002", backend_source(branch_c_plan), fixed = TRUE))
 expect_true(grepl("if (input_0002) {", backend_source(branch_c_plan), fixed = TRUE))
 expect_true(grepl("logical(c_bool), value :: input_0002", backend_source(branch_fortran_plan), fixed = TRUE))
@@ -1229,9 +1268,16 @@ branch_condition_fortran <- tccq_plan_backend(
 expect_true(branch_condition_c@success)
 expect_true(branch_condition_fortran@success)
 expect_true(S7::S7_inherits(backend_products(branch_condition_c)@body, TccqBlock))
-expect_equal(backend_interface(branch_condition_c)@local_names, "local_0001")
 expect_equal(
-  backend_interface(branch_condition_c)@local_storage_types[[1L]]@base,
+  vapply(
+    backend_interface(branch_condition_c)@locals,
+    function(binding) binding@source_name,
+    character(1)
+  ),
+  "local_0001"
+)
+expect_equal(
+  backend_interface(branch_condition_c)@locals[[1L]]@source_type@base,
   "logical"
 )
 expect_true(grepl("bool local_0001;", backend_source(branch_condition_c), fixed = TRUE))
@@ -1353,8 +1399,8 @@ expect_true(conditional_composition_c@success)
 expect_true(conditional_composition_fortran@success)
 expect_equal(
   vapply(
-    backend_interface(conditional_composition_c)@local_storage_types,
-    function(type) type@shape@rank,
+    backend_interface(conditional_composition_c)@locals,
+    function(binding) binding@source_type@shape@rank,
     integer(1)
   ),
   c(0L, 0L)
@@ -1823,8 +1869,8 @@ expect_true(conditional_contraction_c@success)
 expect_true(conditional_contraction_fortran@success)
 expect_equal(
   vapply(
-    backend_interface(conditional_reduction_c)@local_storage_types,
-    function(type) type@shape@rank,
+    backend_interface(conditional_reduction_c)@locals,
+    function(binding) binding@source_type@shape@rank,
     integer(1)
   ),
   c(0L, 0L)
@@ -2486,7 +2532,10 @@ expect_true(matrix_vector_c_plan@success)
 matrix_vector_c_source <- backend_source(matrix_vector_c_plan)
 matrix_vector_c_interface <- backend_interface(matrix_vector_c_plan)
 expect_equal(matrix_vector_c_interface@kind, "loop_nest")
-expect_equal(matrix_vector_c_interface@extent_symbols, c("n", "p"))
+expect_equal(
+  vapply(matrix_vector_c_interface@extents, function(binding) binding@symbol, character(1)),
+  c("n", "p")
+)
 expect_true(grepl(
   "(input_0001[axis_0001 + axis_0002 * extent_n] * input_0002[axis_0002])",
   matrix_vector_c_source,
@@ -2666,9 +2715,9 @@ normalize_source_plan <- tccq_plan_backend(
 expect_true(normalize_source_plan@success)
 expect_equal(length(backend_products(normalize_source_plan)@loop_nests), 2L)
 normalize_c_interface <- backend_interface(normalize_source_plan)
-expect_equal(normalize_c_interface@intermediate_names, "intermediate_0001")
+expect_equal(normalize_c_interface@allocations[[1L]]@source_name, "intermediate_0001")
 expect_identical(
-  normalize_c_interface@intermediate_slots[[1L]],
+  normalize_c_interface@allocations[[1L]]@slots[[1L]],
   normalize_intermediate@storage
 )
 expect_true(grepl(

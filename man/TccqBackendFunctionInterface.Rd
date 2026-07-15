@@ -9,21 +9,15 @@ TccqBackendFunctionInterface(
   source_language = character(0),
   kind = character(0),
   abi = character(0),
-  parameter_names = character(0),
-  parameter_value_ids = character(0),
-  parameter_types = list(),
-  local_names = character(0),
-  local_value_ids = character(0),
-  local_storage_types = list(),
-  intermediate_names = character(0),
-  intermediate_slots = list(),
+  parameters = list(),
+  locals = list(),
+  allocations = list(),
   result_value_id = character(0),
   result_type = TccqType(),
   result_placement = character(0),
   result_name = character(0),
   domain = NULL,
-  extent_symbols = character(0),
-  extent_names = character(0),
+  extents = list(),
   index_names = character(0),
   result_dims = list(),
   result_count_name = character(0)
@@ -38,22 +32,11 @@ TccqBackendFunctionInterface(
 
 \item{abi}{Callable ABI.}
 
-\item{parameter_names}{Generated parameter names.}
+\item{parameters}{Ordered ABI parameter bindings.}
 
-\item{parameter_value_ids}{Lowered value ids corresponding to parameters.}
+\item{locals}{Ordered scalar-local bindings.}
 
-\item{parameter_types}{Declared semantic types corresponding to parameters.}
-
-\item{local_names}{Generated scalar-local names.}
-
-\item{local_value_ids}{Neutral value ids corresponding to locals.}
-
-\item{local_storage_types}{Scalar storage types corresponding to locals.}
-
-\item{intermediate_names}{Generated physical-allocation names for materialized
-intermediate slots. Slots sharing an allocation repeat the same name.}
-
-\item{intermediate_slots}{Typed materialized intermediate storage slots.}
+\item{allocations}{Ordered physical-allocation bindings.}
 
 \item{result_value_id}{Lowered result value id.}
 
@@ -65,9 +48,7 @@ intermediate slots. Slots sharing an allocation repeat the same name.}
 
 \item{domain}{Loop-nest iteration domain, or \code{NULL}.}
 
-\item{extent_symbols}{Symbolic dimension names carried by the ABI.}
-
-\item{extent_names}{Generated extent parameter names, one per symbol.}
+\item{extents}{Ordered symbolic-extent bindings carried by the ABI.}
 
 \item{index_names}{Generated per-axis loop index names.}
 
@@ -78,9 +59,7 @@ empty string for scalar results.}
 }
 \description{
 A backend function interface is the source-level callable boundary consumed
-by C, Rtinycc, Fortran, and later source printers. It records the generated
-symbol, ABI, formal parameter mapping, result placement, the loop-nest
-iteration domain, one extent parameter per symbolic dimension, per-axis loop
-index names, typed result dimensions, generated scalar-local mappings, and
-materialized intermediate-slot mappings before concrete syntax is emitted.
+by C, Rtinycc, Fortran, and later source printers. Generated parameters,
+scalar locals, physical allocations, and extents are closed typed bindings;
+positional arrays are not an interface protocol.
 }
