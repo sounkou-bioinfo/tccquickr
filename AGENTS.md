@@ -196,14 +196,20 @@ For the reset core, keep these rules explicit:
   logical condition, an explicit `else`, identical pure arm types, and is the
   result of one loop nest. A missing condition remains a possible
   runtime error; native call boundaries must reject it rather than coerce it.
-  Pure branches may nest in either result arm or directly as another branch's
-  condition. Loop-nest lowering turns value-producing control into
-  `TccqBlock`, `TccqAssignment`, and `TccqConditional` values over typed
-  `TccqWriteTarget` destinations. A computed condition is written to a typed
-  scalar local before the consuming conditional. Branch-local reductions and
-  control nested inside an ordinary operation must deepen scheduling or
-  expression normalization rather than evaluate control eagerly or use a
-  target ternary shortcut.
+  Pure branches may nest in either result arm, directly as another branch's
+  condition, or under pure elementwise operations. Loop-nest lowering turns
+  value-producing control into `TccqBlock`, `TccqAssignment`, and
+  `TccqConditional` values over typed `TccqWriteTarget` destinations. It
+  normalizes control-valued operands left to right before their consumer.
+  Every write target retains the full semantic value type and a distinct
+  scalar storage type for the element written inside the loop; block-owned
+  locals receive backend names through `TccqBackendFunctionInterface` and are
+  declared in the source block that owns them. Statement-block effects are the
+  conservative union of their statement effects; normalization must not hide
+  a nested control effect behind a pure consumer. Branch-local reductions and
+  reductions or contractions over conditional values remain distinct typed
+  scheduling failures rather than being hoisted, eagerly evaluated, or hidden
+  in a target ternary.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.

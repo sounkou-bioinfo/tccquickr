@@ -136,7 +136,7 @@ TccqBridgePlan <- S7::new_class(
 #' @param parameter_types Declared semantic types corresponding to parameters.
 #' @param local_names Generated scalar-local names.
 #' @param local_value_ids Neutral value ids corresponding to locals.
-#' @param local_types Declared semantic types corresponding to locals.
+#' @param local_storage_types Scalar storage types corresponding to locals.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
@@ -164,7 +164,7 @@ TccqBackendFunctionInterface <- S7::new_class(
     parameter_types = S7::class_list,
     local_names = S7::class_character,
     local_value_ids = S7::class_character,
-    local_types = S7::class_list,
+    local_storage_types = S7::class_list,
     result_value_id = S7::class_character,
     result_type = TccqType,
     result_placement = S7::class_character,
@@ -251,11 +251,11 @@ TccqBackendFunctionInterface <- S7::new_class(
     }
     if (
       length(self@local_names) != length(self@local_value_ids) ||
-        length(self@local_names) != length(self@local_types)
+        length(self@local_names) != length(self@local_storage_types)
     ) {
       problems <- c(
         problems,
-        "@local_names, @local_value_ids, and @local_types must have the same length"
+        "@local_names, @local_value_ids, and @local_storage_types must have the same length"
       )
     }
     if (anyNA(self@local_names) || any(!nzchar(self@local_names)) || anyDuplicated(self@local_names)) {
@@ -268,21 +268,21 @@ TccqBackendFunctionInterface <- S7::new_class(
     ) {
       problems <- c(problems, "@local_value_ids must contain unique non-empty value ids")
     }
-    local_types_are_typed <- vapply(
-      self@local_types,
+    local_storage_types_are_typed <- vapply(
+      self@local_storage_types,
       S7::S7_inherits,
       logical(1),
       class = TccqType
     )
-    if (!all(local_types_are_typed)) {
-      problems <- c(problems, "@local_types must contain only <TccqType> values")
+    if (!all(local_storage_types_are_typed)) {
+      problems <- c(problems, "@local_storage_types must contain only <TccqType> values")
     }
-    if (all(local_types_are_typed) && any(vapply(
-      self@local_types,
+    if (all(local_storage_types_are_typed) && any(vapply(
+      self@local_storage_types,
       function(type) type@shape@rank != 0L,
       logical(1)
     ))) {
-      problems <- c(problems, "@local_types currently support only scalar values")
+      problems <- c(problems, "@local_storage_types must contain only scalar values")
     }
     if (length(self@extent_symbols) != length(self@extent_names)) {
       problems <- c(problems, "@extent_symbols and @extent_names must have the same length")
@@ -913,7 +913,7 @@ tccq_bridge_plan <- function(
 #' @param parameter_types Declared semantic types corresponding to parameters.
 #' @param local_names Generated scalar-local names.
 #' @param local_value_ids Neutral value ids corresponding to locals.
-#' @param local_types Declared semantic types corresponding to locals.
+#' @param local_storage_types Scalar storage types corresponding to locals.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
@@ -938,7 +938,7 @@ tccq_backend_function_interface <- function(
   parameter_types = list(),
   local_names = character(),
   local_value_ids = character(),
-  local_types = list(),
+  local_storage_types = list(),
   result_value_id,
   result_type,
   result_placement = "return",
@@ -1048,14 +1048,19 @@ tccq_backend_function_interface <- function(
       path = "backend_function.local_value_ids"
     )
   }
-  .tccq_check_list_of(local_types, TccqType, "TccqType", "local_types")
+  .tccq_check_list_of(
+    local_storage_types,
+    TccqType,
+    "TccqType",
+    "local_storage_types"
+  )
   if (
     length(local_names) != length(local_value_ids) ||
-      length(local_names) != length(local_types)
+      length(local_names) != length(local_storage_types)
   ) {
     tccq_abort(
       "schema.invalid_backend_function_locals",
-      "`local_names`, `local_value_ids`, and `local_types` must have the same length.",
+      "`local_names`, `local_value_ids`, and `local_storage_types` must have the same length.",
       phase = "schema",
       path = "backend_function.locals"
     )
@@ -1116,7 +1121,7 @@ tccq_backend_function_interface <- function(
     parameter_types = parameter_types,
     local_names = local_names,
     local_value_ids = local_value_ids,
-    local_types = local_types,
+    local_storage_types = local_storage_types,
     result_value_id = result_value_id,
     result_type = result_type,
     result_placement = result_placement,
@@ -1923,7 +1928,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (identical(access@kind, "scalar")) {
           return(source_name)
         }
-        storage_type <- emit_context$formal_type_by_id[[access@value_id]]
+        storage_type <- emit_context$storage_type_by_value_id[[access@value_id]]
         if (identical(access@kind, "recycle")) {
           consumer_linear <- linear_index_text(
             access,
@@ -2040,7 +2045,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         parameter_types = lapply(formals, function(value) value@type),
         local_names = local_names,
         local_value_ids = local_value_ids,
-        local_types = lapply(local_targets, function(target) target@type),
+        local_storage_types = lapply(local_targets, function(target) target@storage_type),
         result_value_id = result@id,
         result_type = result@type,
         result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
@@ -2072,15 +2077,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         interface@parameter_value_ids
       ))
       source_name_by_value_id[interface@local_value_ids] <- as.list(interface@local_names)
-      formal_type_by_id <- lapply(
+      storage_type_by_value_id <- lapply(
         stats::setNames(formals, vapply(formals, function(value) value@id, character(1))),
         function(value) value@type
       )
-      formal_type_by_id[interface@local_value_ids] <- interface@local_types
+      storage_type_by_value_id[interface@local_value_ids] <- interface@local_storage_types
       list(
         extent_by_symbol = extent_by_symbol,
         source_name_by_value_id = source_name_by_value_id,
-        formal_type_by_id = formal_type_by_id,
+        storage_type_by_value_id = storage_type_by_value_id,
         language = language
       )
     }
@@ -2212,7 +2217,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         id <- intermediate@attrs$result_value_id
         emit_context$source_name_by_value_id[[id]] <-
           intermediate@attrs$buffer_name %||% intermediate@attrs$scalar_name
-        emit_context$formal_type_by_id[[id]] <- intermediate@result_type
+        emit_context$storage_type_by_value_id[[id]] <- intermediate@result_type
       }
       emit_context
     }
@@ -2311,9 +2316,40 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       emit_statement <- NULL
       emit_statement_block <- function(block, result_target) {
+        push("{")
+        depth <<- depth + 1L
+        for (local_target in block@locals) {
+          local_name <- emit_context$source_name_by_value_id[[local_target@value_id]]
+          if (is.null(local_name) || !nzchar(local_name)) {
+            tccq_abort(
+              "backend.unbound_write_target",
+              "A typed local has no generated source name.",
+              phase = "backend",
+              path = sprintf("backend.%s.local", backend@id),
+              data = list(backend = backend@id, value_id = local_target@value_id)
+            )
+          }
+          local_storage_type <- emit_context$storage_type_by_value_id[[local_target@value_id]]
+          if (!identical(local_storage_type, local_target@storage_type)) {
+            tccq_abort(
+              "backend.local_storage_type_mismatch",
+              "A block local disagrees with its backend interface storage type.",
+              phase = "backend",
+              path = sprintf("backend.%s.local", backend@id),
+              data = list(backend = backend@id, value_id = local_target@value_id)
+            )
+          }
+          push(sprintf(
+            "%s %s;",
+            source_scalar_type(local_storage_type, "c"),
+            local_name
+          ))
+        }
         for (statement in block@statements) {
           emit_statement(statement, result_target)
         }
+        depth <<- depth - 1L
+        push("}")
         invisible(NULL)
       }
       emit_statement <- function(statement, result_target) {
@@ -2354,13 +2390,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           path = sprintf("backend.%s.statement", backend@id),
           data = list(backend = backend@id, statement = statement)
         )
-      }
-      for (local_position in seq_along(interface@local_names)) {
-        push(sprintf(
-          "%s %s;",
-          source_scalar_type(interface@local_types[[local_position]], "c"),
-          interface@local_names[[local_position]]
-        ))
       }
       if (returns_buffer) {
         push(sprintf("if (%s < 0) {", interface@result_count_name))
@@ -2564,9 +2593,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             buffer_size_text(intermediate, emit_context)
           )
         })),
-        unlist(Map(function(type, local_name) {
-          sprintf("  %s :: %s", source_scalar_type(type, "fortran"), local_name)
-        }, interface@local_types, interface@local_names), use.names = FALSE),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
         }
@@ -2586,9 +2612,40 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       emit_statement <- NULL
       emit_statement_block <- function(block, result_target) {
+        push("block")
+        depth <<- depth + 1L
+        for (local_target in block@locals) {
+          local_name <- emit_context$source_name_by_value_id[[local_target@value_id]]
+          if (is.null(local_name) || !nzchar(local_name)) {
+            tccq_abort(
+              "backend.unbound_write_target",
+              "A typed local has no generated source name.",
+              phase = "backend",
+              path = sprintf("backend.%s.local", backend@id),
+              data = list(backend = backend@id, value_id = local_target@value_id)
+            )
+          }
+          local_storage_type <- emit_context$storage_type_by_value_id[[local_target@value_id]]
+          if (!identical(local_storage_type, local_target@storage_type)) {
+            tccq_abort(
+              "backend.local_storage_type_mismatch",
+              "A block local disagrees with its backend interface storage type.",
+              phase = "backend",
+              path = sprintf("backend.%s.local", backend@id),
+              data = list(backend = backend@id, value_id = local_target@value_id)
+            )
+          }
+          push(sprintf(
+            "%s :: %s",
+            source_scalar_type(local_storage_type, "fortran"),
+            local_name
+          ))
+        }
         for (statement in block@statements) {
           emit_statement(statement, result_target)
         }
+        depth <<- depth - 1L
+        push("end block")
         invisible(NULL)
       }
       emit_statement <- function(statement, result_target) {

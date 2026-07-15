@@ -390,11 +390,13 @@ TCCQ_WRITE_TARGET_KINDS <- c("local", "result")
 #'
 #' A write target names a typed value destination without spelling it in C,
 #' Fortran, or another target language. Result targets are resolved through a
-#' loop nest's output plan; scalar local targets are mapped to generated names
-#' by [TccqBackendFunctionInterface].
+#' loop nest's output plan; local targets are mapped to generated names by
+#' [TccqBackendFunctionInterface]. The semantic type retains the value domain,
+#' while the scalar storage type describes the element written at this target.
 #'
 #' @param value_id Stable value id written by the target.
 #' @param type Semantic value type.
+#' @param storage_type Scalar storage type written at the target.
 #' @param kind Target kind: `local` or `result`.
 #' @export
 TccqWriteTarget <- S7::new_class(
@@ -403,6 +405,7 @@ TccqWriteTarget <- S7::new_class(
   properties = list(
     value_id = S7::class_character,
     type = TccqType,
+    storage_type = TccqType,
     kind = S7::class_character
   ),
   validator = function(self) {
@@ -413,8 +416,11 @@ TccqWriteTarget <- S7::new_class(
     if (length(self@kind) != 1L || is.na(self@kind) || !self@kind %in% TCCQ_WRITE_TARGET_KINDS) {
       problems <- c(problems, "@kind must be one supported write-target kind")
     }
-    if (identical(self@kind, "local") && self@type@shape@rank != 0L) {
-      problems <- c(problems, "local write targets currently require scalar types")
+    if (self@storage_type@shape@rank != 0L) {
+      problems <- c(problems, "@storage_type must be scalar")
+    }
+    if (!identical(self@storage_type@base, self@type@base)) {
+      problems <- c(problems, "@storage_type and @type must have the same base type")
     }
     if (length(problems) > 0L) problems
   }
@@ -449,7 +455,7 @@ TccqStatement <- S7::new_class(
 #' evaluated from another arm.
 #'
 #' @param id Stable block id.
-#' @param locals Ordered scalar local write targets declared by the block.
+#' @param locals Ordered local write targets declared by the block.
 #' @param statements Ordered `TccqStatement` values.
 #' @param effect Effect summary of evaluating the block.
 #' @export
@@ -557,11 +563,22 @@ TccqConditional <- S7::new_class(
 #'
 #' @inheritParams TccqWriteTarget
 #' @export
-tccq_write_target <- function(value_id, type, kind = "local") {
+tccq_write_target <- function(
+  value_id,
+  type,
+  storage_type = tccq_type(type@base),
+  kind = "local"
+) {
   .tccq_check_character_scalar(value_id, "value_id")
   .tccq_check_s7(type, TccqType, "TccqType", "type")
+  .tccq_check_s7(storage_type, TccqType, "TccqType", "storage_type")
   .tccq_check_character_scalar(kind, "kind")
-  TccqWriteTarget(value_id = value_id, type = type, kind = kind)
+  TccqWriteTarget(
+    value_id = value_id,
+    type = type,
+    storage_type = storage_type,
+    kind = kind
+  )
 }
 
 #' Construct a neutral statement block
@@ -813,37 +830,59 @@ tccq_program_loop_nests <- function(program) {
       predicate = predicate
     ))
   }
-  if (!identical(root@kind, "branch") && expression_contains(
-    root,
-    function(expression) identical(expression@kind, "branch")
-  )) {
-    return(failed(nest_diagnostic(
-      "loop_nest.nested_branch",
-      "A conditional currently has to be the result expression of its loop nest.",
-      data = list(result_value_id = root@value_id)
-    )))
-  }
-  if (identical(root@kind, "branch")) {
-    branch_materializes <- any(vapply(root@inputs, expression_contains, logical(1), predicate = function(expression) {
-      operation <- expression@attrs$operation
-      S7::S7_inherits(operation, TccqLoweredOperation) &&
-        operation@family %in% c("reduction", "contraction")
-    }))
-    if (branch_materializes) {
-      return(failed(nest_diagnostic(
-        "loop_nest.branch_materialization",
-        "Reductions and contractions inside a conditional arm need branch-local loop nests.",
-        data = list(value_id = root@value_id)
-      )))
-    }
-  }
-
-  axis_name <- function(position) sprintf("axis_%04d", position)
-
   expression_family <- function(expression) {
     operation <- expression@attrs$operation
     if (S7::S7_inherits(operation, TccqLoweredOperation)) operation@family else NULL
   }
+
+  branch_contains_materialization <- function(expression, inside_branch = FALSE) {
+    if (
+      isTRUE(inside_branch) &&
+        !is.null(expression_family(expression)) &&
+        expression_family(expression) %in% c("reduction", "contraction")
+    ) {
+      return(TRUE)
+    }
+    any(vapply(
+      expression@inputs,
+      branch_contains_materialization,
+      logical(1),
+      inside_branch = inside_branch || identical(expression@kind, "branch")
+    ))
+  }
+  if (branch_contains_materialization(root)) {
+    return(failed(nest_diagnostic(
+      "loop_nest.branch_materialization",
+      "Reductions and contractions inside a conditional arm need branch-local loop nests.",
+      data = list(value_id = root@value_id)
+    )))
+  }
+
+  materialization_contains_branch <- function(expression) {
+    family <- expression_family(expression)
+    if (
+      !is.null(family) &&
+        family %in% c("reduction", "contraction") &&
+        any(vapply(
+          expression@inputs,
+          expression_contains,
+          logical(1),
+          predicate = function(input) identical(input@kind, "branch")
+        ))
+    ) {
+      return(TRUE)
+    }
+    any(vapply(expression@inputs, materialization_contains_branch, logical(1)))
+  }
+  if (materialization_contains_branch(root)) {
+    return(failed(nest_diagnostic(
+      "loop_nest.control_materialization_operand",
+      "A reduction or contraction over conditional values needs a statement-producing reducer body.",
+      data = list(value_id = root@value_id)
+    )))
+  }
+
+  axis_name <- function(position) sprintf("axis_%04d", position)
 
   # Post-order extraction: every non-root reduction or contraction subtree
   # becomes an intermediate nest — a named scalar for rank-0 results, a
@@ -1150,70 +1189,142 @@ tccq_program_loop_nests <- function(program) {
     value <- program@values[[expression@value_id]]
     if (S7::S7_inherits(value, TccqValue)) value@effect else tccq_effect()
   }
+  target_reference <- function(target, domain) {
+    tccq_expression(
+      target@value_id,
+      "reference",
+      type = target@type,
+      op = "local",
+      attrs = list(
+        storage_value_id = target@value_id,
+        access = tccq_access(target@value_id, domain, kind = "scalar")
+      )
+    )
+  }
 
-  # Convert a value-producing conditional into explicit neutral statements.
-  # A conditional used as another condition is first assigned to a typed local
-  # in the same block. Arm blocks remain nested, preserving R's selected-arm
+  # Normalize value-producing control into explicit neutral statements. Any
+  # control-valued operand is evaluated into a typed scalar storage target
+  # before its consumer. Arm blocks remain nested, preserving R's selected-arm
   # evaluation instead of hoisting work across control boundaries.
-  statement_block <- function(expression, target, domain) {
-    if (!identical(expression@kind, "branch")) {
-      effect <- expression_effect(expression)
+  statement_block <- function(expression, target, domain, available_targets) {
+    if (identical(expression@kind, "branch")) {
+      condition <- expression@inputs[[1L]]
+      locals <- list()
+      statements <- list()
+      if (expression_contains(
+        condition,
+        function(input) identical(input@kind, "branch")
+      )) {
+        condition_target <- tccq_write_target(
+          condition@value_id,
+          condition@type,
+          kind = "local"
+        )
+        available_targets[[condition@value_id]] <- condition_target
+        condition_block <- statement_block(
+          condition,
+          condition_target,
+          domain,
+          available_targets
+        )
+        locals <- c(list(condition_target), condition_block@locals)
+        statements <- c(statements, condition_block@statements)
+        condition <- target_reference(condition_target, domain)
+      }
+
+      consequent <- statement_block(
+        expression@inputs[[2L]],
+        target,
+        domain,
+        new.env(parent = available_targets)
+      )
+      alternative <- statement_block(
+        expression@inputs[[3L]],
+        target,
+        domain,
+        new.env(parent = available_targets)
+      )
+      conditional <- tccq_conditional(
+        next_statement_id(),
+        condition = condition,
+        consequent = consequent,
+        alternative = alternative,
+        branch = expression@branch,
+        effect = expression@branch@effect
+      )
       return(tccq_block(
         next_block_id(),
-        statements = list(tccq_assignment(
-          next_statement_id(),
-          target,
-          expression,
-          effect = effect
-        )),
-        effect = effect
+        locals = locals,
+        statements = c(statements, list(conditional)),
+        effect = expression@branch@effect
       ))
     }
 
-    condition <- expression@inputs[[1L]]
     locals <- list()
     statements <- list()
-    if (identical(condition@kind, "branch")) {
-      local_target <- tccq_write_target(condition@value_id, condition@type, kind = "local")
-      condition_block <- statement_block(condition, local_target, domain)
-      locals <- c(list(local_target), condition_block@locals)
-      statements <- c(statements, condition_block@statements)
-      condition <- tccq_expression(
-        condition@value_id,
-        "reference",
-        type = condition@type,
-        op = "local",
-        attrs = list(
-          storage_value_id = condition@value_id,
-          access = tccq_access(condition@value_id, domain, kind = "scalar")
+    if (identical(expression@kind, "operation")) {
+      rewritten_inputs <- vector("list", length(expression@inputs))
+      for (input_position in seq_along(expression@inputs)) {
+        input <- expression@inputs[[input_position]]
+        input_contains_branch <- expression_contains(
+          input,
+          function(candidate) identical(candidate@kind, "branch")
         )
+        if (!input_contains_branch) {
+          rewritten_inputs[[input_position]] <- input
+          next
+        }
+
+        input_target <- get0(
+          input@value_id,
+          envir = available_targets,
+          inherits = TRUE,
+          ifnotfound = NULL
+        )
+        if (is.null(input_target)) {
+          input_target <- tccq_write_target(input@value_id, input@type, kind = "local")
+          available_targets[[input@value_id]] <- input_target
+          input_block <- statement_block(
+            input,
+            input_target,
+            domain,
+            available_targets
+          )
+          locals <- c(locals, list(input_target), input_block@locals)
+          statements <- c(statements, input_block@statements)
+        }
+        rewritten_inputs[[input_position]] <- target_reference(input_target, domain)
+      }
+      expression <- tccq_expression(
+        id = expression@id,
+        kind = expression@kind,
+        value_id = expression@value_id,
+        op = expression@op,
+        inputs = rewritten_inputs,
+        type = expression@type,
+        resolved_op = expression@resolved_op,
+        attrs = expression@attrs
       )
-    } else if (expression_contains(
-      condition,
-      function(input) identical(input@kind, "branch")
-    )) {
-      tccq_abort_diagnostic(nest_diagnostic(
-        "loop_nest.control_operand",
-        "A conditional nested inside an ordinary condition operation needs expression normalization.",
-        data = list(value_id = condition@value_id, op = condition@op)
-      ))
     }
 
-    consequent <- statement_block(expression@inputs[[2L]], target, domain)
-    alternative <- statement_block(expression@inputs[[3L]], target, domain)
-    conditional <- tccq_conditional(
+    effect <- expression_effect(expression)
+    assignment <- tccq_assignment(
       next_statement_id(),
-      condition = condition,
-      consequent = consequent,
-      alternative = alternative,
-      branch = expression@branch,
-      effect = expression@branch@effect
+      target,
+      expression,
+      effect = effect
+    )
+    statements <- c(statements, list(assignment))
+    block_effect <- Reduce(
+      tccq_effect_union,
+      lapply(statements, function(statement) statement@effect),
+      init = tccq_effect()
     )
     tccq_block(
       next_block_id(),
       locals = locals,
-      statements = c(statements, list(conditional)),
-      effect = expression@branch@effect
+      statements = statements,
+      effect = block_effect
     )
   }
 
@@ -1248,11 +1359,12 @@ tccq_program_loop_nests <- function(program) {
     } else {
       NULL
     }
-    if (identical(body@kind, "branch")) {
+    if (expression_contains(body, function(expression) identical(expression@kind, "branch"))) {
       body <- statement_block(
         body,
         tccq_write_target(program@result, result_value@type, kind = "result"),
-        domain
+        domain,
+        new.env(parent = emptyenv())
       )
     }
     tccq_loop_nest(

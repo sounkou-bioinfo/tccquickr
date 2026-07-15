@@ -9,7 +9,7 @@ tccq_block(id, locals = list(), statements = list(), effect = tccq_effect())
 \arguments{
 \item{id}{Stable block id.}
 
-\item{locals}{Ordered scalar local write targets declared by the block.}
+\item{locals}{Ordered local write targets declared by the block.}
 
 \item{statements}{Ordered \code{TccqStatement} values.}
 

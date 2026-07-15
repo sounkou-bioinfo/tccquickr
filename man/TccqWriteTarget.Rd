@@ -7,6 +7,7 @@
 TccqWriteTarget(
   value_id = character(0),
   type = TccqType(),
+  storage_type = TccqType(),
   kind = character(0)
 )
 }
@@ -15,11 +16,14 @@ TccqWriteTarget(
 
 \item{type}{Semantic value type.}
 
+\item{storage_type}{Scalar storage type written at the target.}
+
 \item{kind}{Target kind: \code{local} or \code{result}.}
 }
 \description{
 A write target names a typed value destination without spelling it in C,
 Fortran, or another target language. Result targets are resolved through a
-loop nest's output plan; scalar local targets are mapped to generated names
-by \link{TccqBackendFunctionInterface}.
+loop nest's output plan; local targets are mapped to generated names by
+\link{TccqBackendFunctionInterface}. The semantic type retains the value domain,
+while the scalar storage type describes the element written at this target.
 }

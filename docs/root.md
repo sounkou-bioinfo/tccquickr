@@ -20,11 +20,14 @@ identically typed arms, and reaches C, TinyCC, and Fortran as a conditional
 statement over a typed logical ABI parameter. The loop-nest planner converts
 value-producing control into a neutral `TccqBlock` of typed assignments and
 conditionals while retaining neutral expressions inside those statements. Pure
-branches may occur in either result arm or directly as another branch's
-condition; the latter is assigned to an interface-owned typed scalar local
-before the outer branch. Branch-local reductions and control nested inside an
-ordinary operation stop with structured diagnostics until branch-local
-scheduling and expression normalization exist.
+branches may occur in either result arm, directly as another branch's
+condition, or below pure elementwise operations. Control-valued operands are
+normalized left to right into block-owned write targets before their consumers.
+Each target separates the full semantic value type from the scalar storage type
+written in one loop iteration, and C and Fortran declare that storage in the
+lexical source block that owns it. Branch-local reductions and reductions over
+conditional values stop with distinct structured diagnostics until the loop
+planner can schedule selected-arm and statement-producing reducer nests.
 
 The remaining north-star pressure is loop and evaluator structure. Viterbi and
 smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement

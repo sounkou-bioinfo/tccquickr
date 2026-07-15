@@ -330,13 +330,17 @@ tccq_lower_function <- function(
         ), recursive = FALSE)
       )
     }
-    branch_effect <- combine_effects(c(
-      unlist(lapply(
-        c(condition$value_id, consequent$value_id, alternative$value_id),
-        reachable_effects
-      ), recursive = FALSE),
-      list(tccq_effect(may_error = TRUE))
-    ))
+    branch_effect <- Reduce(
+      tccq_effect_union,
+      c(
+        unlist(lapply(
+          c(condition$value_id, consequent$value_id, alternative$value_id),
+          reachable_effects
+        ), recursive = FALSE),
+        list(tccq_effect(may_error = TRUE))
+      ),
+      init = tccq_effect()
+    )
     add_value(
       state,
       tccq_branch(
@@ -863,7 +867,11 @@ tccq_lower_function <- function(
       function(resolved_operation) resolved_operation@target,
       default = "any"
     )
-    region_effect <- combine_effects(lapply(operation_values, function(value) value@effect))
+    region_effect <- Reduce(
+      tccq_effect_union,
+      lapply(operation_values, function(value) value@effect),
+      init = tccq_effect()
+    )
 
     # Every non-root reduction or contraction is its own fused nest — a named
     # scalar for rank-0 results, a materialized buffer otherwise — and the
@@ -958,19 +966,6 @@ tccq_lower_function <- function(
       return(values[[1L]])
     }
     default
-  }
-
-  combine_effects <- function(effects) {
-    if (length(effects) == 0L) {
-      return(tccq_effect())
-    }
-    tccq_effect(
-      reads = any(vapply(effects, function(effect) effect@reads, logical(1))),
-      writes = any(vapply(effects, function(effect) effect@writes, logical(1))),
-      allocates = any(vapply(effects, function(effect) effect@allocates, logical(1))),
-      boundary = any(vapply(effects, function(effect) effect@boundary, logical(1))),
-      may_error = any(vapply(effects, function(effect) effect@may_error, logical(1)))
-    )
   }
 
   result_strategy <- function(values, result_id) {

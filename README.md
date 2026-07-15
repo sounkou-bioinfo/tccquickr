@@ -194,12 +194,15 @@ evaluated, and native call boundaries reject a missing condition as R
 does. Loop-nest lowering represents control as a typed `TccqBlock`
 containing `TccqConditional` and `TccqAssignment` values; arithmetic in
 each assignment remains a neutral `TccqExpression`. Pure branches may
-nest in result arms or directly as another branch’s condition. The
-latter materializes a typed scalar local before the outer conditional,
-and the shared function interface assigns its generated name and type.
-Reductions or contractions inside an arm, and control embedded inside an
-ordinary operation, still stop with loop-nest diagnostics until
-branch-local scheduling and general expression normalization exist.
+nest in result arms, directly as another branch’s condition, or under
+pure elementwise operations. The normalizer evaluates each
+control-valued operand into a block-owned write target before its
+consumer. That target retains the full semantic array type while
+carrying the scalar storage type actually written in each loop
+iteration; the shared function interface assigns its generated name.
+Reductions or contractions inside an arm, and reductions or contractions
+over conditional values, remain separate loop-nest diagnostics until
+selected-arm and statement-producing reducer scheduling exist.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. Locals are single-assignment bindings.
@@ -301,6 +304,10 @@ probes <- list(
     declare(type(x = double(n), primary = logical(), secondary = logical()))
     if (if (primary) secondary else primary) x else -x
   },
+  conditional_composition = function(x, flag) {
+    declare(type(x = double(n), flag = logical()))
+    exp((if (flag) x else -x) + 1)
+  },
   control_flow_probe = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
     out <- 0
@@ -372,28 +379,29 @@ knitr::kable(data.frame(
 ))
 ```
 
-| probe                  | status                                      |
-|:-----------------------|:--------------------------------------------|
-| map_chain              | compiles through C, Fortran, and TinyCC JIT |
-| map_reduce             | compiles through C, Fortran, and TinyCC JIT |
-| matrix_reduce          | compiles through C, Fortran, and TinyCC JIT |
-| matrix_map             | compiles through C, Fortran, and TinyCC JIT |
-| column_sums            | compiles through C, Fortran, and TinyCC JIT |
-| matrix_vector          | compiles through C, Fortran, and TinyCC JIT |
-| matrix_multiply        | compiles through C, Fortran, and TinyCC JIT |
-| tiled_stencil_1d       | compiles through C, Fortran, and TinyCC JIT |
-| scalar_composition     | compiles through C, Fortran, and TinyCC JIT |
-| array_composition      | compiles through C, Fortran, and TinyCC JIT |
-| column_means_chain     | compiles through C, Fortran, and TinyCC JIT |
-| logistic_forward_pass  | compiles through C, Fortran, and TinyCC JIT |
-| raw_buffer_roundtrip   | `backend.unsupported_type`                  |
-| conditional_map        | compiles through C, Fortran, and TinyCC JIT |
-| nested_conditional_map | compiles through C, Fortran, and TinyCC JIT |
-| computed_condition_map | compiles through C, Fortran, and TinyCC JIT |
-| control_flow_probe     | `frontend.unimplemented_call`               |
-| apply_reduce_probe     | `frontend.unimplemented_call`               |
-| logistic_gradient      | compiles through C, Fortran, and TinyCC JIT |
-| viterbi_decode         | `frontend.unimplemented_call`               |
+| probe                   | status                                      |
+|:------------------------|:--------------------------------------------|
+| map_chain               | compiles through C, Fortran, and TinyCC JIT |
+| map_reduce              | compiles through C, Fortran, and TinyCC JIT |
+| matrix_reduce           | compiles through C, Fortran, and TinyCC JIT |
+| matrix_map              | compiles through C, Fortran, and TinyCC JIT |
+| column_sums             | compiles through C, Fortran, and TinyCC JIT |
+| matrix_vector           | compiles through C, Fortran, and TinyCC JIT |
+| matrix_multiply         | compiles through C, Fortran, and TinyCC JIT |
+| tiled_stencil_1d        | compiles through C, Fortran, and TinyCC JIT |
+| scalar_composition      | compiles through C, Fortran, and TinyCC JIT |
+| array_composition       | compiles through C, Fortran, and TinyCC JIT |
+| column_means_chain      | compiles through C, Fortran, and TinyCC JIT |
+| logistic_forward_pass   | compiles through C, Fortran, and TinyCC JIT |
+| raw_buffer_roundtrip    | `backend.unsupported_type`                  |
+| conditional_map         | compiles through C, Fortran, and TinyCC JIT |
+| nested_conditional_map  | compiles through C, Fortran, and TinyCC JIT |
+| computed_condition_map  | compiles through C, Fortran, and TinyCC JIT |
+| conditional_composition | compiles through C, Fortran, and TinyCC JIT |
+| control_flow_probe      | `frontend.unimplemented_call`               |
+| apply_reduce_probe      | `frontend.unimplemented_call`               |
+| logistic_gradient       | compiles through C, Fortran, and TinyCC JIT |
+| viterbi_decode          | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
 same typed IR — loop regions and recurrences for Viterbi, general

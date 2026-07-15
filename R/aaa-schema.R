@@ -1373,6 +1373,31 @@ tccq_effect <- function(
   )
 }
 
+#' Combine effect summaries
+#'
+#' Effect summaries are conservative may-properties. Combining two summaries
+#' retains every effect reported by either input.
+#'
+#' @param effect Effect summary.
+#' @param other Effect summary to combine with `effect`.
+#' @export
+tccq_effect_union <- S7::new_generic(
+  "tccq_effect_union",
+  dispatch_args = "effect",
+  function(effect, other) S7::S7_dispatch()
+)
+
+S7::method(tccq_effect_union, TccqEffect) <- function(effect, other) {
+  .tccq_check_s7(other, TccqEffect, "TccqEffect", "other")
+  tccq_effect(
+    reads = effect@reads || other@reads,
+    writes = effect@writes || other@writes,
+    allocates = effect@allocates || other@allocates,
+    boundary = effect@boundary || other@boundary,
+    may_error = effect@may_error || other@may_error
+  )
+}
+
 #' Construct a program binding
 #'
 #' @param name Binding name.

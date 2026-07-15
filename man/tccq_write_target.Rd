@@ -4,12 +4,19 @@
 \alias{tccq_write_target}
 \title{Construct a neutral write target}
 \usage{
-tccq_write_target(value_id, type, kind = "local")
+tccq_write_target(
+  value_id,
+  type,
+  storage_type = tccq_type(type@base),
+  kind = "local"
+)
 }
 \arguments{
 \item{value_id}{Stable value id written by the target.}
 
 \item{type}{Semantic value type.}
+
+\item{storage_type}{Scalar storage type written at the target.}
 
 \item{kind}{Target kind: \code{local} or \code{result}.}
 }

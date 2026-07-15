@@ -1123,7 +1123,10 @@ expect_true(branch_condition_c@success)
 expect_true(branch_condition_fortran@success)
 expect_true(S7::S7_inherits(backend_products(branch_condition_c)@body, TccqBlock))
 expect_equal(backend_interface(branch_condition_c)@local_names, "local_0001")
-expect_equal(backend_interface(branch_condition_c)@local_types[[1L]]@base, "logical")
+expect_equal(
+  backend_interface(branch_condition_c)@local_storage_types[[1L]]@base,
+  "logical"
+)
 expect_true(grepl("bool local_0001;", backend_source(branch_condition_c), fixed = TRUE))
 expect_true(grepl("if (local_0001) {", backend_source(branch_condition_c), fixed = TRUE))
 expect_true(grepl(
@@ -1134,6 +1137,123 @@ expect_true(grepl(
 expect_true(grepl(
   "if (local_0001) then",
   backend_source(branch_condition_fortran),
+  fixed = TRUE
+))
+
+# Conditional values nested under ordinary elementwise operations normalize to
+# block-owned scalar storage without losing their full semantic array types.
+conditional_scalar <- function(flag) {
+  declare(type(flag = logical()))
+  (if (flag) 2 else -2) + 1
+}
+conditional_composition <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  exp((if (flag) x else -x) + 1)
+}
+shared_conditional_value <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  selected <- if (flag) x else -x
+  selected + selected
+}
+shared_conditional_subtrees <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  selected <- if (flag) x else -x
+  exp(selected) + sqrt(selected * selected)
+}
+conditional_scalar_program <- tccq_analyze(conditional_scalar, strict = TRUE)@value
+conditional_composition_program <- tccq_analyze(
+  conditional_composition,
+  strict = TRUE
+)@value
+shared_conditional_program <- tccq_analyze(
+  shared_conditional_value,
+  strict = TRUE
+)@value
+shared_conditional_subtrees_program <- tccq_analyze(
+  shared_conditional_subtrees,
+  strict = TRUE
+)@value
+conditional_scalar_nests <- tccq_program_loop_nests(conditional_scalar_program)
+conditional_composition_nests <- tccq_program_loop_nests(
+  conditional_composition_program
+)
+shared_conditional_nests <- tccq_program_loop_nests(shared_conditional_program)
+shared_conditional_subtrees_nests <- tccq_program_loop_nests(
+  shared_conditional_subtrees_program
+)
+expect_true(conditional_scalar_nests@success)
+expect_true(conditional_composition_nests@success)
+expect_true(shared_conditional_nests@success)
+expect_true(shared_conditional_subtrees_nests@success)
+expect_equal(length(shared_conditional_nests@value[[1L]]@body@locals), 1L)
+expect_equal(length(shared_conditional_nests@value[[1L]]@body@statements), 2L)
+expect_equal(
+  sum(vapply(
+    shared_conditional_subtrees_nests@value[[1L]]@body@statements,
+    S7::S7_inherits,
+    logical(1),
+    class = TccqConditional
+  )),
+  1L
+)
+
+conditional_composition_body <- conditional_composition_nests@value[[1L]]@body
+expect_true(S7::S7_inherits(conditional_composition_body, TccqBlock))
+expect_true(conditional_composition_body@effect@may_error)
+expect_equal(length(conditional_composition_body@locals), 2L)
+expect_equal(
+  vapply(
+    conditional_composition_body@locals,
+    function(target) target@type@shape@rank,
+    integer(1)
+  ),
+  c(1L, 1L)
+)
+expect_equal(
+  vapply(
+    conditional_composition_body@locals,
+    function(target) target@storage_type@shape@rank,
+    integer(1)
+  ),
+  c(0L, 0L)
+)
+expect_true(S7::S7_inherits(
+  conditional_composition_body@statements[[1L]],
+  TccqConditional
+))
+expect_true(S7::S7_inherits(
+  conditional_composition_body@statements[[2L]],
+  TccqAssignment
+))
+expect_true(S7::S7_inherits(
+  conditional_composition_body@statements[[3L]],
+  TccqAssignment
+))
+
+conditional_composition_c <- tccq_plan_backend(
+  conditional_composition_program,
+  tccq_c_backend()
+)
+conditional_composition_fortran <- tccq_plan_backend(
+  conditional_composition_program,
+  tccq_fortran_backend()
+)
+expect_true(conditional_composition_c@success)
+expect_true(conditional_composition_fortran@success)
+expect_equal(
+  vapply(
+    backend_interface(conditional_composition_c)@local_storage_types,
+    function(type) type@shape@rank,
+    integer(1)
+  ),
+  c(0L, 0L)
+)
+expect_true(grepl("double local_0001;", backend_source(conditional_composition_c), fixed = TRUE))
+expect_true(grepl("double local_0002;", backend_source(conditional_composition_c), fixed = TRUE))
+expect_true(grepl("block", backend_source(conditional_composition_fortran), fixed = TRUE))
+expect_true(grepl(
+  "real(c_double) :: local_0002",
+  backend_source(conditional_composition_fortran),
   fixed = TRUE
 ))
 
@@ -1152,6 +1272,26 @@ expect_false(branch_reduction_nests@success)
 expect_true(any(vapply(
   branch_reduction_nests@diagnostics,
   function(diagnostic) identical(diagnostic@code, "loop_nest.branch_materialization"),
+  logical(1)
+)))
+
+conditional_reduction_operand <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  sum(if (flag) x else -x)
+}
+conditional_reduction_program <- tccq_analyze(
+  conditional_reduction_operand,
+  strict = TRUE
+)@value
+conditional_reduction_nests <- tccq_program_loop_nests(
+  conditional_reduction_program
+)
+expect_false(conditional_reduction_nests@success)
+expect_true(any(vapply(
+  conditional_reduction_nests@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "loop_nest.control_materialization_operand")
+  },
   logical(1)
 )))
 
@@ -1194,6 +1334,29 @@ if (rtinycc_jit_available) {
   expect_equal(backend_callable(branch_condition_jit)(branch_x, FALSE, TRUE), -branch_x)
   expect_equal(backend_callable(branch_condition_jit)(branch_x, FALSE, FALSE), -branch_x)
 
+  conditional_scalar_jit <- tccq_plan_backend(
+    conditional_scalar_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  conditional_composition_jit <- tccq_plan_backend(
+    conditional_composition_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(conditional_scalar_jit@success)
+  expect_true(conditional_composition_jit@success)
+  expect_equal(backend_callable(conditional_scalar_jit)(TRUE), 3)
+  expect_equal(backend_callable(conditional_scalar_jit)(FALSE), -1)
+  expect_equal(
+    backend_callable(conditional_composition_jit)(branch_x, TRUE),
+    exp(branch_x + 1)
+  )
+  expect_equal(
+    backend_callable(conditional_composition_jit)(branch_x, FALSE),
+    exp(-branch_x + 1)
+  )
+
   logical_branch_jit <- tccq_plan_backend(
     logical_branch_program,
     tccq_rtinycc_backend(),
@@ -1215,6 +1378,29 @@ if (can_build_shared_library("c")) {
   expect_equal(backend_callable(branch_condition_c_shared)(branch_x, TRUE, FALSE), -branch_x)
   expect_equal(backend_callable(branch_condition_c_shared)(branch_x, FALSE, TRUE), -branch_x)
   expect_equal(backend_callable(branch_condition_c_shared)(branch_x, FALSE, FALSE), -branch_x)
+
+  conditional_scalar_c_shared <- tccq_plan_backend(
+    conditional_scalar_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  conditional_composition_c_shared <- tccq_plan_backend(
+    conditional_composition_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(conditional_scalar_c_shared@success)
+  expect_true(conditional_composition_c_shared@success)
+  expect_equal(backend_callable(conditional_scalar_c_shared)(TRUE), 3)
+  expect_equal(backend_callable(conditional_scalar_c_shared)(FALSE), -1)
+  expect_equal(
+    backend_callable(conditional_composition_c_shared)(branch_x, TRUE),
+    exp(branch_x + 1)
+  )
+  expect_equal(
+    backend_callable(conditional_composition_c_shared)(branch_x, FALSE),
+    exp(-branch_x + 1)
+  )
 }
 
 if (can_build_shared_library("fortran")) {
@@ -1259,6 +1445,29 @@ if (can_build_shared_library("fortran")) {
   expect_equal(
     backend_callable(branch_condition_fortran_shared)(branch_x, FALSE, FALSE),
     -branch_x
+  )
+
+  conditional_scalar_fortran_shared <- tccq_plan_backend(
+    conditional_scalar_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  conditional_composition_fortran_shared <- tccq_plan_backend(
+    conditional_composition_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(conditional_scalar_fortran_shared@success)
+  expect_true(conditional_composition_fortran_shared@success)
+  expect_equal(backend_callable(conditional_scalar_fortran_shared)(TRUE), 3)
+  expect_equal(backend_callable(conditional_scalar_fortran_shared)(FALSE), -1)
+  expect_equal(
+    backend_callable(conditional_composition_fortran_shared)(branch_x, TRUE),
+    exp(branch_x + 1)
+  )
+  expect_equal(
+    backend_callable(conditional_composition_fortran_shared)(branch_x, FALSE),
+    exp(-branch_x + 1)
   )
 
   logical_branch_fortran_shared <- tccq_plan_backend(

@@ -92,6 +92,15 @@ operation_expression <- tccq_expression(
   resolved_op = resolved_add
 )
 logical_scalar <- tccq_type("logical")
+combined_effect <- tccq_effect_union(
+  tccq_effect(reads = TRUE),
+  tccq_effect(writes = TRUE, may_error = TRUE)
+)
+expect_true(combined_effect@reads)
+expect_true(combined_effect@writes)
+expect_true(combined_effect@may_error)
+expect_false(combined_effect@allocates)
+expect_false(combined_effect@boundary)
 branch_value <- tccq_branch(
   "value_0003",
   condition = "formal_flag",
@@ -150,6 +159,7 @@ statement_block <- tccq_block(
 )
 
 expect_true(S7::S7_inherits(result_target, TccqWriteTarget))
+expect_equal(result_target@storage_type@shape@rank, 0L)
 expect_true(S7::S7_inherits(consequent_assignment, TccqStatement))
 expect_true(S7::S7_inherits(consequent_assignment, TccqAssignment))
 expect_true(S7::S7_inherits(conditional_statement, TccqConditional))
@@ -172,20 +182,29 @@ statement_interface <- tccq_backend_function_interface(
   kind = "scalar",
   local_names = "local_0001",
   local_value_ids = "formal_flag",
-  local_types = list(logical_scalar),
+  local_storage_types = list(logical_scalar),
   result_value_id = "value_0003",
   result_type = finite@type,
   result_name = "result_0001"
 )
 
 expect_true(S7::S7_inherits(statement_products@body, TccqBlock))
-expect_equal(statement_interface@local_types[[1L]]@base, "logical")
+expect_equal(statement_interface@local_storage_types[[1L]]@base, "logical")
 
-bad_local_target <- tryCatch(
-  tccq_write_target("matrix_local", matrix_type, kind = "local"),
+matrix_local_target <- tccq_write_target("matrix_local", matrix_type, kind = "local")
+expect_equal(matrix_local_target@type@shape@rank, 2L)
+expect_equal(matrix_local_target@storage_type@shape@rank, 0L)
+
+bad_local_storage <- tryCatch(
+  tccq_write_target(
+    "matrix_local",
+    matrix_type,
+    storage_type = matrix_type,
+    kind = "local"
+  ),
   error = identity
 )
-expect_true(inherits(bad_local_target, "error"))
+expect_true(inherits(bad_local_storage, "error"))
 
 bad_statement_products <- tryCatch(
   tccq_backend_products(body = reference_expression, loop_nest = statement_nest),
@@ -200,7 +219,7 @@ bad_statement_interface <- tryCatch(
     kind = "scalar",
     local_names = "local_0001",
     local_value_ids = character(),
-    local_types = list(logical_scalar),
+    local_storage_types = list(logical_scalar),
     result_value_id = "value_0003",
     result_type = finite@type,
     result_name = "result_0001"

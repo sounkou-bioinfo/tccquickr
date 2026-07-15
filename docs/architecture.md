@@ -267,12 +267,18 @@ Fortran `logical(c_bool)`, or TinyCC `bool`; wrappers reject a missing condition
 instead of mapping it to a Boolean. The current loop-nest planner accepts the
 branch as a result and lowers it into a `TccqBlock`. Pure branches may nest in
 result arms because both source emitters recursively assign through the same
-typed target. A branch used directly as another branch's condition first writes
-a typed scalar local declared by `TccqBackendFunctionInterface`; the outer
-conditional reads that local through an ordinary typed access. Branch-local
-reductions and contractions stop until their loop nests can be scheduled inside
-the selected arm, and a branch embedded in an ordinary operation stops until
-the expression normalizer can sequence it explicitly.
+typed target. A branch used directly as another branch's condition or below a
+pure elementwise operation first writes a block-owned target, and its consumer
+reads that target through an ordinary typed access. `TccqWriteTarget` retains
+the full semantic value type and separately records the scalar storage type
+written in one loop iteration. `TccqBackendFunctionInterface` assigns stable
+names to those locals; C compound blocks and Fortran `block` constructs declare
+them at the owning statement block. Each block effect is the conservative union
+of its statement effects, including control normalized below a pure operation.
+Branch-local reductions and contractions
+stop until their loop nests can be scheduled inside the selected arm. A
+reduction or contraction whose operand contains control stops separately until
+reducer bodies can consume statement-produced values.
 
 `for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
 idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and

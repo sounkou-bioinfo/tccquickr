@@ -14,7 +14,7 @@ TccqBackendFunctionInterface(
   parameter_types = list(),
   local_names = character(0),
   local_value_ids = character(0),
-  local_types = list(),
+  local_storage_types = list(),
   result_value_id = character(0),
   result_type = TccqType(),
   result_placement = character(0),
@@ -48,7 +48,7 @@ TccqBackendFunctionInterface(
 
 \item{local_value_ids}{Neutral value ids corresponding to locals.}
 
-\item{local_types}{Declared semantic types corresponding to locals.}
+\item{local_storage_types}{Scalar storage types corresponding to locals.}
 
 \item{result_value_id}{Lowered result value id.}
 
