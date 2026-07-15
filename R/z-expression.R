@@ -1397,7 +1397,7 @@ tccq_program_loop_nests <- function(program) {
             domain,
             kind = "recycle",
             index_map = lapply(axis_names, function(name) tccq_index_expr(name, 0L)),
-            attrs = list(consumer_dims = iteration_dims)
+            consumer_shape = tccq_shape(iteration_dims)
           )
         }
       }

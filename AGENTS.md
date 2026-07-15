@@ -326,8 +326,10 @@ For the reset core, keep these rules explicit:
   schedule abstraction. Each nest carries ordered `TccqLoopAxis` values
   (`map` produces output positions, `reduce` folds into an accumulator), a
   value-expression or typed-statement-block body whose references carry typed
-  `TccqAccess`/`TccqIndexExpr` affine access maps, an optional reducer with
-  identity and typed scalar accumulator target, a typed materialized
+  `TccqAccess`/`TccqIndexExpr` affine access maps. A recycle access owns its
+  typed consumer shape; `TccqAccess` has no `attrs` escape hatch. Each nest
+  also owns an optional reducer with identity and typed scalar accumulator
+  target, a typed materialized
   `TccqStorageSlot` owning the result identity and type, and an output access.
   The accumulator and materialized result are distinct values even when both
   are scalar. Loop nests and backend function interfaces are closed schemas;

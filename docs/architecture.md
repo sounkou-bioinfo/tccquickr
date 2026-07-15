@@ -261,7 +261,9 @@ references carry `TccqExpressionReference` payloads. That payload separates the
 expression value id from its logical source value id and owns its optional
 symbol, lexical binding, slice offsets, and typed `TccqAccess` map of affine
 `TccqIndexExpr` values. It does not identify physical storage; that remains a
-`TccqStorageAllocation`. Each nest also carries an optional reducer with its
+`TccqStorageAllocation`. `TccqAccess` is also closed: a recycle access owns the
+typed consumer shape whose axis order is linearized, while every other access
+has no consumer shape. Each nest also carries an optional reducer with its
 identity and an output access; intermediate nests additionally name the scalar
 or temporary buffer their result materializes. `TccqExpression` has no open
 metadata channel: every expression carries a typed effect, and an operation

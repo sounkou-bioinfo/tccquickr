@@ -3182,6 +3182,11 @@ expect_true(recycle_center_nests@success)
 recycle_center_access <-
   recycle_center_nests@value[[1L]]@body@inputs[[2L]]@reference@access
 expect_equal(recycle_center_access@kind, "recycle")
+expect_equal(recycle_center_access@consumer_shape@rank, 2L)
+expect_equal(
+  vapply(recycle_center_access@consumer_shape@dims, function(dim) dim@label, character(1)),
+  c("n", "p")
+)
 
 # R refuses non-conformable arrays; so does the domain policy.
 recycle_nonconformable <- function(x, y) {

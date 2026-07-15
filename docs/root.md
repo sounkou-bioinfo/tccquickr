@@ -11,7 +11,9 @@ Neutral expressions are closed typed values rather than metadata bags. Every
 `TccqExpression` owns its effect, references own
 `TccqExpressionReference`, and operation nodes own the complete
 `TccqLoweredOperation` selected by lowering. The latter is the one path to the
-resolved implementation used by source printers.
+resolved implementation used by source printers. A recycling `TccqAccess` owns
+its `TccqShape` consumer order directly; access metadata is not a secondary
+shape protocol.
 
 The current useful center is the typed loop-nest path. Elementwise maps,
 reductions, axis reductions, contractions, intermediate materialization,

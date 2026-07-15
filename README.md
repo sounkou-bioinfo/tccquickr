@@ -274,8 +274,10 @@ expressions own no allocation, and guarded buffers remain distinct.
 the body: `colSums(x) / n` reads the extent parameter already carried by
 the ABI. Rank-mixed operands follow R’s recycling rule with GNU-R as the
 oracle. A shorter operand recycles over column-major order through a
-typed modulo-linear access only when divisibility is provable;
-non-conformable arrays are refused as R refuses them.
+typed modulo-linear access only when divisibility is provable. That
+`TccqAccess` owns the typed consumer shape used to linearize the logical
+axis order; it does not pass dimensions to the printer through metadata.
+Non-conformable arrays are refused as R refuses them.
 
 Compilation succeeds when at least one backend produces a working plan;
 a backend that cannot lower a program reports typed feasibility

@@ -9,7 +9,7 @@ tccq_access(
   domain,
   kind = "identity",
   index_map = list(),
-  attrs = list()
+  consumer_shape = NULL
 )
 }
 \arguments{
@@ -21,7 +21,8 @@ tccq_access(
 
 \item{index_map}{Structured index-map payload.}
 
-\item{attrs}{Structured access attributes.}
+\item{consumer_shape}{Logical consumer shape for recycling, or \code{NULL} for
+other access kinds.}
 }
 \description{
 Construct a domain access mapping

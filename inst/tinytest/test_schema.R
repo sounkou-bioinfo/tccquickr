@@ -561,6 +561,26 @@ expect_true(inherits(bad_slice_reference, "error"))
 
 domain <- tccq_domain("d_matrix", matrix_type@shape, axes = c("i", "j"))
 access <- tccq_access("m1", domain)
+recycle_access <- tccq_access(
+  "m1",
+  domain,
+  kind = "recycle",
+  index_map = list(tccq_index_expr("i"), tccq_index_expr("j")),
+  consumer_shape = matrix_type@shape
+)
+missing_recycle_shape <- tryCatch(
+  tccq_access(
+    "m1",
+    domain,
+    kind = "recycle",
+    index_map = list(tccq_index_expr("i"), tccq_index_expr("j"))
+  ),
+  error = identity
+)
+unexpected_consumer_shape <- tryCatch(
+  tccq_access("m1", domain, consumer_shape = matrix_type@shape),
+  error = identity
+)
 bad_access_reference <- tryCatch(
   tccq_expression_reference("formal_0001", access = access),
   error = identity
@@ -579,9 +599,13 @@ fusion <- tccq_fusion_group(
 
 expect_true(S7::S7_inherits(domain, TccqDomain))
 expect_true(S7::S7_inherits(access, TccqAccess))
+expect_true(S7::S7_inherits(recycle_access@consumer_shape, TccqShape))
+expect_true(inherits(missing_recycle_shape, "error"))
+expect_true(inherits(unexpected_consumer_shape, "error"))
 expect_true(S7::S7_inherits(fusion, TccqFusionGroup))
 expect_equal(domain@axes, c("i", "j"))
 expect_equal(access@kind, "identity")
+expect_null(access@consumer_shape)
 expect_equal(fusion@kind, "map")
 expect_equal(fusion@region_kind, "parallel")
 

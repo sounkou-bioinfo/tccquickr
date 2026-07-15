@@ -2014,7 +2014,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (identical(access@kind, "recycle")) {
           consumer_linear <- linear_index_text(
             access,
-            access@attrs$consumer_dims,
+            access@consumer_shape@dims,
             emit_context$extent_by_symbol
           )
           length_text <- paste(

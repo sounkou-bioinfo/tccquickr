@@ -807,7 +807,8 @@ TccqBranch <- S7::new_class(
 #' @param domain Access domain.
 #' @param kind Access kind.
 #' @param index_map Structured index-map payload.
-#' @param attrs Structured access attributes.
+#' @param consumer_shape Logical consumer shape for recycling, or `NULL` for
+#'   other access kinds.
 #' @export
 TccqAccess <- S7::new_class(
   "TccqAccess",
@@ -817,7 +818,7 @@ TccqAccess <- S7::new_class(
     domain = TccqDomain,
     kind = S7::class_character,
     index_map = S7::class_list,
-    attrs = S7::class_list
+    consumer_shape = S7::new_union(NULL, TccqShape)
   ),
   validator = function(self) {
     problems <- character()
@@ -840,6 +841,20 @@ TccqAccess <- S7::new_class(
     referenced_axes <- setdiff(unique(index_axes), "")
     if (length(setdiff(referenced_axes, self@domain@axes)) > 0L) {
       problems <- c(problems, "@index_map may only reference @domain axes")
+    }
+    has_consumer_shape <- S7::S7_inherits(self@consumer_shape, TccqShape)
+    if (identical(self@kind, "recycle") && !has_consumer_shape) {
+      problems <- c(problems, "recycle accesses must carry @consumer_shape")
+    }
+    if (!identical(self@kind, "recycle") && has_consumer_shape) {
+      problems <- c(problems, "only recycle accesses may carry @consumer_shape")
+    }
+    if (
+      identical(self@kind, "recycle") &&
+        has_consumer_shape &&
+        length(self@index_map) != self@consumer_shape@rank
+    ) {
+      problems <- c(problems, "recycle @index_map length must match @consumer_shape rank")
     }
     if (length(problems) > 0L) problems
   }
@@ -2036,14 +2051,15 @@ tccq_branch <- function(
 #' @param domain Access domain.
 #' @param kind Access kind.
 #' @param index_map Structured index-map payload.
-#' @param attrs Structured access attributes.
+#' @param consumer_shape Logical consumer shape for recycling, or `NULL` for
+#'   other access kinds.
 #' @export
 tccq_access <- function(
   value_id,
   domain,
   kind = "identity",
   index_map = list(),
-  attrs = list()
+  consumer_shape = NULL
 ) {
   .tccq_check_character_scalar(value_id, "value_id")
   .tccq_check_s7(domain, TccqDomain, "TccqDomain", "domain")
@@ -2060,16 +2076,19 @@ tccq_access <- function(
   if (!is.list(index_map)) {
     tccq_abort("schema.invalid_index_map", "`index_map` must be a list.")
   }
-  if (!is.list(attrs)) {
-    tccq_abort("schema.invalid_attrs", "`attrs` must be a list.")
-  }
+  .tccq_check_optional_s7(
+    consumer_shape,
+    TccqShape,
+    "TccqShape",
+    "consumer_shape"
+  )
 
   TccqAccess(
     value_id = value_id,
     domain = domain,
     kind = kind,
     index_map = index_map,
-    attrs = attrs
+    consumer_shape = consumer_shape
   )
 }
 

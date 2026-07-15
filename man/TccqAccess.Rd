@@ -9,7 +9,7 @@ TccqAccess(
   domain = TccqDomain(),
   kind = character(0),
   index_map = list(),
-  attrs = list()
+  consumer_shape = NULL
 )
 }
 \arguments{
@@ -21,7 +21,8 @@ TccqAccess(
 
 \item{index_map}{Structured index-map payload.}
 
-\item{attrs}{Structured access attributes.}
+\item{consumer_shape}{Logical consumer shape for recycling, or \code{NULL} for
+other access kinds.}
 }
 \description{
 Access describes how a value is read or written over a domain. It is the
