@@ -18,8 +18,10 @@ The first control value is now real rather than a syntax exception. A pure R
 `if` becomes `TccqBranch`, retains its special-form forcing semantics, joins
 identically typed arms, and reaches C, TinyCC, and Fortran as a conditional
 statement over a typed logical ABI parameter. The current loop-nest planner
-only accepts that branch as its result expression; nested branches and
-branch-local reductions stop with structured loop-nest diagnostics.
+accepts that branch as its result expression and recursively emits pure branches
+nested in either result arm. Branch-valued conditions and branch-local
+reductions stop with structured loop-nest diagnostics until typed temporary and
+branch-local scheduling exist.
 
 The remaining north-star pressure is statement-valued control and evaluator
 structure. Viterbi and smaller probes around `switch`, loops, `repeat`,

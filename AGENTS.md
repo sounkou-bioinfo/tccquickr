@@ -196,9 +196,10 @@ For the reset core, keep these rules explicit:
   logical condition, an explicit `else`, identical pure arm types, and is the
   result expression of one loop nest. A missing condition remains a possible
   runtime error; native call boundaries must reject it rather than coerce it.
-  Nested branches and branch-local
-  reductions must deepen statement/region planning rather than evaluate arms
-  eagerly or use a target ternary shortcut.
+  Pure branches may nest in either result arm and source emitters recurse over
+  the same typed value. A branch used as another branch's condition and
+  branch-local reductions must deepen temporary/region planning rather than
+  evaluate control eagerly or use a target ternary shortcut.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.

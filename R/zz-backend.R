@@ -2175,15 +2175,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       emit_branch_assignment <- function(target, branch) {
         condition_text <- expression_text(branch@inputs[[1L]], emit_context)
-        consequent_text <- expression_text(branch@inputs[[2L]], emit_context)
-        alternative_text <- expression_text(branch@inputs[[3L]], emit_context)
         push(sprintf("if (%s) {", condition_text))
         depth <<- depth + 1L
-        push(sprintf("%s = %s;", target, consequent_text))
+        if (identical(branch@inputs[[2L]]@kind, "branch")) {
+          emit_branch_assignment(target, branch@inputs[[2L]])
+        } else {
+          push(sprintf("%s = %s;", target, expression_text(branch@inputs[[2L]], emit_context)))
+        }
         depth <<- depth - 1L
         push("} else {")
         depth <<- depth + 1L
-        push(sprintf("%s = %s;", target, alternative_text))
+        if (identical(branch@inputs[[3L]]@kind, "branch")) {
+          emit_branch_assignment(target, branch@inputs[[3L]])
+        } else {
+          push(sprintf("%s = %s;", target, expression_text(branch@inputs[[3L]], emit_context)))
+        }
         depth <<- depth - 1L
         push("}")
       }
@@ -2409,15 +2415,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       emit_branch_assignment <- function(target, branch) {
         condition_text <- expression_text(branch@inputs[[1L]], emit_context)
-        consequent_text <- expression_text(branch@inputs[[2L]], emit_context)
-        alternative_text <- expression_text(branch@inputs[[3L]], emit_context)
         push(sprintf("if (%s) then", condition_text))
         depth <<- depth + 1L
-        push(sprintf("%s = %s", target, consequent_text))
+        if (identical(branch@inputs[[2L]]@kind, "branch")) {
+          emit_branch_assignment(target, branch@inputs[[2L]])
+        } else {
+          push(sprintf("%s = %s", target, expression_text(branch@inputs[[2L]], emit_context)))
+        }
         depth <<- depth - 1L
         push("else")
         depth <<- depth + 1L
-        push(sprintf("%s = %s", target, alternative_text))
+        if (identical(branch@inputs[[3L]]@kind, "branch")) {
+          emit_branch_assignment(target, branch@inputs[[3L]])
+        } else {
+          push(sprintf("%s = %s", target, expression_text(branch@inputs[[3L]], emit_context)))
+        }
         depth <<- depth - 1L
         push("end if")
       }

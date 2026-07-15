@@ -581,18 +581,21 @@ tccq_program_loop_nests <- function(program) {
     )))
   }
   if (identical(root@kind, "branch")) {
-    nested_branch <- any(vapply(root@inputs, expression_contains, logical(1), predicate = function(expression) {
-      identical(expression@kind, "branch")
-    }))
+    branch_condition_is_control <- expression_contains(root, function(expression) {
+      identical(expression@kind, "branch") && expression_contains(
+        expression@inputs[[1L]],
+        function(input) identical(input@kind, "branch")
+      )
+    })
     branch_materializes <- any(vapply(root@inputs, expression_contains, logical(1), predicate = function(expression) {
       operation <- expression@attrs$operation
       S7::S7_inherits(operation, TccqLoweredOperation) &&
         operation@family %in% c("reduction", "contraction")
     }))
-    if (nested_branch) {
+    if (branch_condition_is_control) {
       return(failed(nest_diagnostic(
-        "loop_nest.nested_branch",
-        "Nested conditionals need statement-valued expression planning before source emission.",
+        "loop_nest.branch_condition",
+        "A conditional used as another branch condition needs a typed temporary.",
         data = list(value_id = root@value_id)
       )))
     }

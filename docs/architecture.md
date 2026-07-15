@@ -263,10 +263,12 @@ Control flow is entering as structured IR. A pure scalar `if` with an explicit
 scalar logical, and its backend interface preserves that type as C `bool`,
 Fortran `logical(c_bool)`, or TinyCC `bool`; wrappers reject a missing condition
 instead of mapping it to a Boolean. The current loop-nest planner accepts the
-branch as a result expression and emits statement-valued control; nested
-branches and branch-local reductions or contractions stop with classed loop-nest
-diagnostics because evaluating either arm ahead of the condition would violate
-R.
+branch as a result expression and emits statement-valued control. Pure branches
+may nest in result arms because both source emitters recursively assign through
+the same target. A branch used as another branch's condition stops until a
+typed temporary can be scheduled before the outer branch; branch-local
+reductions and contractions stop until their loop nests can be scheduled inside
+the selected arm.
 
 `for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
 idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and

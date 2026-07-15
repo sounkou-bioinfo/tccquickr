@@ -1048,14 +1048,50 @@ for (backend in list(tccq_c_backend(), tccq_fortran_backend())) {
 
 nested_branch <- function(x, flag, other) {
   declare(type(x = double(n), flag = logical(), other = logical()))
-  if (flag) if (other) x else -x else x
+  if (flag) if (other) x else -x else if (other) -x else x
 }
 nested_branch_program <- tccq_analyze(nested_branch, strict = TRUE)@value
 nested_branch_nests <- tccq_program_loop_nests(nested_branch_program)
-expect_false(nested_branch_nests@success)
+expect_true(nested_branch_nests@success)
+expect_equal(nested_branch_nests@value[[1L]]@body@kind, "branch")
+expect_equal(nested_branch_nests@value[[1L]]@body@inputs[[2L]]@kind, "branch")
+expect_equal(nested_branch_nests@value[[1L]]@body@inputs[[3L]]@kind, "branch")
+
+nested_branch_c <- tccq_plan_backend(nested_branch_program, tccq_c_backend())
+nested_branch_fortran <- tccq_plan_backend(nested_branch_program, tccq_fortran_backend())
+expect_true(nested_branch_c@success)
+expect_true(nested_branch_fortran@success)
+expect_true(grepl(
+  "if (input_0002) {",
+  backend_source(nested_branch_c),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "if (input_0003) {",
+  backend_source(nested_branch_c),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "if (input_0002) then",
+  backend_source(nested_branch_fortran),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "if (input_0003) then",
+  backend_source(nested_branch_fortran),
+  fixed = TRUE
+))
+
+branch_condition <- function(x, flag, other) {
+  declare(type(x = double(n), flag = logical(), other = logical()))
+  if (if (flag) other else flag) x else -x
+}
+branch_condition_program <- tccq_analyze(branch_condition, strict = TRUE)@value
+branch_condition_nests <- tccq_program_loop_nests(branch_condition_program)
+expect_false(branch_condition_nests@success)
 expect_true(any(vapply(
-  nested_branch_nests@diagnostics,
-  function(diagnostic) identical(diagnostic@code, "loop_nest.nested_branch"),
+  branch_condition_nests@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "loop_nest.branch_condition"),
   logical(1)
 )))
 
@@ -1094,6 +1130,17 @@ if (rtinycc_jit_available) {
   expect_true(inherits(missing_condition, "tccq_error"))
   expect_equal(tccq_condition_diagnostic(missing_condition)@code, "runtime.invalid_logical_condition")
 
+  nested_branch_jit <- tccq_plan_backend(
+    nested_branch_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(nested_branch_jit@success)
+  expect_equal(backend_callable(nested_branch_jit)(branch_x, TRUE, TRUE), branch_x)
+  expect_equal(backend_callable(nested_branch_jit)(branch_x, TRUE, FALSE), -branch_x)
+  expect_equal(backend_callable(nested_branch_jit)(branch_x, FALSE, TRUE), -branch_x)
+  expect_equal(backend_callable(nested_branch_jit)(branch_x, FALSE, FALSE), branch_x)
+
   logical_branch_jit <- tccq_plan_backend(
     logical_branch_program,
     tccq_rtinycc_backend(),
@@ -1113,6 +1160,17 @@ if (can_build_shared_library("fortran")) {
   expect_true(branch_fortran_shared@success)
   expect_equal(backend_callable(branch_fortran_shared)(branch_x, TRUE), branch_x)
   expect_equal(backend_callable(branch_fortran_shared)(branch_x, FALSE), -branch_x)
+
+  nested_branch_fortran_shared <- tccq_plan_backend(
+    nested_branch_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(nested_branch_fortran_shared@success)
+  expect_equal(backend_callable(nested_branch_fortran_shared)(branch_x, TRUE, TRUE), branch_x)
+  expect_equal(backend_callable(nested_branch_fortran_shared)(branch_x, TRUE, FALSE), -branch_x)
+  expect_equal(backend_callable(nested_branch_fortran_shared)(branch_x, FALSE, TRUE), -branch_x)
+  expect_equal(backend_callable(nested_branch_fortran_shared)(branch_x, FALSE, FALSE), branch_x)
 
   logical_branch_fortran_shared <- tccq_plan_backend(
     logical_branch_program,

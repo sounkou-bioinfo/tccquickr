@@ -148,9 +148,10 @@ and identical arm types lowers to `TccqBranch`. The branch retains the special
 forcing facts from `TccqCallSemantics`; C and Fortran emit conditional
 statements, so the unselected arm is not evaluated, and native call boundaries
 reject a missing condition as R does. The current loop-nest planner accepts a
-branch as the result expression. Nested branches and reductions or contractions
-inside an arm stop with loop-nest diagnostics until statement-valued regions
-and branch-local nests exist.
+branch as the result expression and permits pure branches to nest in either
+result arm. A branch used as another branch's condition and reductions or
+contractions inside an arm stop with loop-nest diagnostics until typed
+temporaries and branch-local nests exist.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in declared
 dimension symbols. Locals are single-assignment bindings.
@@ -242,6 +243,10 @@ probes <- list(
   conditional_map = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
     if (flag) x else -x
+  },
+  nested_conditional_map = function(x, primary, secondary) {
+    declare(type(x = double(n), primary = logical(), secondary = logical()))
+    if (primary) if (secondary) x else -x else x
   },
   control_flow_probe = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
