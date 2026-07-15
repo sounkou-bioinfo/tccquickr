@@ -2,15 +2,15 @@
 % Please edit documentation in R/z-expression.R
 \name{tccq_expression_tree}
 \alias{tccq_expression_tree}
-\title{Build a backend-neutral expression tree from a lowered program}
+\title{Build a backend-neutral expression tree from a lowered value graph}
 \usage{
-tccq_expression_tree(program, value_id = program@result)
+tccq_expression_tree(graph, value_id = NULL)
 }
 \arguments{
-\item{program}{Lowered program.}
+\item{graph}{Lowered value graph.}
 
 \item{value_id}{Result value id to root the expression tree at.}
 }
 \description{
-Build a backend-neutral expression tree from a lowered program
+Build a backend-neutral expression tree from a lowered value graph
 }

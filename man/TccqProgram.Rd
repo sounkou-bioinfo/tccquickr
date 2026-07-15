@@ -5,12 +5,12 @@
 \title{Program schema}
 \usage{
 TccqProgram(
+  values = list(),
+  result = NULL,
   name = character(0),
   formals = list(),
   schedule = NULL,
-  values = list(),
   regions = list(),
-  result = NULL,
   diagnostics = list(),
   call_index = NULL,
   storage_plan = NULL,
@@ -18,17 +18,17 @@ TccqProgram(
 )
 }
 \arguments{
+\item{values}{List of IR values.}
+
+\item{result}{Result value id or object.}
+
 \item{name}{Program name.}
 
 \item{formals}{Named list of formal bindings.}
 
 \item{schedule}{Optional ordered program evaluation schedule.}
 
-\item{values}{List of IR values.}
-
 \item{regions}{List of executable code regions.}
-
-\item{result}{Result value id or object.}
 
 \item{diagnostics}{List of diagnostics attached to the program.}
 

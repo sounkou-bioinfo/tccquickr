@@ -9,3 +9,4 @@ docs/**/*_files/
 tccquickr*tar.gz
 tccquickr.Rcheck/*
 .sync/
+.pi/

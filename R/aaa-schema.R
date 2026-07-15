@@ -615,22 +615,38 @@ TccqEvaluationStep <- S7::new_class(
   }
 )
 
+#' Backend-neutral program body
+#'
+#' Marker parent for typed structured program bodies. Concrete bodies add
+#' lexical scope, statements, and value-completion contracts in the neutral
+#' expression layer.
+#'
+#' @export
+TccqProgramBody <- S7::new_class(
+  "TccqProgramBody",
+  package = "tccquickr"
+)
+
 #' Ordered program evaluation schedule
 #'
 #' The schedule is the semantic owner of top-level R evaluation order. Its
-#' steps are contiguous after declarations are removed, and its final step
-#' produces the program result. Loop-nest planning consumes this value rather
-#' than reconstructing statement order from value ids or source text.
+#' linear steps are contiguous after declarations are removed. A structured
+#' body is the mutually exclusive control-flow form. In either form, the
+#' schedule produces the declared program result. Lowering and backend planning
+#' consume this value rather than reconstructing statement order from value ids
+#' or source text.
 #'
 #' @param steps Ordered `TccqEvaluationStep` values.
 #' @param result Result value id produced by the final step.
+#' @param body Optional structured value-producing body.
 #' @export
 TccqProgramSchedule <- S7::new_class(
   "TccqProgramSchedule",
   package = "tccquickr",
   properties = list(
     steps = S7::class_list,
-    result = S7::class_character
+    result = S7::class_character,
+    body = S7::new_union(NULL, TccqProgramBody)
   ),
   validator = function(self) {
     problems <- character()
@@ -646,10 +662,13 @@ TccqProgramSchedule <- S7::new_class(
     if (length(self@result) != 1L || is.na(self@result) || !nzchar(self@result)) {
       problems <- c(problems, "@result must be a single non-empty value id")
     }
+    if (!is.null(self@body) && length(self@steps) > 0L) {
+      problems <- c(problems, "@steps and @body are mutually exclusive schedule forms")
+    }
     if (all(steps_are_typed)) {
-      if (length(self@steps) == 0L) {
+      if (length(self@steps) == 0L && is.null(self@body)) {
         problems <- c(problems, "@steps must contain the result evaluation")
-      } else {
+      } else if (length(self@steps) > 0L) {
         statement_indices <- vapply(
           self@steps,
           function(step) step@statement_index,
@@ -1229,6 +1248,47 @@ TccqStoragePlan <- S7::new_class(
   }
 )
 
+#' Typed lowered value graph
+#'
+#' This parent owns the value graph shared by lowering plans and programs. It
+#' gives expression construction one typed input contract without coupling the
+#' neutral expression layer to either pipeline container.
+#'
+#' @param values List of lowered IR values.
+#' @param result Result value id, or `NULL` when no expression was lowered.
+#' @export
+TccqValueGraph <- S7::new_class(
+  "TccqValueGraph",
+  package = "tccquickr",
+  properties = list(
+    values = S7::class_list,
+    result = S7::class_any
+  ),
+  validator = function(self) {
+    problems <- character()
+    values_are_tccq_values <- vapply(
+      self@values,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqValue
+    )
+    if (!all(values_are_tccq_values)) {
+      problems <- c(problems, "@values must contain only <TccqValue> values")
+    }
+    if (!is.null(self@result)) {
+      if (length(self@result) != 1L || is.na(self@result) || !nzchar(self@result)) {
+        problems <- c(problems, "@result must be NULL or one non-empty value id")
+      } else if (all(values_are_tccq_values)) {
+        value_ids <- vapply(self@values, function(value) value@id, character(1))
+        if (!self@result %in% value_ids) {
+          problems <- c(problems, "@result must identify a value in @values")
+        }
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Lowering plan
 #'
 #' A lowering plan is the typed result of lowering declared R language objects
@@ -1247,18 +1307,16 @@ TccqStoragePlan <- S7::new_class(
 TccqLoweringPlan <- S7::new_class(
   "TccqLoweringPlan",
   package = "tccquickr",
+  parent = TccqValueGraph,
   properties = list(
-    values = S7::class_list,
     schedule = S7::new_union(NULL, TccqProgramSchedule),
     regions = S7::class_list,
-    result = S7::class_any,
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
     diagnostics = S7::class_list,
     attrs = S7::class_list
   ),
   validator = function(self) {
     problems <- character()
-    values_are_tccq_values <- vapply(self@values, S7::S7_inherits, logical(1), class = TccqValue)
     regions_are_tccq_regions <- vapply(self@regions, S7::S7_inherits, logical(1), class = TccqRegion)
     diagnostics_are_tccq_diagnostics <- vapply(
       self@diagnostics,
@@ -1266,16 +1324,8 @@ TccqLoweringPlan <- S7::new_class(
       logical(1),
       class = TccqDiagnostic
     )
-    if (!all(values_are_tccq_values)) {
-      problems <- c(problems, "@values must contain only <TccqValue> values")
-    }
     if (!all(regions_are_tccq_regions)) {
       problems <- c(problems, "@regions must contain only <TccqRegion> values")
-    }
-    if (!is.null(self@result)) {
-      if (length(self@result) != 1L || is.na(self@result) || !nzchar(self@result)) {
-        problems <- c(problems, "@result must be NULL or one non-empty value id")
-      }
     }
     if (!all(diagnostics_are_tccq_diagnostics)) {
       problems <- c(problems, "@diagnostics must contain only <TccqDiagnostic> values")
@@ -1303,13 +1353,12 @@ TccqLoweringPlan <- S7::new_class(
 TccqProgram <- S7::new_class(
   "TccqProgram",
   package = "tccquickr",
+  parent = TccqValueGraph,
   properties = list(
     name = S7::class_character,
     formals = S7::class_list,
     schedule = S7::new_union(NULL, TccqProgramSchedule),
-    values = S7::class_list,
     regions = S7::class_list,
-    result = S7::class_any,
     diagnostics = S7::class_list,
     call_index = S7::new_union(NULL, TccqCallIndex),
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
@@ -1321,7 +1370,6 @@ TccqProgram <- S7::new_class(
       problems <- c(problems, "@name must be a single non-empty string")
     }
     formals_are_tccq_bindings <- vapply(self@formals, S7::S7_inherits, logical(1), class = TccqBinding)
-    values_are_tccq_values <- vapply(self@values, S7::S7_inherits, logical(1), class = TccqValue)
     regions_are_tccq_regions <- vapply(self@regions, S7::S7_inherits, logical(1), class = TccqRegion)
     diagnostics_are_tccq_diagnostics <- vapply(
       self@diagnostics,
@@ -1331,9 +1379,6 @@ TccqProgram <- S7::new_class(
     )
     if (!all(formals_are_tccq_bindings)) {
       problems <- c(problems, "@formals must contain only <TccqBinding> values")
-    }
-    if (!all(values_are_tccq_values)) {
-      problems <- c(problems, "@values must contain only <TccqValue> values")
     }
     if (!all(regions_are_tccq_regions)) {
       problems <- c(problems, "@regions must contain only <TccqRegion> values")
@@ -1758,13 +1803,13 @@ tccq_evaluation_step <- function(
 #' Construct an ordered program evaluation schedule
 #'
 #' `values` is the lowered value graph used to verify references, binding
-#' types, dominance, and complete step effects. It is checked at this boundary
-#' but is not duplicated inside the schedule.
+#' types, dominance, complete step effects, and structured-body cell ownership.
+#' It is checked at this boundary but is not duplicated inside the schedule.
 #'
 #' @inheritParams TccqProgramSchedule
 #' @param values Lowered values referenced by the schedule.
 #' @export
-tccq_program_schedule <- function(steps, result, values) {
+tccq_program_schedule <- function(steps, result, values, body = NULL) {
   .tccq_check_list_of(
     steps,
     TccqEvaluationStep,
@@ -1773,6 +1818,15 @@ tccq_program_schedule <- function(steps, result, values) {
   )
   .tccq_check_character_scalar(result, "result")
   .tccq_check_list_of(values, TccqValue, "TccqValue", "values")
+  .tccq_check_optional_s7(body, TccqProgramBody, "TccqProgramBody", "body")
+  if (!is.null(body) && length(steps) > 0L) {
+    tccq_abort(
+      "schema.ambiguous_program_schedule",
+      "A program schedule cannot carry both linear steps and a structured body.",
+      phase = "schema",
+      path = "program_schedule"
+    )
+  }
 
   value_ids <- vapply(values, function(value) value@id, character(1))
   if (anyDuplicated(value_ids)) {
@@ -1785,6 +1839,237 @@ tccq_program_schedule <- function(steps, result, values) {
   }
   values_by_id <- values
   names(values_by_id) <- value_ids
+
+  if (!is.null(body)) {
+    if (!S7::S7_inherits(body, TccqValueBlock)) {
+      tccq_abort(
+        "schema.invalid_program_body",
+        "A structured program schedule must carry a value-producing body.",
+        phase = "schema",
+        path = "program_schedule.body"
+      )
+    }
+    if (!result %in% value_ids) {
+      tccq_abort(
+        "schema.unknown_schedule_value",
+        "The structured schedule result is outside the lowered value graph.",
+        phase = "schema",
+        path = "program_schedule.result",
+        data = list(value_id = result)
+      )
+    }
+    if (!identical(body@result@value_id, result)) {
+      tccq_abort(
+        "schema.program_body_result_mismatch",
+        "The structured body and schedule must produce the same result value.",
+        phase = "schema",
+        path = "program_schedule.body.result",
+        data = list(schedule_result = result, body_result = body@result@value_id)
+      )
+    }
+    if (!identical(body@result@kind, "result")) {
+      tccq_abort(
+        "schema.invalid_program_result_target",
+        "A structured program body must expose one result write target.",
+        phase = "schema",
+        path = "program_schedule.body.result",
+        data = list(value_id = body@result@value_id, kind = body@result@kind)
+      )
+    }
+
+    validate_graph_target <- function(target, owner_id) {
+      graph_value <- values_by_id[[target@value_id]]
+      if (is.null(graph_value)) {
+        tccq_abort(
+          "schema.unknown_program_target",
+          "A structured-body write target is outside the lowered value graph.",
+          phase = "schema",
+          path = "program_schedule.body.targets",
+          data = list(owner = owner_id, value_id = target@value_id)
+        )
+      }
+      if (!identical(target@type, graph_value@type)) {
+        tccq_abort(
+          "schema.program_target_type_mismatch",
+          "A structured-body write target disagrees with its lowered graph value type.",
+          phase = "schema",
+          path = "program_schedule.body.targets",
+          data = list(owner = owner_id, value_id = target@value_id)
+        )
+      }
+      invisible(NULL)
+    }
+    validate_graph_target(body@result, body@id)
+
+    cell_targets <- Filter(
+      function(target) identical(target@kind, "cell"),
+      body@locals
+    )
+    cell_ids <- vapply(cell_targets, function(target) target@value_id, character(1))
+    cells_by_id <- cell_targets
+    names(cells_by_id) <- cell_ids
+
+    validate_target <- function(target, owner_id, visible_local_targets) {
+      if (identical(target@kind, "cell")) {
+        owned_target <- cells_by_id[[target@value_id]]
+        if (is.null(owned_target) || !identical(owned_target, target)) {
+          tccq_abort(
+            "schema.unowned_program_cell",
+            "Every cell write must target an exact cell declared by the program body.",
+            phase = "schema",
+            path = "program_schedule.body.cells",
+            data = list(owner = owner_id, cell = target@value_id)
+          )
+        }
+        return(invisible(NULL))
+      }
+
+      validate_graph_target(target, owner_id)
+      if (identical(target@kind, "local")) {
+        owned_target <- visible_local_targets[[target@value_id]]
+        if (is.null(owned_target) || !identical(owned_target, target)) {
+          tccq_abort(
+            "schema.unowned_program_local",
+            "Every local write must target an exact local visible from its block.",
+            phase = "schema",
+            path = "program_schedule.body.locals",
+            data = list(owner = owner_id, value_id = target@value_id)
+          )
+        }
+      } else if (!identical(target, body@result)) {
+        tccq_abort(
+          "schema.unowned_program_result",
+          "Every result write must target the structured program body's exact result.",
+          phase = "schema",
+          path = "program_schedule.body.result",
+          data = list(owner = owner_id, value_id = target@value_id)
+        )
+      }
+      invisible(NULL)
+    }
+
+    validate_expression <- function(expression, initialized_cells, statement_id) {
+      if (!expression@value_id %in% value_ids) {
+        tccq_abort(
+          "schema.unknown_program_expression",
+          "A structured-body expression is outside the lowered value graph.",
+          phase = "schema",
+          path = "program_schedule.body.expression",
+          data = list(statement = statement_id, value_id = expression@value_id)
+        )
+      }
+      if (!identical(expression@type, values_by_id[[expression@value_id]]@type)) {
+        tccq_abort(
+          "schema.program_expression_type_mismatch",
+          "A structured-body expression disagrees with its lowered graph value type.",
+          phase = "schema",
+          path = "program_schedule.body.expression",
+          data = list(statement = statement_id, value_id = expression@value_id)
+        )
+      }
+      if (!is.null(expression@reference)) {
+        reference <- expression@reference
+        if (S7::S7_inherits(reference@binding, TccqCell)) {
+          owned_target <- cells_by_id[[reference@source_value_id]]
+          if (
+            is.null(owned_target) ||
+              !identical(owned_target@binding, reference@binding)
+          ) {
+            tccq_abort(
+              "schema.unowned_program_cell",
+              "Every cell read must reference an exact cell declared by the program body.",
+              phase = "schema",
+              path = "program_schedule.body.cells",
+              data = list(statement = statement_id, cell = reference@source_value_id)
+            )
+          }
+          if (!reference@source_value_id %in% initialized_cells) {
+            tccq_abort(
+              "schema.program_cell_use_before_definition",
+              "A program cell must be initialized before it is read.",
+              phase = "schema",
+              path = "program_schedule.body.dominance",
+              data = list(statement = statement_id, cell = reference@source_value_id)
+            )
+          }
+        } else if (!reference@source_value_id %in% value_ids) {
+          tccq_abort(
+            "schema.unknown_program_reference",
+            "A structured-body reference is outside the lowered value graph.",
+            phase = "schema",
+            path = "program_schedule.body.expression.reference",
+            data = list(statement = statement_id, value_id = reference@source_value_id)
+          )
+        }
+      }
+      for (input in expression@inputs) {
+        validate_expression(input, initialized_cells, statement_id)
+      }
+      invisible(NULL)
+    }
+
+    validate_block <- function(block, initialized_cells, visible_local_targets = list()) {
+      current_cells <- initialized_cells
+      current_local_targets <- visible_local_targets
+      for (local_target in block@locals) {
+        if (identical(local_target@kind, "cell")) {
+          validate_target(local_target, block@id, current_local_targets)
+          next
+        }
+        validate_graph_target(local_target, block@id)
+        existing_target <- current_local_targets[[local_target@value_id]]
+        if (!is.null(existing_target) && !identical(existing_target, local_target)) {
+          tccq_abort(
+            "schema.ambiguous_program_local",
+            "A nested block cannot redeclare a visible local value id with different facts.",
+            phase = "schema",
+            path = "program_schedule.body.locals",
+            data = list(block = block@id, value_id = local_target@value_id)
+          )
+        }
+        current_local_targets[[local_target@value_id]] <- local_target
+      }
+      if (S7::S7_inherits(block, TccqValueBlock)) {
+        validate_target(block@result, block@id, current_local_targets)
+      }
+      for (statement in block@statements) {
+        if (S7::S7_inherits(statement, TccqAssignment)) {
+          validate_expression(statement@value, current_cells, statement@id)
+          validate_target(statement@target, statement@id, current_local_targets)
+          if (identical(statement@target@kind, "cell")) {
+            current_cells <- union(current_cells, statement@target@value_id)
+          }
+        } else if (S7::S7_inherits(statement, TccqConditional)) {
+          validate_expression(statement@condition, current_cells, statement@id)
+          consequent_cells <- validate_block(
+            statement@consequent,
+            current_cells,
+            current_local_targets
+          )
+          alternative_cells <- validate_block(
+            statement@alternative,
+            current_cells,
+            current_local_targets
+          )
+          current_cells <- intersect(consequent_cells, alternative_cells)
+        } else if (S7::S7_inherits(statement, TccqWhile)) {
+          validate_expression(statement@condition, current_cells, statement@id)
+          validate_block(statement@body, current_cells, current_local_targets)
+        } else {
+          tccq_abort(
+            "schema.unsupported_program_statement",
+            "The structured schedule contains an unknown statement class.",
+            phase = "schema",
+            path = "program_schedule.body.statements",
+            data = list(statement = statement@id, class = class(statement))
+          )
+        }
+      }
+      current_cells
+    }
+
+    validate_block(body, character())
+  }
 
   reachable_value_ids <- function(value_id, visited = character()) {
     if (value_id %in% visited) {
@@ -1941,7 +2226,7 @@ tccq_program_schedule <- function(steps, result, values) {
     }
   }
 
-  TccqProgramSchedule(steps = steps, result = result)
+  TccqProgramSchedule(steps = steps, result = result, body = body)
 }
 
 #' Construct an IR value
@@ -2398,7 +2683,12 @@ tccq_program <- function(
     "schedule"
   )
   if (!is.null(schedule)) {
-    schedule <- tccq_program_schedule(schedule@steps, schedule@result, values)
+    schedule <- tccq_program_schedule(
+      schedule@steps,
+      schedule@result,
+      values,
+      body = schedule@body
+    )
   }
   .tccq_check_list_of(regions, TccqRegion, "TccqRegion", "regions")
   .tccq_check_list_of(diagnostics, TccqDiagnostic, "TccqDiagnostic", "diagnostics")

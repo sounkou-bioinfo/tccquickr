@@ -2340,6 +2340,42 @@ tccq_default_op_registry <- function() {
   if (!is.null(the_default_op_registry$registry)) {
     return(the_default_op_registry$registry)
   }
+  comparison_renderer <- function(c_operator, fortran_operator = c_operator) {
+    function(operands, context) {
+      operator <- if (identical(context@language, "fortran")) {
+        fortran_operator
+      } else {
+        c_operator
+      }
+      comparison <- sprintf(
+        "(%s %s %s)",
+        operands[[1L]],
+        operator,
+        operands[[2L]]
+      )
+      if (identical(context@language, "fortran")) {
+        return(sprintf(
+          paste0(
+            "merge(tccq_na_logical, merge(1_c_int, 0_c_int, %s), ",
+            "ieee_is_nan(real(%s, c_double)) .or. ",
+            "ieee_is_nan(real(%s, c_double)))"
+          ),
+          comparison,
+          operands[[1L]],
+          operands[[2L]]
+        ))
+      }
+      sprintf(
+        paste0(
+          "((isnan((double)(%s)) || isnan((double)(%s))) ",
+          "? TCCQ_NA_LOGICAL : (%s ? 1 : 0))"
+        ),
+        operands[[1L]],
+        operands[[2L]],
+        comparison
+      )
+    }
+  }
   scalar_renderers <- list(
     "+" = function(operands, context) sprintf("(%s + %s)", operands[[1L]], operands[[2L]]),
     "-" = function(operands, context) {
@@ -2356,17 +2392,12 @@ tccq_default_op_registry <- function() {
       }
       sprintf("pow(%s, %s)", operands[[1L]], operands[[2L]])
     },
-    "<" = function(operands, context) sprintf("(%s < %s)", operands[[1L]], operands[[2L]]),
-    "<=" = function(operands, context) sprintf("(%s <= %s)", operands[[1L]], operands[[2L]]),
-    ">" = function(operands, context) sprintf("(%s > %s)", operands[[1L]], operands[[2L]]),
-    ">=" = function(operands, context) sprintf("(%s >= %s)", operands[[1L]], operands[[2L]]),
-    "==" = function(operands, context) sprintf("(%s == %s)", operands[[1L]], operands[[2L]]),
-    "!=" = function(operands, context) sprintf(
-      "(%s %s %s)",
-      operands[[1L]],
-      if (identical(context@language, "fortran")) "/=" else "!=",
-      operands[[2L]]
-    ),
+    "<" = comparison_renderer("<"),
+    "<=" = comparison_renderer("<="),
+    ">" = comparison_renderer(">"),
+    ">=" = comparison_renderer(">="),
+    "==" = comparison_renderer("=="),
+    "!=" = comparison_renderer("!=", "/="),
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
   )

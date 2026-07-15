@@ -154,7 +154,9 @@ The first lowering pass is deliberately small. It handles scalar and rank-N
 elementwise expressions, full-domain rank-N reductions, per-axis reductions
 such as `colSums()` and `rowSums()`, `%*%` contractions, and rank-1 interior
 slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
-symbols. Slice extents are typed affine dimensions (`n - 2` is a `TccqDim`
+symbols. It also handles one sequential form: scalar loop-carried cells updated
+by a `while` statement after explicit initialization. Slice extents are typed
+affine dimensions (`n - 2` is a `TccqDim`
 fact, not a printed string), and slices themselves disappear into typed affine
 accesses rather than materializing values. Programs compose across loop
 nests: every non-root reduction or contraction becomes its own fusion group
@@ -271,7 +273,7 @@ expression carries the full `TccqLoweredOperation` that owns its resolution,
 signature, domain policy, family, and reducer or contraction facts. Printers
 follow that payload to `tccq_op_render()` rather than accepting a second
 resolved-operation field.
-Scalar programs, elementwise maps, full and per-axis reductions, contractions,
+Scalar expression programs, elementwise maps, full and per-axis reductions, contractions,
 stencils, control-valued results, and scalar- or buffer-intermediate
 compositions are all sequences of this one value, so C, Fortran, and Rtinycc
 share a single generic per-nest emitter instead of per-family printer cases;
@@ -287,7 +289,7 @@ to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
 The generated callable boundary is a second explicit plan value:
 `TccqBackendFunctionInterface`. It records the source symbol, scalar or
-loop-nest shape, ABI, result identity and type, result placement, and the
+loop-nest or structured shape, ABI, result identity and type, result placement, and the
 loop-nest iteration domain. Each ABI parameter or scalar local is one
 `TccqBackendValueBinding` containing its generated name, neutral value id, and
 source type. Each `TccqBackendAllocationBinding` pairs one generated name with
@@ -301,10 +303,11 @@ Rtinycc, and Fortran consume that same interface before concrete source is
 emitted, and the generated R boundary wrappers bind each extent symbol from
 the first argument shape that declares it, then check every other occurrence —
 so `matrix_vector(x = double(n, p), w = double(p))` validates that `ncol(x)`
-equals `length(w)` instead of assuming all arguments share one shape. A C
-kernel returns an allocated pointer while a Fortran `bind(c)` kernel exposes
-an output argument, but that difference is already explicit in the function
-interface before either printer runs.
+equals `length(w)` instead of assuming all arguments share one shape. An
+unguarded C kernel may return an allocated pointer, while Fortran and a C
+kernel with a typed error channel use caller-owned output arguments. That
+choice is explicit in the function interface before any printer or FFI layer
+runs, so status is inspected before a buffer is converted or copied.
 
 Backend products are also explicit. `TccqBackendProducts` carries the typed
 function interface, loop nest, expression tree or statement block, storage
@@ -322,9 +325,11 @@ interface, typed storage plan, and typed product set.
 
 Control flow is entering as structured IR. A pure scalar `if` with an explicit
 `else` and identically typed arms becomes `TccqBranch`. The condition must be a
-scalar logical, and its backend interface preserves that type as C `bool`,
-Fortran `logical(c_bool)`, or TinyCC `bool`; wrappers reject a missing condition
-instead of mapping it to a Boolean. The current loop-nest planner accepts the
+scalar logical. Generated logical values use R-compatible three-state integers
+as C `int`, Fortran `integer(c_int)`, or TinyCC `i32`. Comparison
+implementations preserve `NA` and `NaN`, and typed callable error channels turn
+a missing control condition into `runtime.invalid_logical_condition` instead of
+mapping it to false. The current loop-nest planner accepts the
 branch as a result and lowers it into a `TccqValueBlock`. Pure branches may
 nest in result arms because both source emitters recursively assign through the
 same typed target. A branch used directly as another branch's condition or below a
@@ -350,16 +355,30 @@ allocatable array there. Both clean up after the final consumer. When a prior
 schedule even across different consumer paths; without a definition boundary,
 incompatible paths remain a classed loop-nest diagnostic.
 
-`for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
-idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and
-`Filter` are not just more function names to whitelist. They describe regions,
-exits, dominance, carried loop state, effect ordering, reducer legality,
-allocation, and possible boundary regions.
+The first sequential recurrence is a `TccqWhile` statement over a plain
+`TccqBlock`. Its loop-carried state is explicit `TccqCell` storage: mutable by
+contract and distinct from immutable `TccqLocalBinding` definitions. Conditions
+and assignments reuse `TccqExpression`, so the C and Fortran printers consume
+one neutral program body and do not recover recurrence from source names. This
+slice is scalar, requires cells to be initialized before loop entry, and does
+not use `TccqLoopNest`, which remains the data-parallel iteration abstraction.
+The structured body is the mutually exclusive body form of
+`TccqProgramSchedule`; it does not compete with the schedule for ownership of
+top-level order. Schedule construction verifies exact cell, local, and result
+targets, graph-consistent expression and target types, and initialization
+dominance before a backend sees the body.
+
+`for`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, nested
+sequential conditionals, and idiomatic R surfaces such as `Map`, `lapply`,
+`vapply`, `apply`, `Reduce`, and `Filter` are not just more function names to
+whitelist. They describe regions, exits, dominance, carried loop state, effect
+ordering, reducer legality, allocation, and possible boundary regions.
 
 Scalar numeric comparisons are ordinary typed elementwise implementations, not
 control nodes. Their signatures currently require scalar operands and return a
 scalar logical value; this gives structured control a backend-neutral condition
-without falsely promising vector comparison and missing-value semantics.
+without falsely promising vector comparison. The current C and Fortran
+implementations preserve scalar numeric missingness in the logical result.
 
 The intended representation is a small set of typed control nodes over the same
 value/effect/domain model. A `for` loop over `1:n`, a `Reduce("+", x)`, and a
@@ -370,11 +389,11 @@ missing-value rules. `switch` is a dispatch boundary until the selector type
 and case set are known. `break` and `next` are structured exits, not hidden
 `goto` strings.
 
-`TccqProgramSchedule` is deliberately linear at this stage. It establishes the
-ordered evaluation and dominance boundary needed before adding nested schedule
-blocks. A loop enters only with emitter behavior and typed header, body,
-backedge, carried definitions, and exits; recurrence does not become another
-mode hidden inside `TccqLoopNest` first.
+`TccqProgramSchedule` remains the sole top-level ordering boundary. Expression
+programs use its linear SSA steps; sequential recurrence uses its typed body
+form with an
+explicit header condition, body, backedge through cells, and exact effects; it
+does not become another mode hidden inside `TccqLoopNest`.
 
 ## Regions and bridges
 

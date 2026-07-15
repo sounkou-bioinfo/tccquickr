@@ -1154,11 +1154,19 @@ expect_equal(
   c("double", "logical")
 )
 expect_equal(branch_c_interface@result_type@base, "double")
+expect_equal(branch_c_interface@result_placement, "output_argument")
 expect_equal(branch_fortran_interface@parameters[[2L]]@source_type@base, "logical")
-expect_true(grepl("bool input_0002", backend_source(branch_c_plan), fixed = TRUE))
-expect_true(grepl("if (input_0002) {", backend_source(branch_c_plan), fixed = TRUE))
-expect_true(grepl("logical(c_bool), value :: input_0002", backend_source(branch_fortran_plan), fixed = TRUE))
-expect_true(grepl("if (input_0002) then", backend_source(branch_fortran_plan), fixed = TRUE))
+expect_true(S7::S7_inherits(branch_c_interface@error_channel, TccqBackendErrorChannel))
+expect_equal(
+  branch_c_interface@error_channel@diagnostics[[1L]]@code,
+  "runtime.invalid_logical_condition"
+)
+expect_true(grepl("int input_0002", backend_source(branch_c_plan), fixed = TRUE))
+expect_true(grepl("void tccq_", backend_source(branch_c_plan), fixed = TRUE))
+expect_true(grepl("int *status_0001, double *output", backend_source(branch_c_plan), fixed = TRUE))
+expect_true(grepl("condition_value = input_0002", backend_source(branch_c_plan), fixed = TRUE))
+expect_true(grepl("integer(c_int), value :: input_0002", backend_source(branch_fortran_plan), fixed = TRUE))
+expect_true(grepl("condition_value = input_0002", backend_source(branch_fortran_plan), fixed = TRUE))
 
 logical_branch <- function(flag) {
   declare(type(flag = logical()))
@@ -1178,8 +1186,8 @@ logical_branch_fortran <- tccq_plan_backend(
 expect_true(logical_branch_c@success)
 expect_true(logical_branch_fortran@success)
 expect_equal(backend_interface(logical_branch_c)@result_type@base, "logical")
-expect_true(grepl("bool tccq_", backend_source(logical_branch_c), fixed = TRUE))
-expect_true(grepl("logical(c_bool) :: output", backend_source(logical_branch_fortran), fixed = TRUE))
+expect_true(grepl("int tccq_", backend_source(logical_branch_c), fixed = TRUE))
+expect_true(grepl("integer(c_int) :: output", backend_source(logical_branch_fortran), fixed = TRUE))
 
 scalar_less <- function(x, y) {
   declare(type(x = double(), y = double()))
@@ -1201,6 +1209,41 @@ expect_true(scalar_less_fortran@success)
 expect_equal(backend_interface(scalar_less_c)@result_type@base, "logical")
 expect_true(grepl("input_0001 < input_0002", backend_source(scalar_less_c), fixed = TRUE))
 expect_true(grepl("input_0001 < input_0002", backend_source(scalar_less_fortran), fixed = TRUE))
+expect_true(grepl("TCCQ_NA_LOGICAL", backend_source(scalar_less_c), fixed = TRUE))
+expect_true(grepl("ieee_is_nan", backend_source(scalar_less_fortran), fixed = TRUE))
+
+triangular_recurrence <- function(n) {
+  declare(type(n = double()))
+  iteration <- 0
+  total <- 0
+  while (iteration < n) {
+    iteration <- iteration + 1
+    total <- total + iteration
+  }
+  total
+}
+triangular_program <- tccq_analyze(triangular_recurrence, strict = TRUE)@value
+triangular_c <- tccq_plan_backend(
+  triangular_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+triangular_fortran <- tccq_plan_backend(
+  triangular_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(triangular_c@success)
+expect_true(triangular_fortran@success)
+expect_equal(backend_interface(triangular_c)@kind, "structured")
+expect_equal(backend_interface(triangular_fortran)@kind, "structured")
+expect_true(S7::S7_inherits(backend_products(triangular_c)@body, TccqValueBlock))
+expect_null(backend_products(triangular_c)@loop_nest)
+expect_equal(length(backend_products(triangular_c)@loop_nests), 0L)
+expect_true(grepl("while (", backend_source(triangular_c), fixed = TRUE))
+expect_true(grepl("condition_value == TCCQ_NA_LOGICAL", backend_source(triangular_c), fixed = TRUE))
+expect_true(grepl("condition_value == tccq_na_logical", backend_source(triangular_fortran), fixed = TRUE))
+expect_true(grepl("if (condition_value == 0_c_int) exit", backend_source(triangular_fortran), fixed = TRUE))
 
 nonfinite_branch <- function(flag) {
   declare(type(flag = logical(), returns = double()))
@@ -1242,22 +1285,22 @@ nested_branch_fortran <- tccq_plan_backend(nested_branch_program, tccq_fortran_b
 expect_true(nested_branch_c@success)
 expect_true(nested_branch_fortran@success)
 expect_true(grepl(
-  "if (input_0002) {",
+  "condition_value = input_0002",
   backend_source(nested_branch_c),
   fixed = TRUE
 ))
 expect_true(grepl(
-  "if (input_0003) {",
+  "condition_value = input_0003",
   backend_source(nested_branch_c),
   fixed = TRUE
 ))
 expect_true(grepl(
-  "if (input_0002) then",
+  "condition_value = input_0002",
   backend_source(nested_branch_fortran),
   fixed = TRUE
 ))
 expect_true(grepl(
-  "if (input_0003) then",
+  "condition_value = input_0003",
   backend_source(nested_branch_fortran),
   fixed = TRUE
 ))
@@ -1301,15 +1344,15 @@ expect_equal(
   backend_interface(branch_condition_c)@locals[[1L]]@source_type@base,
   "logical"
 )
-expect_true(grepl("bool local_0001;", backend_source(branch_condition_c), fixed = TRUE))
-expect_true(grepl("if (local_0001) {", backend_source(branch_condition_c), fixed = TRUE))
+expect_true(grepl("int local_0001;", backend_source(branch_condition_c), fixed = TRUE))
+expect_true(grepl("condition_value = local_0001", backend_source(branch_condition_c), fixed = TRUE))
 expect_true(grepl(
-  "logical(c_bool) :: local_0001",
+  "integer(c_int) :: local_0001",
   backend_source(branch_condition_fortran),
   fixed = TRUE
 ))
 expect_true(grepl(
-  "if (local_0001) then",
+  "condition_value = local_0001",
   backend_source(branch_condition_fortran),
   fixed = TRUE
 ))
@@ -1544,7 +1587,12 @@ expect_true(grepl(
   fixed = TRUE
 ))
 expect_true(grepl(
-  "if (input_0002) {\n    intermediate_0001 = (double *)malloc",
+  "condition_value = input_0002",
+  backend_source(guarded_buffer_c),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "intermediate_0001 = (double *)malloc",
   backend_source(guarded_buffer_c),
   fixed = TRUE
 ))
@@ -1554,7 +1602,12 @@ expect_true(grepl(
   fixed = TRUE
 ))
 expect_true(grepl(
-  "if (input_0002) then\n    allocate(intermediate_0001(extent_p))",
+  "condition_value = input_0002",
+  backend_source(guarded_buffer_fortran),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "allocate(intermediate_0001(extent_p))",
   backend_source(guarded_buffer_fortran),
   fixed = TRUE
 ))
@@ -1928,6 +1981,7 @@ if (rtinycc_jit_available) {
     tccq_backend_context(mode = "jit", target = "c")
   )
   expect_true(branch_jit_plan@success)
+  expect_equal(backend_interface(branch_jit_plan)@result_placement, "output_argument")
   expect_equal(backend_callable(branch_jit_plan)(branch_x, TRUE), branch_x)
   expect_equal(backend_callable(branch_jit_plan)(branch_x, FALSE), -branch_x)
   missing_condition <- tryCatch(
@@ -2142,6 +2196,8 @@ if (rtinycc_jit_available) {
   expect_true(scalar_less_jit@success)
   expect_identical(backend_callable(scalar_less_jit)(1, 2), TRUE)
   expect_identical(backend_callable(scalar_less_jit)(2, 1), FALSE)
+  expect_true(is.na(backend_callable(scalar_less_jit)(NA_real_, 1)))
+  expect_true(is.na(backend_callable(scalar_less_jit)(NaN, 1)))
 }
 
 if (can_build_shared_library("c")) {
@@ -3500,4 +3556,59 @@ if (can_build_shared_library("fortran")) {
     ),
     logistic_oracle
   )
+}
+
+triangular_expected <- c(0, 10, 55)
+triangular_inputs <- c(0, 4, 10)
+expect_missing_generated_condition <- function(callable) {
+  for (missing_bound in list(NA_real_, NaN)) {
+    condition <- tryCatch(callable(missing_bound), error = identity)
+    expect_true(inherits(condition, "runtime.invalid_logical_condition"))
+    expect_equal(
+      tccq_condition_diagnostic(condition)@code,
+      "runtime.invalid_logical_condition"
+    )
+  }
+}
+
+if (rtinycc_jit_available) {
+  triangular_jit <- tccq_plan_backend(
+    triangular_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(triangular_jit@success)
+  expect_equal(
+    vapply(triangular_inputs, backend_callable(triangular_jit), numeric(1)),
+    triangular_expected
+  )
+  expect_missing_generated_condition(backend_callable(triangular_jit))
+}
+
+if (can_build_shared_library("c")) {
+  triangular_c_shared <- tccq_plan_backend(
+    triangular_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(triangular_c_shared@success)
+  expect_equal(
+    vapply(triangular_inputs, backend_callable(triangular_c_shared), numeric(1)),
+    triangular_expected
+  )
+  expect_missing_generated_condition(backend_callable(triangular_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  triangular_fortran_shared <- tccq_plan_backend(
+    triangular_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(triangular_fortran_shared@success)
+  expect_equal(
+    vapply(triangular_inputs, backend_callable(triangular_fortran_shared), numeric(1)),
+    triangular_expected
+  )
+  expect_missing_generated_condition(backend_callable(triangular_fortran_shared))
 }

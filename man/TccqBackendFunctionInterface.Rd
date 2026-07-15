@@ -20,7 +20,8 @@ TccqBackendFunctionInterface(
   extents = list(),
   index_names = character(0),
   result_dims = list(),
-  result_count_name = character(0)
+  result_count_name = character(0),
+  error_channel = NULL
 )
 }
 \arguments{
@@ -28,7 +29,7 @@ TccqBackendFunctionInterface(
 
 \item{source_language}{Source language consumed by the printer.}
 
-\item{kind}{Function shape: \code{scalar} or \code{loop_nest}.}
+\item{kind}{Function shape: \code{scalar}, \code{loop_nest}, or \code{structured}.}
 
 \item{abi}{Callable ABI.}
 
@@ -56,6 +57,8 @@ TccqBackendFunctionInterface(
 
 \item{result_count_name}{Generated result element-count parameter name, or
 empty string for scalar results.}
+
+\item{error_channel}{Optional generated callable error channel.}
 }
 \description{
 A backend function interface is the source-level callable boundary consumed

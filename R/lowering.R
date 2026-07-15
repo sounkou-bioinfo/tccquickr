@@ -59,10 +59,15 @@ tccq_lower_function <- function(
     state$formal_names <- names(bindings)
     state$symbol_value_ids <- list()
     state$local_bindings <- list()
+    state$cells <- list()
+    state$cell_targets <- list()
     state$current_local_uses <- list()
     state$schedule_steps <- list()
     state$values <- list()
     state$value_counter <- 0L
+    state$cell_counter <- 0L
+    state$neutral_statement_counter <- 0L
+    state$neutral_block_counter <- 0L
     state$statement_index <- 0L
     state$consumed_call_ids <- character()
     state$dim_symbols <- unique(unlist(lapply(bindings, function(binding) {
@@ -420,6 +425,12 @@ tccq_lower_function <- function(
 
   lower_symbol <- function(expr, state) {
     symbol_name <- as.character(expr)
+    cell <- state$cells[[symbol_name]]
+    if (S7::S7_inherits(cell, TccqCell)) {
+      reference_id <- next_value_id(state)
+      add_value(state, tccq_cell_reference(reference_id, cell))
+      return(list(value_id = reference_id, type = cell@type, diagnostics = list()))
+    }
     value_id <- state$symbol_value_ids[[symbol_name]]
     if (!is.null(value_id)) {
       local_binding <- state$local_bindings[[symbol_name]]
@@ -1399,6 +1410,277 @@ tccq_lower_function <- function(
     "temporary"
   }
 
+  lower_sequential_program <- function(expressions, state, cell_names) {
+    next_statement_id <- function() {
+      state$neutral_statement_counter <- state$neutral_statement_counter + 1L
+      sprintf("statement_%04d", state$neutral_statement_counter)
+    }
+    next_block_id <- function() {
+      state$neutral_block_counter <- state$neutral_block_counter + 1L
+      sprintf("block_%04d", state$neutral_block_counter)
+    }
+    block_forms <- function(expr) {
+      forms <- if (is.call(expr) && identical(tccq_call_name(expr), "{")) {
+        as.list(expr)[-1L]
+      } else {
+        list(expr)
+      }
+      Filter(function(form) !is_declaration(form), forms)
+    }
+    make_block <- function(statements, locals = list()) {
+      effect <- Reduce(
+        tccq_effect_union,
+        lapply(statements, function(statement) statement@effect),
+        init = tccq_effect()
+      )
+      TccqBlock(
+        id = next_block_id(),
+        locals = locals,
+        statements = statements,
+        effect = effect
+      )
+    }
+    expression_for <- function(value_id) {
+      snapshot <- new_plan(values = state$values, result = value_id)
+      tccq_expression_tree(snapshot, value_id)
+    }
+    take_semantics <- function(expr, call_name) {
+      matches <- Filter(
+        function(semantics) {
+          identical(semantics@call@name, call_name) &&
+            identical(semantics@call@expr, expr) &&
+            !semantics@call@id %in% state$consumed_call_ids
+        },
+        call_index@semantics
+      )
+      if (length(matches) == 0L) {
+        return(NULL)
+      }
+      semantics <- matches[[1L]]
+      state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
+      semantics
+    }
+    lower_cell_assignment <- function(expr, in_loop) {
+      target <- expr[[2L]]
+      if (!is.symbol(target)) {
+        return(diagnostic_value(
+          "lowering.sequential_assignment_target",
+          "Sequential recurrence currently requires simple scalar cell assignments.",
+          expr
+        ))
+      }
+      cell_name <- as.character(target)
+      if (!cell_name %in% cell_names) {
+        return(diagnostic_value(
+          "lowering.sequential_noncell_assignment",
+          sprintf("Local `%s` is not loop-carried state in this sequential program.", cell_name),
+          expr,
+          data = list(symbol = cell_name)
+        ))
+      }
+
+      result <- lower_expression(expr[[3L]], state)
+      if (length(result$diagnostics) > 0L) {
+        return(result)
+      }
+      cell <- state$cells[[cell_name]]
+      if (is.null(cell)) {
+        if (isTRUE(in_loop)) {
+          return(diagnostic_value(
+            "lowering.uninitialized_loop_cell",
+            sprintf("Loop-carried cell `%s` must be initialized before entering the loop.", cell_name),
+            expr,
+            data = list(symbol = cell_name)
+          ))
+        }
+        if (result$type@shape@rank != 0L) {
+          return(diagnostic_value(
+            "lowering.nonscalar_loop_cell",
+            "The first sequential recurrence slice supports scalar loop-carried cells only.",
+            expr,
+            data = list(symbol = cell_name, type = result$type)
+          ))
+        }
+        state$cell_counter <- state$cell_counter + 1L
+        cell <- tccq_cell(
+          cell_name,
+          sprintf("cell_%04d", state$cell_counter),
+          result$type
+        )
+        target <- tccq_write_target(
+          cell@value_id,
+          cell@type,
+          storage_type = cell@storage_type,
+          kind = "cell",
+          binding = cell
+        )
+        state$cells[[cell_name]] <- cell
+        state$cell_targets[[cell_name]] <- target
+      } else if (!identical(result$type, cell@type)) {
+        return(diagnostic_value(
+          "lowering.loop_cell_type_change",
+          sprintf("Assignment to loop-carried cell `%s` changes its declared inferred type.", cell_name),
+          expr,
+          data = list(symbol = cell_name, expected = cell@type, actual = result$type)
+        ))
+      }
+
+      expression_result <- expression_for(result$value_id)
+      if (!expression_result@success) {
+        return(list(
+          value_id = NULL,
+          type = NULL,
+          diagnostics = expression_result@diagnostics
+        ))
+      }
+      list(
+        value_id = result$value_id,
+        type = result$type,
+        statement = tccq_assignment(
+          next_statement_id(),
+          state$cell_targets[[cell_name]],
+          expression_result@value
+        ),
+        diagnostics = list()
+      )
+    }
+
+    lower_control_block <- NULL
+    lower_control_statement <- function(expr, in_loop) {
+      call_name <- if (is.call(expr)) tccq_call_name(expr) else ""
+      if (call_name %in% c("<-", "=") && length(expr) == 3L) {
+        return(lower_cell_assignment(expr, in_loop))
+      }
+      if (identical(call_name, "while") && length(expr) == 3L) {
+        semantics <- take_semantics(expr, "while")
+        if (is.null(semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            "The `while` call has no matching evaluator facts in the frontend call index.",
+            expr
+          ))
+        }
+        condition <- lower_expression(expr[[2L]], state)
+        if (length(condition$diagnostics) > 0L) {
+          return(condition)
+        }
+        if (
+          !identical(condition$type@base, "logical") ||
+            condition$type@shape@rank != 0L
+        ) {
+          return(diagnostic_value(
+            "lowering.invalid_while_condition",
+            "A `while` condition must be a declared scalar logical value.",
+            expr[[2L]],
+            data = list(base = condition$type@base, rank = condition$type@shape@rank)
+          ))
+        }
+        condition_expression <- expression_for(condition$value_id)
+        if (!condition_expression@success) {
+          return(list(
+            value_id = NULL,
+            type = NULL,
+            diagnostics = condition_expression@diagnostics
+          ))
+        }
+        body_result <- lower_control_block(expr[[3L]], in_loop = TRUE)
+        if (length(body_result$diagnostics) > 0L) {
+          return(body_result)
+        }
+        return(list(
+          value_id = condition$value_id,
+          type = condition$type,
+          statement = tccq_while(
+            next_statement_id(),
+            condition_expression@value,
+            body_result$block,
+            semantics
+          ),
+          diagnostics = list()
+        ))
+      }
+      diagnostic_value(
+        "lowering.unsupported_sequential_statement",
+        "Sequential blocks currently accept cell assignments and `while` statements.",
+        expr,
+        data = list(call = call_name)
+      )
+    }
+    lower_control_block <- function(expr, in_loop) {
+      statements <- list()
+      for (form in block_forms(expr)) {
+        statement_result <- lower_control_statement(form, in_loop)
+        if (length(statement_result$diagnostics) > 0L) {
+          return(statement_result)
+        }
+        statements[[length(statements) + 1L]] <- statement_result$statement
+      }
+      list(block = make_block(statements), diagnostics = list())
+    }
+
+    if (length(expressions) < 2L) {
+      return(diagnostic_value(
+        "lowering.missing_sequential_result",
+        "A sequential program must end with an explicit scalar result expression.",
+        body(fn)
+      ))
+    }
+    statements <- list()
+    for (expr in expressions[-length(expressions)]) {
+      statement_result <- lower_control_statement(expr, in_loop = FALSE)
+      if (length(statement_result$diagnostics) > 0L) {
+        return(statement_result)
+      }
+      statements[[length(statements) + 1L]] <- statement_result$statement
+    }
+
+    result_expr <- expressions[[length(expressions)]]
+    result <- lower_expression(result_expr, state)
+    if (length(result$diagnostics) > 0L) {
+      return(result)
+    }
+    if (result$type@shape@rank != 0L) {
+      return(diagnostic_value(
+        "lowering.nonscalar_sequential_result",
+        "The first sequential recurrence slice supports scalar results only.",
+        result_expr,
+        data = list(type = result$type)
+      ))
+    }
+    result_expression <- expression_for(result$value_id)
+    if (!result_expression@success) {
+      return(list(
+        value_id = NULL,
+        type = NULL,
+        diagnostics = result_expression@diagnostics
+      ))
+    }
+    result_target <- tccq_write_target(result$value_id, result$type, kind = "result")
+    statements[[length(statements) + 1L]] <- tccq_assignment(
+      next_statement_id(),
+      result_target,
+      result_expression@value
+    )
+    body_effect <- Reduce(
+      tccq_effect_union,
+      lapply(statements, function(statement) statement@effect),
+      init = tccq_effect()
+    )
+    program_body <- TccqValueBlock(
+      id = next_block_id(),
+      locals = unname(state$cell_targets),
+      statements = statements,
+      effect = body_effect,
+      result = result_target
+    )
+    list(
+      value_id = result$value_id,
+      type = result$type,
+      body = program_body,
+      diagnostics = list()
+    )
+  }
+
   diagnostic_value <- function(code, message, expr, data = list()) {
     list(
       value_id = NULL,
@@ -1453,17 +1735,44 @@ tccq_lower_function <- function(
   # declared atomic arguments. Declaration vocabulary inside
   # declare(type(...)) is not an operation candidate, so the barrier only
   # judges calls in executable statements.
+  executable_calls <- unlist(
+    lapply(expressions, tccq_collect_calls),
+    recursive = FALSE
+  )
   executable_call_names <- unique(vapply(
-    unlist(lapply(expressions, tccq_collect_calls), recursive = FALSE),
+    executable_calls,
     function(call) call@name,
     character(1)
   ))
+  has_sequential_control <- "while" %in% executable_call_names
+  while_calls <- Filter(function(call) identical(call@name, "while"), executable_calls)
+  loop_cell_names <- unique(unlist(lapply(while_calls, function(call) {
+    if (!is.call(call@expr) || length(call@expr) != 3L) {
+      return(character())
+    }
+    body_calls <- tccq_collect_calls(call@expr[[3L]])
+    assignments <- Filter(
+      function(body_call) {
+        body_call@name %in% c("<-", "=") &&
+          is.call(body_call@expr) &&
+          length(body_call@expr) == 3L &&
+          is.symbol(body_call@expr[[2L]])
+      },
+      body_calls
+    )
+    vapply(
+      assignments,
+      function(assignment) as.character(assignment@expr[[2L]]),
+      character(1)
+    )
+  }), use.names = FALSE))
   semantics_barrier <- function(semantics) {
     call <- semantics@call
     if (!call@name %in% executable_call_names) {
       return(NULL)
     }
-    if (isTRUE(semantics@control) && !identical(call@name, "if")) {
+    lowerable_controls <- c("if", if (has_sequential_control) "while")
+    if (isTRUE(semantics@control) && !call@name %in% lowerable_controls) {
       return(tccq_diagnostic(
         "lowering.control_flow_boundary",
         sprintf(
@@ -1528,6 +1837,42 @@ tccq_lower_function <- function(
   }
 
   state <- new_lowering_state()
+  if (has_sequential_control) {
+    sequential_result <- lower_sequential_program(
+      expressions,
+      state,
+      loop_cell_names
+    )
+    if (length(sequential_result$diagnostics) > 0L) {
+      return(new_plan(
+        values = state$values,
+        diagnostics = sequential_result$diagnostics
+      ))
+    }
+    region <- tccq_region(
+      "region_main",
+      "host",
+      values = unname(state$values),
+      fusion_groups = list(),
+      effect = sequential_result$body@effect,
+      memory_space = "host",
+      touches_rapi = FALSE,
+      attrs = list(result = sequential_result$value_id, control = "while")
+    )
+    return(new_plan(
+      values = state$values,
+      schedule = tccq_program_schedule(
+        steps = list(),
+        result = sequential_result$value_id,
+        values = state$values,
+        body = sequential_result$body
+      ),
+      regions = list(region),
+      result = sequential_result$value_id,
+      storage_plan = tccq_storage_plan(),
+      attrs = list(strategy = "sequential-control")
+    ))
+  }
   result <- NULL
   for (expr in expressions) {
     result <- lower_statement(expr, state)

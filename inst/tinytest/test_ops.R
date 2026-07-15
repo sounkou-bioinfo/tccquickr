@@ -199,7 +199,9 @@ fortran_not_equal <- tccq_op_render(
   tccq_op_render_context(language = "fortran", backend_id = "unit_backend")
 )
 expect_true(fortran_not_equal@success)
-expect_equal(fortran_not_equal@value, "(left /= right)")
+expect_true(grepl("(left /= right)", fortran_not_equal@value, fixed = TRUE))
+expect_true(grepl("tccq_na_logical", fortran_not_equal@value, fixed = TRUE))
+expect_true(grepl("ieee_is_nan", fortran_not_equal@value, fixed = TRUE))
 
 resolved_sqrt <- tccq_resolve_call(default_registry, tccq_call("sqrt"), tccq_op_context())
 resolved_exp <- tccq_resolve_call(default_registry, tccq_call("exp"), tccq_op_context())

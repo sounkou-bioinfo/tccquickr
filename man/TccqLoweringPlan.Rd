@@ -6,9 +6,9 @@
 \usage{
 TccqLoweringPlan(
   values = list(),
+  result = NULL,
   schedule = NULL,
   regions = list(),
-  result = NULL,
   storage_plan = NULL,
   diagnostics = list(),
   attrs = list()
@@ -17,11 +17,11 @@ TccqLoweringPlan(
 \arguments{
 \item{values}{List of lowered IR values.}
 
+\item{result}{Result value id, or \code{NULL} when no expression was lowered.}
+
 \item{schedule}{Optional ordered program evaluation schedule.}
 
 \item{regions}{List of executable code regions.}
-
-\item{result}{Result value id, or \code{NULL} when no expression was lowered.}
 
 \item{storage_plan}{Optional middle-end storage plan.}
 

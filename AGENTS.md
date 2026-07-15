@@ -194,8 +194,10 @@ For the reset core, keep these rules explicit:
   originating `TccqCallSemantics`, and therefore preserves that R `if` forces
   the condition and exactly one arm. The current accepted form has a scalar
   logical condition, an explicit `else`, identical pure arm types, and is the
-  result of one loop nest. A missing condition remains a possible
-  runtime error; native call boundaries must reject it rather than coerce it.
+  result of one loop nest. Generated logical values use R-compatible
+  three-state integers. A missing condition is reported through the typed
+  `TccqBackendErrorChannel`; native call boundaries must raise its classed
+  runtime diagnostic rather than coerce it.
   Pure branches may nest in either result arm, directly as another branch's
   condition, or under pure elementwise operations. Loop-nest lowering turns
   value-producing control into `TccqValueBlock`, `TccqAssignment`, and
@@ -225,16 +227,29 @@ For the reset core, keep these rules explicit:
   target ternary. C uses nullable owned buffers for guarded arrays; Fortran uses
   guarded allocatable arrays. Both clean up through the same typed nest/slot
   ownership fact.
-- Every accepted top-level executable form is one `TccqEvaluationStep` in a
-  contiguous `TccqProgramSchedule`; do not infer R evaluation order from value
-  ids, source text, or a collection of only the named locals. An assignment
+- Sequential recurrence is represented by `TccqWhile` inside a typed
+  `TccqBlock`/`TccqValueBlock`, not by extending `TccqLoopNest`. Loop-carried
+  scalar state is explicit mutable `TccqCell` storage, distinct from immutable
+  SSA `TccqLocalBinding` definitions; cell reads are neutral expressions and
+  assignments carry write effects. C, Fortran, and Rtinycc must consume the
+  same typed program body. The current slice requires initialization before
+  loop entry and does not cover `for`, `repeat`, `break`, `next`, nested
+  sequential conditionals, or arrays. Numeric comparison implementations must
+  preserve `NA`/`NaN` in logical results so `while` and `if` can report R's
+  missing-condition error.
+- `TccqProgramSchedule` is the sole owner of top-level order. It carries either
+  contiguous `TccqEvaluationStep` values or one structured `TccqValueBlock`,
+  never both. Do not infer R evaluation order from value ids, source text, or a
+  collection of only the named locals. In the linear form an assignment
   step owns an optional `TccqLocalBinding` recording its value type, value id,
   and statement position; an unbound expression step still exists in the
   schedule. Each step records the exact `TccqLocalBinding` values read during
   symbol resolution; never infer lexical uses from value ids because distinct
   local names may alias one value. The schedule is the sole owner of top-level
   order and must validate complete effects, value references, local dominance,
-  and the final result.
+  and the final result. In the structured form it must validate exact cell
+  and local ownership, initialization dominance, graph-consistent target and
+  expression types, graph references, and body/result identity.
 - A local symbol read lowers to `TccqBindingReference`, not directly to the
   value graph that originally defined the local. The reference retains exact
   lexical binding identity and points to bound storage; expression and effect
@@ -347,8 +362,10 @@ For the reset core, keep these rules explicit:
   reductions, `%*%` contractions, interior stencils, control-valued results,
   and scalar-intermediate compositions are sequences of this one value. Do not
   reintroduce per-family printer cases, linear element-count ABIs, string-built
-  index arithmetic, or backend-local control trees; new iteration behavior must
-  extend the loop nest, its typed accesses and statements, and the nest sequence.
+  index arithmetic, or backend-local control trees; new data-parallel iteration
+  behavior must extend the loop nest, its typed accesses and statements, and the
+  nest sequence. Sequential recurrence follows the typed program-body rule
+  above instead.
 - The generated ABI passes one `int` extent parameter per symbolic dimension
   plus a result element-count parameter for non-scalar results. Boundary
   wrappers and JIT callables bind each extent symbol from the first argument
@@ -357,7 +374,13 @@ For the reset core, keep these rules explicit:
   rendered by the emitters, never precomputed strings. A declared dimension
   symbol used in the body (`colSums(x) / n`) lowers to a `dim_symbol` value
   that reads the extent parameter widened to double; it is not a new ABI
-  surface.
+  surface. A function with generated control also carries one typed
+  `TccqBackendErrorChannel`; status zero means success and positive statuses
+  select its ordered runtime diagnostics. C, Fortran, Rtinycc, and boundary
+  wrappers must consume that same channel. A non-scalar C callable with an
+  error channel uses caller-owned output storage and `output_argument` result
+  placement; no FFI path may convert or copy a returned buffer before checking
+  status.
 - Operation families are elementwise (`TccqElementwiseSpec`), reduction
   (`TccqReductionSpec`, whose optional finalizer transforms the folded
   accumulator — the mean family divides by the reduced count), and

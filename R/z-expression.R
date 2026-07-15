@@ -19,7 +19,7 @@ TccqExpressionReference <- S7::new_class(
   properties = list(
     source_value_id = S7::class_character,
     symbol = S7::class_character,
-    binding = S7::new_union(NULL, TccqLocalBinding),
+    binding = S7::new_union(NULL, TccqBinding),
     slice_offsets = S7::class_integer,
     access = S7::new_union(NULL, TccqAccess)
   ),
@@ -203,7 +203,7 @@ tccq_expression_reference <- function(
 ) {
   .tccq_check_character_scalar(source_value_id, "source_value_id")
   .tccq_check_character_or_empty(symbol, "symbol")
-  .tccq_check_optional_s7(binding, TccqLocalBinding, "TccqLocalBinding", "binding")
+  .tccq_check_optional_s7(binding, TccqBinding, "TccqBinding", "binding")
   if (!is.integer(slice_offsets) || anyNA(slice_offsets)) {
     tccq_abort(
       "schema.invalid_expression_slice_offsets",
@@ -285,13 +285,22 @@ tccq_expression <- function(
   )
 }
 
-#' Build a backend-neutral expression tree from a lowered program
+#' Build a backend-neutral expression tree from a lowered value graph
 #'
-#' @param program Lowered program.
+#' @param graph Lowered value graph.
 #' @param value_id Result value id to root the expression tree at.
 #' @export
-tccq_expression_tree <- function(program, value_id = program@result) {
-  .tccq_check_s7(program, TccqProgram, "TccqProgram", "program")
+tccq_expression_tree <- S7::new_generic(
+  "tccq_expression_tree",
+  dispatch_args = "graph",
+  function(graph, value_id = NULL) S7::S7_dispatch()
+)
+
+S7::method(tccq_expression_tree, TccqValueGraph) <- function(graph, value_id = NULL) {
+  if (is.null(value_id)) {
+    value_id <- graph@result
+  }
+  graph_name <- if (S7::S7_inherits(graph, TccqProgram)) graph@name else "lowering"
 
   expression_diagnostic <- function(code, message, path, data = list()) {
     tccq_diagnostic(
@@ -299,7 +308,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       message,
       phase = "expression",
       path = path,
-      data = c(list(program = program@name), data)
+      data = c(list(program = graph_name), data)
     )
   }
 
@@ -328,7 +337,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
       return(NULL)
     }
 
-    value <- program@values[[current_value_id]]
+    value <- graph@values[[current_value_id]]
     if (is.null(value)) {
       diagnostics <<- c(diagnostics, list(expression_diagnostic(
         "expression.unknown_value",
@@ -367,6 +376,20 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         )
       ))
     }
+    if (S7::S7_inherits(value, TccqCellReference)) {
+      return(tccq_expression(
+        id = current_value_id,
+        kind = "reference",
+        value_id = current_value_id,
+        op = "cell",
+        type = value@type,
+        effect = value@effect,
+        reference = tccq_expression_reference(
+          value@cell@value_id,
+          binding = value@cell
+        )
+      ))
+    }
     if (identical(value@op, "[")) {
       slice_offsets <- integer()
       source_value <- value
@@ -377,7 +400,7 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         } else {
           slice_offsets + current_offsets
         }
-        source_value <- program@values[[source_value@inputs[[1L]]]]
+        source_value <- graph@values[[source_value@inputs[[1L]]]]
         if (is.null(source_value)) {
           diagnostics <<- c(diagnostics, list(expression_diagnostic(
             "expression.unknown_value",
@@ -525,7 +548,115 @@ tccq_expression_tree <- function(program, value_id = program@result) {
   tccq_result(success = TRUE, value = expression)
 }
 
-TCCQ_WRITE_TARGET_KINDS <- c("local", "result")
+#' Mutable lexical cell
+#'
+#' A cell is storage for loop-carried scalar state. It is deliberately distinct
+#' from [TccqLocalBinding], whose identity remains one immutable SSA
+#' definition. Source names are assigned later by the backend interface.
+#'
+#' @inheritParams TccqBinding
+#' @param value_id Stable storage identity.
+#' @param storage_type Scalar storage type.
+#' @export
+TccqCell <- S7::new_class(
+  "TccqCell",
+  package = "tccquickr",
+  parent = TccqBinding,
+  properties = list(
+    value_id = S7::class_character,
+    storage_type = TccqType
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@value_id) != 1L || is.na(self@value_id) || !nzchar(self@value_id)) {
+      problems <- c(problems, "@value_id must be a single non-empty string")
+    }
+    if (!isTRUE(self@mutable)) {
+      problems <- c(problems, "cells must be mutable bindings")
+    }
+    if (self@type@shape@rank != 0L || self@storage_type@shape@rank != 0L) {
+      problems <- c(problems, "cells currently require scalar semantic and storage types")
+    }
+    if (!identical(self@type@base, self@storage_type@base)) {
+      problems <- c(problems, "@type and @storage_type must have the same base type")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Lowered mutable-cell read
+#'
+#' @inheritParams TccqValue
+#' @param cell Mutable cell being read.
+#' @export
+TccqCellReference <- S7::new_class(
+  "TccqCellReference",
+  package = "tccquickr",
+  parent = TccqValue,
+  properties = list(cell = TccqCell),
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@op, "cell_reference")) {
+      problems <- c(problems, "cell references must use the `cell_reference` operation")
+    }
+    if (length(self@inputs) != 0L) {
+      problems <- c(problems, "cell references do not own value-graph inputs")
+    }
+    if (!identical(self@type, self@cell@type)) {
+      problems <- c(problems, "@type must match the referenced cell")
+    }
+    if (
+      !isTRUE(self@effect@reads) ||
+        isTRUE(self@effect@writes) ||
+        isTRUE(self@effect@allocates) ||
+        isTRUE(self@effect@boundary) ||
+        isTRUE(self@effect@may_error) ||
+        isTRUE(self@effect@may_warn)
+    ) {
+      problems <- c(problems, "cell references must be read-only effects")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Construct a mutable lexical cell
+#'
+#' @inheritParams TccqCell
+#' @export
+tccq_cell <- function(name, value_id, type, storage_type = tccq_type(type@base)) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_character_scalar(value_id, "value_id")
+  .tccq_check_s7(type, TccqType, "TccqType", "type")
+  .tccq_check_s7(storage_type, TccqType, "TccqType", "storage_type")
+  TccqCell(
+    name = name,
+    type = type,
+    mutable = TRUE,
+    value_id = value_id,
+    storage_type = storage_type
+  )
+}
+
+#' Construct a lowered mutable-cell read
+#'
+#' @param id Stable value id for this read.
+#' @param cell Mutable cell being read.
+#' @export
+tccq_cell_reference <- function(id, cell) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(cell, TccqCell, "TccqCell", "cell")
+  TccqCellReference(
+    id = id,
+    op = "cell_reference",
+    inputs = list(),
+    type = cell@type,
+    effect = tccq_effect(reads = TRUE),
+    attrs = list(),
+    cell = cell
+  )
+}
+
+TCCQ_WRITE_TARGET_KINDS <- c("local", "result", "cell")
 
 #' Neutral write target
 #'
@@ -538,7 +669,8 @@ TCCQ_WRITE_TARGET_KINDS <- c("local", "result")
 #' @param value_id Stable value id written by the target.
 #' @param type Semantic value type.
 #' @param storage_type Scalar storage type written at the target.
-#' @param kind Target kind: `local` or `result`.
+#' @param kind Target kind: `local`, `result`, or `cell`.
+#' @param binding Optional binding owned by the target.
 #' @export
 TccqWriteTarget <- S7::new_class(
   "TccqWriteTarget",
@@ -547,7 +679,8 @@ TccqWriteTarget <- S7::new_class(
     value_id = S7::class_character,
     type = TccqType,
     storage_type = TccqType,
-    kind = S7::class_character
+    kind = S7::class_character,
+    binding = S7::new_union(NULL, TccqBinding)
   ),
   validator = function(self) {
     problems <- character()
@@ -562,6 +695,19 @@ TccqWriteTarget <- S7::new_class(
     }
     if (!identical(self@storage_type@base, self@type@base)) {
       problems <- c(problems, "@storage_type and @type must have the same base type")
+    }
+    if (identical(self@kind, "cell")) {
+      if (!S7::S7_inherits(self@binding, TccqCell)) {
+        problems <- c(problems, "cell targets must carry their <TccqCell> binding")
+      } else if (
+        !identical(self@value_id, self@binding@value_id) ||
+          !identical(self@type, self@binding@type) ||
+          !identical(self@storage_type, self@binding@storage_type)
+      ) {
+        problems <- c(problems, "cell target facts must match the bound cell")
+      }
+    } else if (!is.null(self@binding)) {
+      problems <- c(problems, "only cell targets may carry a binding")
     }
     if (length(problems) > 0L) problems
   }
@@ -604,6 +750,7 @@ TccqStatement <- S7::new_class(
 TccqBlock <- S7::new_class(
   "TccqBlock",
   package = "tccquickr",
+  parent = TccqProgramBody,
   properties = list(
     id = S7::class_character,
     locals = S7::class_list,
@@ -627,8 +774,8 @@ TccqBlock <- S7::new_class(
     if (all(locals_are_targets)) {
       local_kinds <- vapply(self@locals, function(local) local@kind, character(1))
       local_value_ids <- vapply(self@locals, function(local) local@value_id, character(1))
-      if (any(local_kinds != "local")) {
-        problems <- c(problems, "@locals must contain only local write targets")
+      if (any(!local_kinds %in% c("local", "cell"))) {
+        problems <- c(problems, "@locals must contain local or cell write targets")
       }
       if (anyDuplicated(local_value_ids)) {
         problems <- c(problems, "@locals must have unique value ids")
@@ -717,8 +864,13 @@ TccqAssignment <- S7::new_class(
     if (!identical(self@target@type, self@value@type)) {
       problems <- c(problems, "@target and @value must have identical semantic types")
     }
-    if (!identical(self@effect, self@value@effect)) {
-      problems <- c(problems, "@effect must match the assigned expression")
+    expected_effect <- if (identical(self@target@kind, "cell")) {
+      tccq_effect_union(self@value@effect, tccq_effect(writes = TRUE))
+    } else {
+      self@value@effect
+    }
+    if (!identical(self@effect, expected_effect)) {
+      problems <- c(problems, "@effect must match the assignment target and expression")
     }
     if (length(problems) > 0L) problems
   }
@@ -763,6 +915,57 @@ TccqConditional <- S7::new_class(
   }
 )
 
+#' Neutral while statement
+#'
+#' This is sequential recurrence, not a [TccqLoopNest]. The condition is
+#' re-evaluated before every iteration and the body may update explicitly
+#' declared mutable cells.
+#'
+#' @inheritParams TccqStatement
+#' @param condition Scalar logical condition expression.
+#' @param body Procedural body evaluated while the condition is true.
+#' @param semantics Evaluator facts for the originating `while` special form.
+#' @export
+TccqWhile <- S7::new_class(
+  "TccqWhile",
+  package = "tccquickr",
+  parent = TccqStatement,
+  properties = list(
+    condition = TccqExpression,
+    body = TccqBlock,
+    semantics = TccqCallSemantics
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      !identical(self@condition@type@base, "logical") ||
+        self@condition@type@shape@rank != 0L
+    ) {
+      problems <- c(problems, "@condition must be a scalar logical expression")
+    }
+    if (
+      !identical(self@semantics@call@name, "while") ||
+        !isTRUE(self@semantics@control) ||
+        !identical(self@semantics@forcing_policy, "special")
+    ) {
+      problems <- c(problems, "@semantics must describe the R `while` special form")
+    }
+    expected_effect <- Reduce(
+      tccq_effect_union,
+      list(
+        self@condition@effect,
+        self@body@effect,
+        tccq_effect(may_error = TRUE)
+      ),
+      init = tccq_effect()
+    )
+    if (!identical(self@effect, expected_effect)) {
+      problems <- c(problems, "@effect must include the condition, body, and condition error")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Construct a neutral write target
 #'
 #' @inheritParams TccqWriteTarget
@@ -771,17 +974,20 @@ tccq_write_target <- function(
   value_id,
   type,
   storage_type = tccq_type(type@base),
-  kind = "local"
+  kind = "local",
+  binding = NULL
 ) {
   .tccq_check_character_scalar(value_id, "value_id")
   .tccq_check_s7(type, TccqType, "TccqType", "type")
   .tccq_check_s7(storage_type, TccqType, "TccqType", "storage_type")
   .tccq_check_character_scalar(kind, "kind")
+  .tccq_check_optional_s7(binding, TccqBinding, "TccqBinding", "binding")
   TccqWriteTarget(
     value_id = value_id,
     type = type,
     storage_type = storage_type,
-    kind = kind
+    kind = kind,
+    binding = binding
   )
 }
 
@@ -821,7 +1027,12 @@ tccq_assignment <- function(id, target, value) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_s7(target, TccqWriteTarget, "TccqWriteTarget", "target")
   .tccq_check_s7(value, TccqExpression, "TccqExpression", "value")
-  TccqAssignment(id = id, effect = value@effect, target = target, value = value)
+  effect <- if (identical(target@kind, "cell")) {
+    tccq_effect_union(value@effect, tccq_effect(writes = TRUE))
+  } else {
+    value@effect
+  }
+  TccqAssignment(id = id, effect = effect, target = target, value = value)
 }
 
 #' Construct a neutral conditional
@@ -847,6 +1058,29 @@ tccq_conditional <- function(
     consequent = consequent,
     alternative = alternative,
     branch = branch
+  )
+}
+
+#' Construct a neutral while statement
+#'
+#' @inheritParams TccqWhile
+#' @export
+tccq_while <- function(id, condition, body, semantics) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(condition, TccqExpression, "TccqExpression", "condition")
+  .tccq_check_s7(body, TccqBlock, "TccqBlock", "body")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  effect <- Reduce(
+    tccq_effect_union,
+    list(condition@effect, body@effect, tccq_effect(may_error = TRUE)),
+    init = tccq_effect()
+  )
+  TccqWhile(
+    id = id,
+    effect = effect,
+    condition = condition,
+    body = body,
+    semantics = semantics
   )
 }
 

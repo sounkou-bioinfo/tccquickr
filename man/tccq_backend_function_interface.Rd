@@ -20,7 +20,8 @@ tccq_backend_function_interface(
   extents = list(),
   index_names = character(),
   result_dims = list(),
-  result_count_name = ""
+  result_count_name = "",
+  error_channel = NULL
 )
 }
 \arguments{
@@ -28,7 +29,7 @@ tccq_backend_function_interface(
 
 \item{source_language}{Source language consumed by the printer.}
 
-\item{kind}{Function shape: \code{scalar} or \code{loop_nest}.}
+\item{kind}{Function shape: \code{scalar}, \code{loop_nest}, or \code{structured}.}
 
 \item{abi}{Callable ABI.}
 
@@ -56,6 +57,8 @@ tccq_backend_function_interface(
 
 \item{result_count_name}{Generated result element-count parameter name, or
 empty string for scalar results.}
+
+\item{error_channel}{Optional generated callable error channel.}
 }
 \description{
 Construct a backend function interface

@@ -8,7 +8,8 @@ tccq_write_target(
   value_id,
   type,
   storage_type = tccq_type(type@base),
-  kind = "local"
+  kind = "local",
+  binding = NULL
 )
 }
 \arguments{
@@ -18,7 +19,9 @@ tccq_write_target(
 
 \item{storage_type}{Scalar storage type written at the target.}
 
-\item{kind}{Target kind: \code{local} or \code{result}.}
+\item{kind}{Target kind: \code{local}, \code{result}, or \code{cell}.}
+
+\item{binding}{Optional binding owned by the target.}
 }
 \description{
 Construct a neutral write target

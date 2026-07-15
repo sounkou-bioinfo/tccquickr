@@ -655,6 +655,63 @@ expect_true(any(vapply(
   logical(1)
 )))
 
+triangular_recurrence <- function(n) {
+  declare(type(n = double()))
+  iteration <- 0
+  total <- 0
+  while (iteration < n) {
+    iteration <- iteration + 1
+    total <- total + iteration
+  }
+  total
+}
+
+triangular_result <- tccq_analyze(triangular_recurrence, strict = TRUE)
+expect_true(triangular_result@success)
+expect_true(S7::S7_inherits(triangular_result@value@schedule, TccqProgramSchedule))
+expect_equal(length(triangular_result@value@schedule@steps), 0L)
+expect_true(S7::S7_inherits(triangular_result@value@schedule@body, TccqValueBlock))
+expect_equal(triangular_result@value@attrs$lowering$strategy, "sequential-control")
+expect_equal(length(triangular_result@value@schedule@body@locals), 2L)
+expect_true(all(vapply(
+  triangular_result@value@schedule@body@locals,
+  function(target) identical(target@kind, "cell") &&
+    S7::S7_inherits(target@binding, TccqCell),
+  logical(1)
+)))
+triangular_while <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqWhile),
+  triangular_result@value@schedule@body@statements
+)[[1L]]
+expect_true(S7::S7_inherits(triangular_while@body, TccqBlock))
+expect_false(S7::S7_inherits(triangular_while@body, TccqValueBlock))
+expect_equal(length(triangular_while@body@statements), 2L)
+expect_true(triangular_while@effect@writes)
+expect_true(triangular_while@effect@may_error)
+expect_true(any(vapply(
+  triangular_result@value@values,
+  S7::S7_inherits,
+  logical(1),
+  class = TccqCellReference
+)))
+
+uninitialized_recurrence <- function(n) {
+  declare(type(n = double()))
+  total <- 0
+  while (total < n) {
+    iteration <- 1
+    total <- total + iteration
+  }
+  total
+}
+uninitialized_recurrence_result <- tccq_analyze(uninitialized_recurrence)
+expect_false(uninitialized_recurrence_result@success)
+expect_true(any(vapply(
+  uninitialized_recurrence_result@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "lowering.uninitialized_loop_cell"),
+  logical(1)
+)))
+
 explicit_replacement <- function(x) {
   declare(type(x = double(n)))
   `[<-`(x, 1L, value = 2)

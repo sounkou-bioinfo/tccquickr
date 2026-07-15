@@ -4,16 +4,20 @@
 \alias{TccqProgramSchedule}
 \title{Ordered program evaluation schedule}
 \usage{
-TccqProgramSchedule(steps = list(), result = character(0))
+TccqProgramSchedule(steps = list(), result = character(0), body = NULL)
 }
 \arguments{
 \item{steps}{Ordered \code{TccqEvaluationStep} values.}
 
 \item{result}{Result value id produced by the final step.}
+
+\item{body}{Optional structured value-producing body.}
 }
 \description{
 The schedule is the semantic owner of top-level R evaluation order. Its
-steps are contiguous after declarations are removed, and its final step
-produces the program result. Loop-nest planning consumes this value rather
-than reconstructing statement order from value ids or source text.
+linear steps are contiguous after declarations are removed. A structured
+body is the mutually exclusive control-flow form. In either form, the
+schedule produces the declared program result. Lowering and backend planning
+consume this value rather than reconstructing statement order from value ids
+or source text.
 }

@@ -4,7 +4,7 @@
 \alias{tccq_program_schedule}
 \title{Construct an ordered program evaluation schedule}
 \usage{
-tccq_program_schedule(steps, result, values)
+tccq_program_schedule(steps, result, values, body = NULL)
 }
 \arguments{
 \item{steps}{Ordered \code{TccqEvaluationStep} values.}
@@ -12,9 +12,11 @@ tccq_program_schedule(steps, result, values)
 \item{result}{Result value id produced by the final step.}
 
 \item{values}{Lowered values referenced by the schedule.}
+
+\item{body}{Optional structured value-producing body.}
 }
 \description{
 \code{values} is the lowered value graph used to verify references, binding
-types, dominance, and complete step effects. It is checked at this boundary
-but is not duplicated inside the schedule.
+types, dominance, complete step effects, and structured-body cell ownership.
+It is checked at this boundary but is not duplicated inside the schedule.
 }

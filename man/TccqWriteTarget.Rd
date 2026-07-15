@@ -8,7 +8,8 @@ TccqWriteTarget(
   value_id = character(0),
   type = TccqType(),
   storage_type = TccqType(),
-  kind = character(0)
+  kind = character(0),
+  binding = NULL
 )
 }
 \arguments{
@@ -18,7 +19,9 @@ TccqWriteTarget(
 
 \item{storage_type}{Scalar storage type written at the target.}
 
-\item{kind}{Target kind: \code{local} or \code{result}.}
+\item{kind}{Target kind: \code{local}, \code{result}, or \code{cell}.}
+
+\item{binding}{Optional binding owned by the target.}
 }
 \description{
 A write target names a typed value destination without spelling it in C,

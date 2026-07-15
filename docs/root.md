@@ -65,6 +65,20 @@ arrays. Both allocate only in the selected definition path and clean up safely
 after the final consumer. A shared materialization without a typed definition
 remains a refusal when its uses imply incompatible paths.
 
+Sequential recurrence now has a separate honest representation. A scalar R
+`while` becomes `TccqWhile` over a typed statement block, and loop-carried
+variables become mutable `TccqCell` storage rather than fake SSA bindings or a
+special `TccqLoopNest` mode. Cell reads use the same neutral expressions as the
+array path, assignments carry write effects, and C, TinyCC, and Fortran consume
+the same structured program body. That body is the mutually exclusive
+structured form of `TccqProgramSchedule`, preserving one owner for top-level
+order and result identity. Initialization before entry is mandatory. Numeric
+comparisons preserve missing logical results, and every generated control test
+reports them through a typed callable error channel; structured exits, nested
+sequential control, and arrays remain explicit gaps. A controlled array result
+uses caller-owned output storage, so C, Rtinycc, and Fortran inspect that error
+channel without first converting a returned buffer pointer.
+
 The first schedule-aware fusion is deliberately narrow. A local elementwise
 definition can remain an expression only when it has one exact lexical read in
 the immediately following elementwise evaluation, both trees have the same
@@ -81,9 +95,9 @@ Only exact-type host buffers outside control paths can share one typed physical
 allocation, and only when the earlier lifetime ends before the later
 definition. Directly dependent or simultaneously live buffers remain distinct.
 
-The remaining north-star pressure is loop and evaluator structure. Viterbi and
-smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement
-calls, dispatch, promises, side effects, and interruption should fail with
-structured diagnostics until the compiler has typed facts for those concepts.
+The remaining north-star pressure is richer loop and evaluator structure.
+Viterbi and smaller probes around `switch`, `for`, `repeat`, `break`, `next`,
+replacement calls, dispatch, promises, side effects, and interruption should
+fail with structured diagnostics until the compiler has typed facts for those concepts.
 The goal is not to accept more R by fallback; it is to make each new accepted
 program deepen the shared representation consumed by every backend.

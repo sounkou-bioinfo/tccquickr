@@ -382,6 +382,213 @@ procedural_block <- TccqBlock(
 )
 expect_true(S7::S7_inherits(procedural_block, TccqBlock))
 expect_false(S7::S7_inherits(procedural_block, TccqValueBlock))
+expect_true(S7::S7_inherits(procedural_block, TccqProgramBody))
+
+counter_cell <- tccq_cell("counter", "cell_counter", finite@type)
+counter_reference <- tccq_cell_reference("value_counter_read", counter_cell)
+counter_expression <- tccq_expression(
+  "value_counter_read",
+  "reference",
+  type = counter_cell@type,
+  op = "cell",
+  effect = counter_reference@effect,
+  reference = tccq_expression_reference(
+    counter_cell@value_id,
+    binding = counter_cell
+  )
+)
+counter_target <- tccq_write_target(
+  counter_cell@value_id,
+  counter_cell@type,
+  kind = "cell",
+  binding = counter_cell
+)
+counter_assignment <- tccq_assignment(
+  "statement_counter",
+  counter_target,
+  counter_expression
+)
+counter_body <- TccqBlock(
+  id = "block_counter",
+  locals = list(),
+  statements = list(counter_assignment),
+  effect = counter_assignment@effect
+)
+while_semantics <- tccq_call_semantics(tccq_call(
+  "while",
+  expr = quote(while (flag) counter <- counter)
+))
+while_statement <- tccq_while(
+  "statement_while",
+  condition_expression,
+  counter_body,
+  while_semantics
+)
+
+expect_true(S7::S7_inherits(counter_cell, TccqBinding))
+expect_false(S7::S7_inherits(counter_cell, TccqLocalBinding))
+expect_true(counter_cell@mutable)
+expect_identical(counter_reference@cell, counter_cell)
+expect_identical(counter_target@binding, counter_cell)
+expect_true(counter_assignment@effect@writes)
+expect_true(S7::S7_inherits(while_statement, TccqWhile))
+expect_true(while_statement@effect@reads)
+expect_true(while_statement@effect@writes)
+expect_true(while_statement@effect@may_error)
+expect_equal(while_statement@semantics@forcing_policy, "special")
+
+counter_initialization <- tccq_assignment(
+  "statement_counter_initialization",
+  counter_target,
+  literal_expression
+)
+counter_result_target <- tccq_write_target(
+  counter_reference@id,
+  counter_reference@type,
+  kind = "result"
+)
+counter_result_assignment <- tccq_assignment(
+  "statement_counter_result",
+  counter_result_target,
+  counter_expression
+)
+counter_program_body <- tccq_value_block(
+  "block_counter_program",
+  result = counter_result_target,
+  locals = list(counter_target),
+  statements = list(
+    counter_initialization,
+    while_statement,
+    counter_result_assignment
+  )
+)
+counter_program_values <- list(
+  tccq_value(
+    literal_expression@value_id,
+    "literal",
+    type = literal_expression@type,
+    attrs = list(literal = literal_expression@literal)
+  ),
+  tccq_value(
+    condition_expression@value_id,
+    "formal",
+    type = condition_expression@type,
+    attrs = list(symbol = "flag")
+  ),
+  counter_reference
+)
+counter_program_schedule <- tccq_program_schedule(
+  steps = list(),
+  result = counter_reference@id,
+  values = counter_program_values,
+  body = counter_program_body
+)
+expect_equal(length(counter_program_schedule@steps), 0L)
+expect_identical(counter_program_schedule@body, counter_program_body)
+
+mismatched_body_result <- tryCatch(
+  tccq_program_schedule(
+    steps = list(),
+    result = literal_expression@value_id,
+    values = counter_program_values,
+    body = counter_program_body
+  ),
+  error = identity
+)
+expect_true(inherits(mismatched_body_result, "schema.program_body_result_mismatch"))
+
+mismatched_result_type <- tryCatch(
+  tccq_program_schedule(
+    steps = list(),
+    result = counter_reference@id,
+    values = c(
+      counter_program_values[-length(counter_program_values)],
+      list(tccq_value(
+        counter_reference@id,
+        "formal",
+        type = logical_scalar,
+        attrs = list(symbol = "counter")
+      ))
+    ),
+    body = counter_program_body
+  ),
+  error = identity
+)
+expect_true(inherits(mismatched_result_type, "schema.program_target_type_mismatch"))
+
+undeclared_local_target <- tccq_write_target(
+  literal_expression@value_id,
+  literal_expression@type,
+  kind = "local"
+)
+undeclared_local_assignment <- tccq_assignment(
+  "statement_undeclared_local",
+  undeclared_local_target,
+  literal_expression
+)
+undeclared_local_body <- tccq_value_block(
+  "block_undeclared_local",
+  result = counter_result_target,
+  locals = list(counter_target),
+  statements = list(
+    counter_initialization,
+    undeclared_local_assignment,
+    counter_result_assignment
+  )
+)
+undeclared_local_schedule <- tryCatch(
+  tccq_program_schedule(
+    steps = list(),
+    result = counter_reference@id,
+    values = counter_program_values,
+    body = undeclared_local_body
+  ),
+  error = identity
+)
+expect_true(inherits(undeclared_local_schedule, "schema.unowned_program_local"))
+
+uninitialized_counter_body <- tccq_value_block(
+  "block_uninitialized_counter",
+  result = counter_result_target,
+  locals = list(counter_target),
+  statements = list(while_statement, counter_result_assignment)
+)
+uninitialized_counter_schedule <- tryCatch(
+  tccq_program_schedule(
+    steps = list(),
+    result = counter_reference@id,
+    values = counter_program_values,
+    body = uninitialized_counter_body
+  ),
+  error = identity
+)
+expect_true(inherits(
+  uninitialized_counter_schedule,
+  "schema.program_cell_use_before_definition"
+))
+
+ambiguous_counter_schedule <- tryCatch(
+  tccq_program_schedule(
+    steps = list(local_step),
+    result = counter_reference@id,
+    values = c(counter_program_values, list(value)),
+    body = counter_program_body
+  ),
+  error = identity
+)
+expect_true(inherits(ambiguous_counter_schedule, "schema.ambiguous_program_schedule"))
+
+unbound_cell_target <- tryCatch(
+  tccq_write_target("cell_unbound", finite@type, kind = "cell"),
+  error = identity
+)
+expect_true(inherits(unbound_cell_target, "error"))
+
+nonscalar_cell <- tryCatch(
+  tccq_cell("matrix", "cell_matrix", matrix_type),
+  error = identity
+)
+expect_true(inherits(nonscalar_cell, "error"))
 
 incorrect_assignment_effect <- tryCatch(
   TccqAssignment(

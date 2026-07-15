@@ -17,9 +17,10 @@ TCCQ_BRIDGE_KINDS <- c(
   "buffer_to_sexp",
   "boundary"
 )
-TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "loop_nest")
+TCCQ_BACKEND_FUNCTION_KINDS <- c("scalar", "loop_nest", "structured")
 TCCQ_BACKEND_FUNCTION_ABIS <- c("c", "fortran_bind_c")
 TCCQ_BACKEND_RESULT_PLACEMENTS <- c("return", "output_argument")
+TCCQ_RUNTIME_STATUS_CLASS <- "tccq_runtime_status"
 TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable", "native_callable")
 TCCQ_BACKEND_VALUE_BINDING_ROLES <- c("parameter", "local")
 
@@ -242,6 +243,47 @@ TccqBackendExtentBinding <- S7::new_class(
   }
 )
 
+#' Backend callable error channel
+#'
+#' Generated code writes zero on success or the one-based position of a
+#' diagnostic on failure. Wrappers turn the status back into the corresponding
+#' classed runtime diagnostic.
+#'
+#' @param source_name Generated status-output parameter name.
+#' @param diagnostics Ordered runtime diagnostics addressable by status code.
+#' @export
+TccqBackendErrorChannel <- S7::new_class(
+  "TccqBackendErrorChannel",
+  package = "tccquickr",
+  properties = list(
+    source_name = S7::class_character,
+    diagnostics = S7::class_list
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@source_name) != 1L || is.na(self@source_name) || !nzchar(self@source_name)) {
+      problems <- c(problems, "@source_name must be a single non-empty string")
+    }
+    diagnostics_are_typed <- vapply(
+      self@diagnostics,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqDiagnostic
+    )
+    if (length(self@diagnostics) == 0L || !all(diagnostics_are_typed)) {
+      problems <- c(problems, "@diagnostics must contain typed runtime diagnostics")
+    }
+    if (all(diagnostics_are_typed) && any(vapply(
+      self@diagnostics,
+      function(diagnostic) !identical(diagnostic@phase, "runtime"),
+      logical(1)
+    ))) {
+      problems <- c(problems, "error-channel diagnostics must belong to the runtime phase")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Backend function interface
 #'
 #' A backend function interface is the source-level callable boundary consumed
@@ -251,7 +293,7 @@ TccqBackendExtentBinding <- S7::new_class(
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
-#' @param kind Function shape: `scalar` or `loop_nest`.
+#' @param kind Function shape: `scalar`, `loop_nest`, or `structured`.
 #' @param abi Callable ABI.
 #' @param parameters Ordered ABI parameter bindings.
 #' @param locals Ordered scalar-local bindings.
@@ -266,6 +308,7 @@ TccqBackendExtentBinding <- S7::new_class(
 #' @param result_dims Typed result dimensions.
 #' @param result_count_name Generated result element-count parameter name, or
 #'   empty string for scalar results.
+#' @param error_channel Optional generated callable error channel.
 #' @export
 TccqBackendFunctionInterface <- S7::new_class(
   "TccqBackendFunctionInterface",
@@ -286,7 +329,8 @@ TccqBackendFunctionInterface <- S7::new_class(
     extents = S7::class_list,
     index_names = S7::class_character,
     result_dims = S7::class_list,
-    result_count_name = S7::class_character
+    result_count_name = S7::class_character,
+    error_channel = S7::new_union(NULL, TccqBackendErrorChannel)
   ),
   validator = function(self) {
     problems <- character()
@@ -421,7 +465,8 @@ TccqBackendFunctionInterface <- S7::new_class(
       },
       self@index_names,
       self@result_name,
-      self@result_count_name
+      self@result_count_name,
+      if (is.null(self@error_channel)) "" else self@error_channel@source_name
     )
     generated_names <- generated_names[nzchar(generated_names)]
     if (anyDuplicated(generated_names)) {
@@ -1078,6 +1123,24 @@ tccq_backend_extent_binding <- function(source_name, symbol) {
   TccqBackendExtentBinding(source_name = source_name, symbol = symbol)
 }
 
+#' Construct a backend callable error channel
+#'
+#' @inheritParams TccqBackendErrorChannel
+#' @export
+tccq_backend_error_channel <- function(source_name, diagnostics) {
+  .tccq_check_character_scalar(source_name, "source_name")
+  .tccq_check_list_of(
+    diagnostics,
+    TccqDiagnostic,
+    "TccqDiagnostic",
+    "diagnostics"
+  )
+  TccqBackendErrorChannel(
+    source_name = source_name,
+    diagnostics = diagnostics
+  )
+}
+
 #' Construct a backend function interface
 #'
 #' @inheritParams TccqBackendFunctionInterface
@@ -1098,7 +1161,8 @@ tccq_backend_function_interface <- function(
   extents = list(),
   index_names = character(),
   result_dims = list(),
-  result_count_name = ""
+  result_count_name = "",
+  error_channel = NULL
 ) {
   .tccq_check_character_scalar(symbol, "symbol")
   .tccq_check_character_scalar(source_language, "source_language")
@@ -1180,6 +1244,12 @@ tccq_backend_function_interface <- function(
   }
   .tccq_check_list_of(result_dims, TccqDim, "TccqDim", "result_dims")
   .tccq_check_character_or_empty(result_count_name, "result_count_name")
+  .tccq_check_optional_s7(
+    error_channel,
+    TccqBackendErrorChannel,
+    "TccqBackendErrorChannel",
+    "error_channel"
+  )
 
   TccqBackendFunctionInterface(
     symbol = symbol,
@@ -1197,7 +1267,8 @@ tccq_backend_function_interface <- function(
     extents = extents,
     index_names = index_names,
     result_dims = result_dims,
-    result_count_name = result_count_name
+    result_count_name = result_count_name,
+    error_channel = error_channel
   )
 }
 
@@ -1859,7 +1930,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         return(if (identical(language, "fortran")) "real(c_double)" else "double")
       }
       if (identical(type@base, "logical")) {
-        return(if (identical(language, "fortran")) "logical(c_bool)" else "bool")
+        return(if (identical(language, "fortran")) "integer(c_int)" else "int")
       }
       tccq_abort(
         "backend.unsupported_scalar_type",
@@ -1980,9 +2051,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       if (identical(expression@kind, "reference")) {
         access <- expression@reference@access
         if (!S7::S7_inherits(access, TccqAccess)) {
+          if (expression@type@shape@rank == 0L) {
+            source_name <- emit_context$source_name_by_value_id[[
+              expression@reference@source_value_id
+            ]]
+            if (!is.null(source_name) && nzchar(source_name)) {
+              return(source_name)
+            }
+          }
           tccq_abort(
             "backend.missing_access",
-            "Loop-nest references must carry a typed access.",
+            "Array references require a typed access and scalar references require a bound source.",
             phase = "backend",
             path = sprintf("backend.%s.access", backend@id),
             data = list(backend = backend@id, value_id = expression@value_id)
@@ -2053,9 +2132,26 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       render_result@value
     }
 
-    backend_function_interface <- function(symbol, nests, result, formals) {
-      result_nest <- nests[[length(nests)]]
-      intermediate_nests <- nests[-length(nests)]
+    backend_function_interface <- function(symbol, nests, result, formals, body = NULL) {
+      structured_body <- S7::S7_inherits(body, TccqValueBlock)
+      if (structured_body && length(nests) > 0L) {
+        tccq_abort(
+          "backend.competing_iteration_plans",
+          "A source plan cannot carry both a structured program body and loop nests.",
+          phase = "backend",
+          path = sprintf("backend.%s.interface", backend@id)
+        )
+      }
+      if (!structured_body && length(nests) == 0L) {
+        tccq_abort(
+          "backend.missing_executable_body",
+          "A source plan needs a structured program body or at least one loop nest.",
+          phase = "backend",
+          path = sprintf("backend.%s.interface", backend@id)
+        )
+      }
+      result_nest <- if (structured_body) NULL else nests[[length(nests)]]
+      intermediate_nests <- if (structured_body) list() else nests[-length(nests)]
       parameter_names <- c_identifier("input", seq_along(formals))
       parameters <- unname(Map(function(source_name, value) {
         tccq_backend_value_binding(
@@ -2086,14 +2182,30 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           if (S7::S7_inherits(statement, TccqConditional)) {
             collect_block_locals(statement@consequent)
             collect_block_locals(statement@alternative)
+          } else if (S7::S7_inherits(statement, TccqWhile)) {
+            collect_block_locals(statement@body)
           }
         }
         invisible(NULL)
+      }
+      block_has_condition <- function(block) {
+        any(vapply(block@statements, function(statement) {
+          if (S7::S7_inherits(statement, TccqConditional)) {
+            return(TRUE)
+          }
+          if (S7::S7_inherits(statement, TccqWhile)) {
+            return(TRUE)
+          }
+          FALSE
+        }, logical(1)))
       }
       for (nest in nests) {
         if (S7::S7_inherits(nest@body, TccqValueBlock)) {
           collect_block_locals(nest@body)
         }
+      }
+      if (structured_body) {
+        collect_block_locals(body)
       }
       accumulator_names <- c_identifier("accumulator", seq_along(accumulator_targets))
       statement_local_count <- length(local_targets) - length(accumulator_targets)
@@ -2134,7 +2246,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       extent_bindings <- unname(Map(function(symbol, source_name) {
         tccq_backend_extent_binding(source_name, symbol)
       }, extents$symbols, extents$names))
-      kind <- if (length(result_nest@axes) == 0L) "scalar" else "loop_nest"
+      kind <- if (structured_body) {
+        "structured"
+      } else if (length(result_nest@axes) == 0L) {
+        "scalar"
+      } else {
+        "loop_nest"
+      }
       for (nest in nests) {
         roles <- vapply(nest@axes, function(axis) axis@role, character(1))
         if (length(roles) > 1L && any(diff(match(roles, c("map", "reduce"))) < 0L)) {
@@ -2151,8 +2269,47 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         vapply(nest@axes, function(axis) axis@name, character(1))
       }))) %||% character()
       result_rank <- result@type@shape@rank
-      result_needs_local <- S7::S7_inherits(result_nest@body, TccqValueBlock) &&
-        is.null(result_nest@reducer)
+      has_condition <- any(vapply(
+        nests,
+        function(nest) {
+          length(nest@guards) > 0L ||
+            (S7::S7_inherits(nest@body, TccqValueBlock) && block_has_condition(nest@body))
+        },
+        logical(1)
+      )) || (structured_body && block_has_condition(body))
+      runtime_diagnostics <- if (has_condition) {
+        list(tccq_diagnostic(
+          "runtime.invalid_logical_condition",
+          "A generated scalar condition evaluated to a missing value.",
+          phase = "runtime",
+          path = "callable.condition",
+          data = list(program = program@name, backend = backend@id)
+        ))
+      } else {
+        list()
+      }
+      if (
+        has_condition &&
+          identical(source_language, "c") &&
+          length(allocations) > 0L
+      ) {
+        runtime_diagnostics <- c(runtime_diagnostics, list(tccq_diagnostic(
+          "runtime.generated_allocation_failed",
+          "Generated code could not allocate an intermediate buffer.",
+          phase = "runtime",
+          path = "callable.allocation",
+          data = list(program = program@name, backend = backend@id)
+        )))
+      }
+      error_channel <- if (length(runtime_diagnostics) > 0L) {
+        tccq_backend_error_channel("status_0001", runtime_diagnostics)
+      } else {
+        NULL
+      }
+      result_needs_local <- structured_body || (
+        S7::S7_inherits(result_nest@body, TccqValueBlock) &&
+          is.null(result_nest@reducer)
+      )
       tccq_backend_function_interface(
         symbol = symbol,
         source_language = source_language,
@@ -2163,7 +2320,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         allocations = allocations,
         result_value_id = result@id,
         result_type = result@type,
-        result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
+        result_placement = if (
+          result_rank > 0L &&
+            (identical(source_language, "fortran") || !is.null(error_channel))
+        ) {
           "output_argument"
         } else {
           "return"
@@ -2175,11 +2335,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           ""
         },
-        domain = if (identical(kind, "scalar")) NULL else result_nest@domain,
+        domain = if (kind %in% c("scalar", "structured")) NULL else result_nest@domain,
         extents = extent_bindings,
         index_names = index_names,
         result_dims = result@type@shape@dims,
-        result_count_name = if (result_rank > 0L) "result_count_0001" else ""
+        result_count_name = if (result_rank > 0L) "result_count_0001" else "",
+        error_channel = error_channel
       )
     }
 
@@ -2242,9 +2403,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (identical(literal@type@base, "logical")) {
         if (identical(language, "fortran")) {
-          return(if (isTRUE(literal@value)) ".true._c_bool" else ".false._c_bool")
+          return(if (isTRUE(literal@value)) "1_c_int" else "0_c_int")
         }
-        return(if (isTRUE(literal@value)) "true" else "false")
+        return(if (isTRUE(literal@value)) "1" else "0")
       }
       if (identical(literal@type@base, "integer")) {
         return(sprintf("%d", as.integer(literal@value)))
@@ -2439,9 +2600,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
     }
 
-    emit_c_source <- function(interface, nests, result, formals) {
-      result_nest <- nests[[length(nests)]]
-      intermediate_nests <- nests[-length(nests)]
+    emit_c_source <- function(interface, nests, result, formals, body = NULL) {
+      structured_body <- S7::S7_inherits(body, TccqValueBlock)
+      result_nest <- if (structured_body) NULL else nests[[length(nests)]]
+      intermediate_nests <- if (structured_body) list() else nests[-length(nests)]
       parameter_names <- vapply(
         interface@parameters,
         function(binding) binding@source_name,
@@ -2466,7 +2628,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         character(1)
       )
       first_allocation_use <- !duplicated(intermediate_allocation_ids)
-      plan <- loop_plan(interface, result_nest, emit_context)
+      plan <- if (structured_body) NULL else loop_plan(interface, result_nest, emit_context)
       parameter_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("%s %s", source_scalar_type(value@type, "c"), parameter_name)
@@ -2474,28 +2636,42 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           sprintf("const double *%s", parameter_name)
         }
       }, formals, parameter_names), use.names = FALSE)
+      returns_buffer <- result@type@shape@rank > 0L
+      output_argument <- identical(interface@result_placement, "output_argument")
       signature_declarations <- c(
         parameter_declarations,
         if (length(extent_names) > 0L) sprintf("int %s", extent_names),
-        if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
+        if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name),
+        if (!is.null(interface@error_channel)) {
+          sprintf("int *%s", interface@error_channel@source_name)
+        },
+        if (output_argument) {
+          sprintf("double *%s", interface@result_name)
+        }
       )
-      returns_buffer <- result@type@shape@rank > 0L
       has_intermediate_buffer <- any(vapply(
         intermediate_nests,
         function(nest) nest@storage@type@shape@rank > 0L,
         logical(1)
       ))
-      return_type <- if (returns_buffer) "double" else source_scalar_type(result@type, "c")
+      return_type <- if (output_argument) {
+        "void"
+      } else if (returns_buffer) {
+        "double"
+      } else {
+        source_scalar_type(result@type, "c")
+      }
       lines <- c(
         "#include <math.h>",
-        "#include <stdbool.h>",
+        "#include <limits.h>",
         "#include <stddef.h>",
-        if (returns_buffer || has_intermediate_buffer) "#include <stdlib.h>",
+        if ((returns_buffer && !output_argument) || has_intermediate_buffer) "#include <stdlib.h>",
+        "#define TCCQ_NA_LOGICAL INT_MIN",
         "",
         sprintf(
           "%s %s%s(%s) {",
           return_type,
-          if (returns_buffer) "*" else "",
+          if (returns_buffer && !output_argument) "*" else "",
           interface@symbol,
           paste(signature_declarations, collapse = ", ")
         )
@@ -2503,6 +2679,52 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       depth <- 1L
       push <- function(text, level = depth) {
         lines <<- c(lines, paste0(strrep("  ", level), text))
+      }
+      if (!is.null(interface@error_channel)) {
+        push(sprintf("*%s = 0;", interface@error_channel@source_name))
+      }
+      allocation_failure_status <- if (is.null(interface@error_channel)) {
+        NA_integer_
+      } else {
+        match(
+          "runtime.generated_allocation_failed",
+          vapply(
+            interface@error_channel@diagnostics,
+            function(diagnostic) diagnostic@code,
+            character(1)
+          )
+        )
+      }
+      condition_failure_status <- if (is.null(interface@error_channel)) {
+        NA_integer_
+      } else {
+        match(
+          "runtime.invalid_logical_condition",
+          vapply(
+            interface@error_channel@diagnostics,
+            function(diagnostic) diagnostic@code,
+            character(1)
+          )
+        )
+      }
+      emit_condition_value <- function(condition) {
+        if (is.na(condition_failure_status)) {
+          tccq_abort(
+            "backend.missing_error_channel",
+            "A generated control condition requires a callable error channel.",
+            phase = "backend",
+            path = sprintf("backend.%s.error_channel", backend@id)
+          )
+        }
+        push(sprintf("int condition_value = %s;", expression_text(condition, emit_context)))
+        push("if (condition_value == TCCQ_NA_LOGICAL) {")
+        push(sprintf(
+          "*%s = %d;",
+          interface@error_channel@source_name,
+          condition_failure_status
+        ), depth + 1L)
+        push("goto tccq_runtime_failure;", depth + 1L)
+        push("}")
       }
       open_loop <- function(axis) {
         extent <- extent_text(axis@extent, emit_context$extent_by_symbol)
@@ -2515,16 +2737,18 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       open_guards <- function(guards) {
         for (guard in guards) {
-          condition <- expression_text(guard@condition, emit_context)
-          if (!isTRUE(guard@selected)) {
-            condition <- sprintf("!(%s)", condition)
-          }
-          push(sprintf("if (%s) {", condition))
+          push("{")
+          depth <<- depth + 1L
+          emit_condition_value(guard@condition)
+          comparison <- if (isTRUE(guard@selected)) "!= 0" else "== 0"
+          push(sprintf("if (condition_value %s) {", comparison))
           depth <<- depth + 1L
         }
       }
       close_guards <- function(guards) {
         for (guard in rev(guards)) {
+          depth <<- depth - 1L
+          push("}")
           depth <<- depth - 1L
           push("}")
         }
@@ -2572,7 +2796,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       emit_statement <- function(statement, result_target) {
         if (S7::S7_inherits(statement, TccqAssignment)) {
-          target <- if (identical(statement@target@kind, "local")) {
+          target <- if (statement@target@kind %in% c("local", "cell")) {
             emit_context$source_name_by_value_id[[statement@target@value_id]]
           } else {
             result_target
@@ -2590,13 +2814,32 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           return(invisible(NULL))
         }
         if (S7::S7_inherits(statement, TccqConditional)) {
-          push(sprintf("if (%s) {", expression_text(statement@condition, emit_context)))
+          push("{")
+          depth <<- depth + 1L
+          emit_condition_value(statement@condition)
+          push("if (condition_value != 0) {")
           depth <<- depth + 1L
           emit_statement_block(statement@consequent, result_target)
           depth <<- depth - 1L
           push("} else {")
           depth <<- depth + 1L
           emit_statement_block(statement@alternative, result_target)
+          depth <<- depth - 1L
+          push("}")
+          depth <<- depth - 1L
+          push("}")
+          return(invisible(NULL))
+        }
+        if (S7::S7_inherits(statement, TccqWhile)) {
+          push("while (1) {")
+          depth <<- depth + 1L
+          push("{")
+          depth <<- depth + 1L
+          emit_condition_value(statement@condition)
+          push("if (condition_value == 0) break;")
+          depth <<- depth - 1L
+          push("}")
+          emit_statement_block(statement@body, result_target)
           depth <<- depth - 1L
           push("}")
           return(invisible(NULL))
@@ -2609,18 +2852,30 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           data = list(backend = backend@id, statement = statement)
         )
       }
+      if (structured_body) {
+        push(sprintf("%s %s;", source_scalar_type(result@type, "c"), interface@result_name))
+        emit_statement_block(body, interface@result_name)
+        push(sprintf("return %s;", interface@result_name))
+        if (!is.null(interface@error_channel)) {
+          push("tccq_runtime_failure:")
+          push("return 0;")
+        }
+        return(paste(c(lines, "}"), collapse = "\n"))
+      }
       if (returns_buffer) {
         push(sprintf("if (%s < 0) {", interface@result_count_name))
-        push("return NULL;", depth + 1L)
+        push(if (output_argument) "return;" else "return NULL;", depth + 1L)
         push("}")
-        push(sprintf(
-          "double *%s = (double *)malloc(sizeof(double) * (size_t)%s);",
-          interface@result_name,
-          interface@result_count_name
-        ))
-        push(sprintf("if (%s == NULL) {", interface@result_name))
-        push("return NULL;", depth + 1L)
-        push("}")
+        if (!output_argument) {
+          push(sprintf(
+            "double *%s = (double *)malloc(sizeof(double) * (size_t)%s);",
+            interface@result_name,
+            interface@result_count_name
+          ))
+          push(sprintf("if (%s == NULL) {", interface@result_name))
+          push("return NULL;", depth + 1L)
+          push("}")
+        }
       }
       intermediate_buffer_names <- vapply(
         intermediate_plans[vapply(intermediate_nests, function(nest) {
@@ -2651,14 +2906,25 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             buffer_size_text(intermediate, emit_context)
           ))
           push(sprintf("if (%s == NULL) {", intermediate_plan$materialization_name))
-          for (buffer_name in intermediate_buffer_names) {
-            push(sprintf("free(%s);", buffer_name), depth + 1L)
-          }
-          if (returns_buffer) {
-            push(sprintf("free(%s);", interface@result_name), depth + 1L)
-            push("return NULL;", depth + 1L)
+          if (!is.na(allocation_failure_status)) {
+            push(sprintf(
+              "*%s = %d;",
+              interface@error_channel@source_name,
+              allocation_failure_status
+            ), depth + 1L)
+            push("goto tccq_runtime_failure;", depth + 1L)
           } else {
-            push("return NAN;", depth + 1L)
+            for (buffer_name in intermediate_buffer_names) {
+              push(sprintf("free(%s);", buffer_name), depth + 1L)
+            }
+            if (returns_buffer) {
+              if (!output_argument) {
+                push(sprintf("free(%s);", interface@result_name), depth + 1L)
+              }
+              push(if (output_argument) "return;" else "return NULL;", depth + 1L)
+            } else {
+              push("return NAN;", depth + 1L)
+            }
           }
           push("}")
         }
@@ -2766,7 +3032,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push(sprintf("free(%s);", buffer_name))
       }
       if (returns_buffer) {
-        push(sprintf("return %s;", interface@result_name))
+        push(if (output_argument) "return;" else sprintf("return %s;", interface@result_name))
       } else if (!is.null(result_nest@reducer)) {
         push(sprintf("return %s;", plan$value_text))
       } else if (plan$body_requires_statements) {
@@ -2776,12 +3042,27 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       } else {
         push(sprintf("return %s;", plan$value_text))
       }
+      if (!is.null(interface@error_channel)) {
+        push("tccq_runtime_failure:")
+        for (buffer_name in intermediate_buffer_names) {
+          push(sprintf("free(%s);", buffer_name))
+        }
+        if (returns_buffer) {
+          if (!output_argument) {
+            push(sprintf("free(%s);", interface@result_name))
+          }
+          push(if (output_argument) "return;" else "return NULL;")
+        } else {
+          push("return 0;")
+        }
+      }
       paste(c(lines, "}"), collapse = "\n")
     }
 
-    emit_fortran_source <- function(interface, nests, result, formals) {
-      result_nest <- nests[[length(nests)]]
-      intermediate_nests <- nests[-length(nests)]
+    emit_fortran_source <- function(interface, nests, result, formals, body = NULL) {
+      structured_body <- S7::S7_inherits(body, TccqValueBlock)
+      result_nest <- if (structured_body) NULL else nests[[length(nests)]]
+      intermediate_nests <- if (structured_body) list() else nests[-length(nests)]
       parameter_names <- vapply(
         interface@parameters,
         function(binding) binding@source_name,
@@ -2806,12 +3087,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         character(1)
       )
       first_allocation_use <- !duplicated(intermediate_allocation_ids)
-      plan <- loop_plan(interface, result_nest, emit_context)
+      plan <- if (structured_body) NULL else loop_plan(interface, result_nest, emit_context)
       returns_buffer <- result@type@shape@rank > 0L
       domain_parameter_names <- c(
         extent_names,
         if (nzchar(interface@result_count_name)) interface@result_count_name
       )
+      status_name <- if (is.null(interface@error_channel)) {
+        character()
+      } else {
+        interface@error_channel@source_name
+      }
       value_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
           sprintf("  %s, value :: %s", source_scalar_type(value@type, "fortran"), parameter_name)
@@ -2825,7 +3111,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             "subroutine %s(%s) &",
             interface@symbol,
             paste(
-              c(parameter_names, domain_parameter_names, interface@result_name),
+              c(parameter_names, domain_parameter_names, status_name, interface@result_name),
               collapse = ", "
             )
           ),
@@ -2836,7 +3122,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           sprintf(
             "function %s(%s) &",
             interface@symbol,
-            paste(c(parameter_names, domain_parameter_names), collapse = ", ")
+            paste(c(parameter_names, domain_parameter_names, status_name), collapse = ", ")
           ),
           sprintf("  bind(c, name = \"%s\") result(%s)", interface@symbol, interface@result_name)
         )
@@ -2844,19 +3130,23 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         sprintf(
           "function %s(%s) bind(c, name = \"%s\") result(%s)",
           interface@symbol,
-          paste(parameter_names, collapse = ", "),
+          paste(c(parameter_names, status_name), collapse = ", "),
           interface@symbol,
           interface@result_name
         )
       }
       lines <- c(
         header,
-        "  use iso_c_binding, only: c_bool, c_double, c_int",
+        "  use iso_c_binding, only: c_double, c_int",
+        "  use, intrinsic :: ieee_arithmetic, only: ieee_is_nan",
         "  implicit none",
         if (length(domain_parameter_names) > 0L) {
           sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", "))
         },
         value_declarations,
+        if (length(status_name) > 0L) {
+          sprintf("  integer(c_int), intent(out) :: %s", status_name)
+        },
         if (returns_buffer) {
           sprintf("  real(c_double), intent(out) :: %s(*)", interface@result_name)
         } else {
@@ -2866,7 +3156,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             interface@result_name
           )
         },
-        if (!is.null(result_nest@reducer)) {
+        if (!structured_body && !is.null(result_nest@reducer)) {
           sprintf(
             "  %s :: %s",
             source_scalar_type(plan$accumulator_type, "fortran"),
@@ -2908,11 +3198,72 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }, intermediate_nests, intermediate_plans, as.list(first_allocation_use))),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
-        }
+        },
+        "  integer(c_int), parameter :: tccq_na_logical = -huge(0_c_int) - 1_c_int"
       )
       depth <- 1L
       push <- function(text, level = depth) {
         lines <<- c(lines, paste0(strrep("  ", level), text))
+      }
+      if (length(status_name) > 0L) {
+        push(sprintf("%s = 0_c_int", status_name))
+      }
+      condition_failure_status <- if (is.null(interface@error_channel)) {
+        NA_integer_
+      } else {
+        match(
+          "runtime.invalid_logical_condition",
+          vapply(
+            interface@error_channel@diagnostics,
+            function(diagnostic) diagnostic@code,
+            character(1)
+          )
+        )
+      }
+      emit_condition_value <- function(condition) {
+        if (is.na(condition_failure_status)) {
+          tccq_abort(
+            "backend.missing_error_channel",
+            "A generated control condition requires a callable error channel.",
+            phase = "backend",
+            path = sprintf("backend.%s.error_channel", backend@id)
+          )
+        }
+        push(sprintf("condition_value = %s", expression_text(condition, emit_context)))
+        push("if (condition_value == tccq_na_logical) then")
+        push(sprintf(
+          "%s = %d_c_int",
+          status_name,
+          condition_failure_status
+        ), depth + 1L)
+        if (!returns_buffer) {
+          push(sprintf(
+            "%s = %s",
+            interface@result_name,
+            if (identical(result@type@base, "logical")) "0_c_int" else "0.0_c_double"
+          ), depth + 1L)
+        }
+        push("return", depth + 1L)
+        push("end if")
+      }
+      finish_source <- function() {
+        completed_lines <- c(
+          lines,
+          sprintf("end %s %s", if (returns_buffer) "subroutine" else "function", interface@symbol)
+        )
+        wrap_line <- function(line) {
+          pieces <- character()
+          while (nchar(line) > 100L) {
+            break_at <- max(gregexpr(" ", substr(line, 1L, 100L))[[1L]])
+            if (break_at <= 1L) {
+              break
+            }
+            pieces <- c(pieces, paste0(substr(line, 1L, break_at - 1L), " &"))
+            line <- paste0("    ", substr(line, break_at + 1L, nchar(line)))
+          }
+          c(pieces, line)
+        }
+        paste(unlist(lapply(completed_lines, wrap_line), use.names = FALSE), collapse = "\n")
       }
       open_loop <- function(axis) {
         extent <- extent_text(axis@extent, emit_context$extent_by_symbol)
@@ -2925,11 +3276,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       open_guards <- function(guards) {
         for (guard in guards) {
-          condition <- expression_text(guard@condition, emit_context)
-          if (!isTRUE(guard@selected)) {
-            condition <- sprintf(".not. (%s)", condition)
-          }
-          push(sprintf("if (%s) then", condition))
+          push("block")
+          depth <<- depth + 1L
+          push("integer(c_int) :: condition_value")
+          emit_condition_value(guard@condition)
+          comparison <- if (isTRUE(guard@selected)) "/= 0_c_int" else "== 0_c_int"
+          push(sprintf("if (condition_value %s) then", comparison))
           depth <<- depth + 1L
         }
       }
@@ -2937,6 +3289,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (guard in rev(guards)) {
           depth <<- depth - 1L
           push("end if")
+          depth <<- depth - 1L
+          push("end block")
         }
       }
       emit_statement <- NULL
@@ -2982,7 +3336,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       emit_statement <- function(statement, result_target) {
         if (S7::S7_inherits(statement, TccqAssignment)) {
-          target <- if (identical(statement@target@kind, "local")) {
+          target <- if (statement@target@kind %in% c("local", "cell")) {
             emit_context$source_name_by_value_id[[statement@target@value_id]]
           } else {
             result_target
@@ -3000,7 +3354,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           return(invisible(NULL))
         }
         if (S7::S7_inherits(statement, TccqConditional)) {
-          push(sprintf("if (%s) then", expression_text(statement@condition, emit_context)))
+          push("block")
+          depth <<- depth + 1L
+          push("integer(c_int) :: condition_value")
+          emit_condition_value(statement@condition)
+          push("if (condition_value /= 0_c_int) then")
           depth <<- depth + 1L
           emit_statement_block(statement@consequent, result_target)
           depth <<- depth - 1L
@@ -3009,6 +3367,23 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           emit_statement_block(statement@alternative, result_target)
           depth <<- depth - 1L
           push("end if")
+          depth <<- depth - 1L
+          push("end block")
+          return(invisible(NULL))
+        }
+        if (S7::S7_inherits(statement, TccqWhile)) {
+          push("do")
+          depth <<- depth + 1L
+          push("block")
+          depth <<- depth + 1L
+          push("integer(c_int) :: condition_value")
+          emit_condition_value(statement@condition)
+          push("if (condition_value == 0_c_int) exit")
+          depth <<- depth - 1L
+          push("end block")
+          emit_statement_block(statement@body, result_target)
+          depth <<- depth - 1L
+          push("end do")
           return(invisible(NULL))
         }
         tccq_abort(
@@ -3018,6 +3393,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           path = sprintf("backend.%s.statement", backend@id),
           data = list(backend = backend@id, statement = statement)
         )
+      }
+      if (structured_body) {
+        emit_statement_block(body, interface@result_name)
+        return(finish_source())
       }
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
@@ -3153,24 +3532,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push(sprintf("%s = %s", interface@result_name, plan$value_text))
         }
       }
-      lines <- c(
-        lines,
-        sprintf("end %s %s", if (returns_buffer) "subroutine" else "function", interface@symbol)
-      )
-      wrap_line <- function(line) {
-        pieces <- character()
-        while (nchar(line) > 100L) {
-          break_at <- max(gregexpr(" ", substr(line, 1L, 100L))[[1L]])
-          if (break_at <= 1L) {
-            break
-          }
-          pieces <- c(pieces, paste0(substr(line, 1L, break_at - 1L), " &"))
-          line <- paste0("    ", substr(line, break_at + 1L, nchar(line)))
-        }
-        c(pieces, line)
-      }
-      lines <- unlist(lapply(lines, wrap_line), use.names = FALSE)
-      paste(lines, collapse = "\n")
+      finish_source()
     }
 
     emit_call_wrapper_source <- function(interface, result, formals) {
@@ -3208,7 +3570,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       kernel_parameters <- c(
         kernel_parameters,
         if (length(extent_names) > 0L) sprintf("int %s", extent_names),
-        if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
+        if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name),
+        if (!is.null(interface@error_channel)) {
+          sprintf("int *%s", interface@error_channel@source_name)
+        }
       )
       prototype <- if (identical(interface@result_placement, "output_argument")) {
         sprintf(
@@ -3232,14 +3597,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         "#include <R.h>",
         "#include <Rinternals.h>",
         "#include <limits.h>",
-        "#include <stdbool.h>",
         "#include <stdlib.h>",
         "#include <string.h>",
         "",
         prototype,
         "",
         sprintf("SEXP %s(%s) {", wrapper_symbol, paste(wrapper_parameters, collapse = ", ")),
-        "  int protect_count = 0;"
+        "  int protect_count = 0;",
+        if (!is.null(interface@error_channel)) {
+          sprintf("  int %s = 0;", interface@error_channel@source_name)
+        }
       )
 
       for (position in seq_along(formals)) {
@@ -3264,7 +3631,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             "    UNPROTECT(protect_count);",
             "    Rf_error(\"missing values are not allowed in scalar logical conditions\");",
             "  }",
-            sprintf("  bool %s = %s_logical_value != 0;", parameter_name, parameter_name)
+            sprintf("  int %s = %s_logical_value != 0;", parameter_name, parameter_name)
           )
           next
         }
@@ -3384,6 +3751,32 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
 
       call_arguments <- c(parameter_names, extent_names)
+      if (!is.null(interface@error_channel)) {
+        call_arguments <- c(
+          call_arguments,
+          sprintf("&%s", interface@error_channel@source_name)
+        )
+      }
+      emit_status_check <- function() {
+        if (is.null(interface@error_channel)) {
+          return(character())
+        }
+        status_name <- interface@error_channel@source_name
+        c(
+          sprintf("  if (%s != 0) {", status_name),
+          sprintf("    SEXP runtime_status = PROTECT(Rf_ScalarInteger(%s));", status_name),
+          "    ++protect_count;",
+          sprintf(
+            "    SEXP runtime_status_class = PROTECT(Rf_mkString(%s));",
+            encodeString(TCCQ_RUNTIME_STATUS_CLASS, quote = "\"")
+          ),
+          "    ++protect_count;",
+          "    Rf_classgets(runtime_status, runtime_status_class);",
+          "    UNPROTECT(protect_count);",
+          "    return runtime_status;",
+          "  }"
+        )
+      }
       if (returns_buffer) {
         lines <- c(lines, "  R_xlen_t result_element_count = 1;")
         result_extent_vars <- sprintf("result_extent_%04d", seq_len(result_rank))
@@ -3420,7 +3813,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             "  Rf_setAttrib(output_sexp, R_DimSymbol, output_dim);"
           )
         }
-        call_arguments <- c(call_arguments, interface@result_count_name)
+        status_argument <- if (is.null(interface@error_channel)) {
+          character()
+        } else {
+          utils::tail(call_arguments, 1L)
+        }
+        if (length(status_argument) > 0L) {
+          call_arguments <- utils::head(call_arguments, -1L)
+        }
+        call_arguments <- c(call_arguments, interface@result_count_name, status_argument)
         if (identical(interface@result_placement, "output_argument")) {
           lines <- c(
             lines,
@@ -3428,7 +3829,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
               "  %s(%s);",
               symbol,
               paste(c(call_arguments, "REAL(output_sexp)"), collapse = ", ")
-            )
+            ),
+            emit_status_check()
           )
         } else {
           lines <- c(
@@ -3439,6 +3841,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
               symbol,
               paste(call_arguments, collapse = ", ")
             ),
+            emit_status_check(),
             sprintf("  if (%s == NULL) {", interface@result_name),
             "    UNPROTECT(protect_count);",
             "    Rf_error(\"generated kernel returned NULL\");",
@@ -3466,6 +3869,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             symbol,
             paste(call_arguments, collapse = ", ")
           ),
+          emit_status_check(),
           "  UNPROTECT(protect_count);",
           sprintf("  return %s(output_value);", scalar_constructor)
         )
@@ -3494,20 +3898,32 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
 
       returns_buffer <- result@type@shape@rank > 0L
+      output_argument <- identical(interface@result_placement, "output_argument")
       ffi_arg_types <- lapply(formals, function(value) {
         if (value@type@shape@rank > 0L) {
           return("numeric_array")
         }
-        if (identical(value@type@base, "logical")) "bool" else "f64"
+        if (identical(value@type@base, "logical")) "i32" else "f64"
       })
       if (length(interface@extents) > 0L) {
         ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), length(interface@extents)))
       }
       if (returns_buffer) {
         ffi_arg_types <- c(ffi_arg_types, list("i32"))
-        ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
+        if (output_argument) {
+          ffi_return <- "void"
+        } else {
+          result_count_position <- length(ffi_arg_types)
+          ffi_return <- list(type = "numeric_array", length_arg = result_count_position, free = TRUE)
+        }
       } else {
-        ffi_return <- if (identical(result@type@base, "logical")) "bool" else "f64"
+        ffi_return <- if (identical(result@type@base, "logical")) "i32" else "f64"
+      }
+      if (!is.null(interface@error_channel)) {
+        ffi_arg_types <- c(ffi_arg_types, list("integer_array"))
+      }
+      if (output_argument) {
+        ffi_arg_types <- c(ffi_arg_types, list("numeric_array"))
       }
 
       ffi <- Rtinycc::tcc_ffi()
@@ -3575,7 +3991,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
                   data = list(argument = position)
                 )
               }
-              arguments[[position]] <- condition[[1L]]
+              arguments[[position]] <- as.integer(condition[[1L]])
             }
             next
           }
@@ -3652,7 +4068,38 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           }
           call_arguments <- c(call_arguments, list(as.integer(prod(result_dim_values))))
         }
-        value <- do.call(compiled[[symbol]], call_arguments)
+        output_value <- if (output_argument) {
+          numeric(prod(result_dim_values))
+        } else {
+          NULL
+        }
+        runtime_status <- NULL
+        if (!is.null(interface@error_channel)) {
+          runtime_status <- integer(1L)
+          call_arguments <- c(call_arguments, list(runtime_status))
+        }
+        if (output_argument) {
+          call_arguments <- c(call_arguments, list(output_value))
+        }
+        call_result <- do.call(compiled[[symbol]], call_arguments)
+        if (!is.null(runtime_status) && runtime_status[[1L]] != 0L) {
+          status <- runtime_status[[1L]]
+          diagnostics <- interface@error_channel@diagnostics
+          if (status < 1L || status > length(diagnostics)) {
+            tccq_abort(
+              "runtime.unknown_generated_status",
+              "Generated code returned an unknown runtime status.",
+              phase = "runtime",
+              path = "callable.status",
+              data = list(status = status)
+            )
+          }
+          tccq_abort_diagnostic(diagnostics[[status]])
+        }
+        value <- if (output_argument) output_value else call_result
+        if (identical(result@type@base, "logical") && result@type@shape@rank == 0L) {
+          value <- as.logical(value)
+        }
         if (result@type@shape@rank > 1L) {
           dim(value) <- result_dim_values
         }
@@ -3824,7 +4271,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(expected = length(formals), actual = length(arguments))
           )
         }
-        do.call(.Call, c(list(native_symbol), arguments))
+        value <- do.call(.Call, c(list(native_symbol), arguments))
+        if (inherits(value, TCCQ_RUNTIME_STATUS_CLASS)) {
+          status <- as.integer(value[[1L]])
+          diagnostics <- interface@error_channel@diagnostics
+          if (status < 1L || status > length(diagnostics)) {
+            tccq_abort(
+              "runtime.unknown_generated_status",
+              "Generated code returned an unknown runtime status.",
+              phase = "runtime",
+              path = "callable.status",
+              data = list(status = status)
+            )
+          }
+          tccq_abort_diagnostic(diagnostics[[status]])
+        }
+        value
       }
       attrs$shared_library <- shared_library
       attrs$native_symbol <- native_symbol
@@ -3841,21 +4303,40 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       plan <- diagnostic_plan(list(lowered_diagnostic))
       return(tccq_result(success = FALSE, value = plan, diagnostics = list(lowered_diagnostic)))
     }
-    loop_nest_result <- tccq_program_loop_nests(program)
-    if (!loop_nest_result@success) {
-      plan <- diagnostic_plan(loop_nest_result@diagnostics)
-      return(tccq_result(
-        success = FALSE,
-        value = plan,
-        diagnostics = loop_nest_result@diagnostics
-      ))
+    structured_body <- if (
+      !is.null(program@schedule) &&
+        S7::S7_inherits(program@schedule@body, TccqValueBlock)
+    ) {
+      program@schedule@body
+    } else {
+      NULL
     }
-    nests <- loop_nest_result@value
-    nest <- nests[[length(nests)]]
+    if (is.null(structured_body)) {
+      loop_nest_result <- tccq_program_loop_nests(program)
+      if (!loop_nest_result@success) {
+        plan <- diagnostic_plan(loop_nest_result@diagnostics)
+        return(tccq_result(
+          success = FALSE,
+          value = plan,
+          diagnostics = loop_nest_result@diagnostics
+        ))
+      }
+      nests <- loop_nest_result@value
+      nest <- nests[[length(nests)]]
+    } else {
+      nests <- list()
+      nest <- NULL
+    }
 
     symbol <- source_symbol()
     interface_result <- tryCatch(
-      backend_function_interface(symbol, nests, result, formals),
+      backend_function_interface(
+        symbol,
+        nests,
+        result,
+        formals,
+        body = structured_body
+      ),
       tccq_error = identity
     )
     if (inherits(interface_result, "tccq_error")) {
@@ -3867,8 +4348,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     source_result <- tryCatch(
       switch(
         source_language,
-        c = emit_c_source(function_interface, nests, result, formals),
-        fortran = emit_fortran_source(function_interface, nests, result, formals),
+        c = emit_c_source(
+          function_interface,
+          nests,
+          result,
+          formals,
+          body = structured_body
+        ),
+        fortran = emit_fortran_source(
+          function_interface,
+          nests,
+          result,
+          formals,
+          body = structured_body
+        ),
         tccq_abort(
           "backend.unsupported_source_language",
           "The source printer does not support this target language.",
@@ -3924,7 +4417,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       bridges = bridges,
       products = tccq_backend_products(
         function_interface = function_interface,
-        body = nest@body,
+        body = if (is.null(structured_body)) nest@body else structured_body,
         loop_nest = nest,
         loop_nests = nests,
         storage_plan = program@storage_plan,
