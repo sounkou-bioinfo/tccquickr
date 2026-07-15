@@ -137,7 +137,8 @@ TccqBridgePlan <- S7::new_class(
 #' @param local_names Generated scalar-local names.
 #' @param local_value_ids Neutral value ids corresponding to locals.
 #' @param local_storage_types Scalar storage types corresponding to locals.
-#' @param intermediate_names Generated names for materialized intermediate slots.
+#' @param intermediate_names Generated physical-allocation names for materialized
+#'   intermediate slots. Slots sharing an allocation repeat the same name.
 #' @param intermediate_slots Typed materialized intermediate storage slots.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
@@ -288,10 +289,9 @@ TccqBackendFunctionInterface <- S7::new_class(
     }
     if (
       anyNA(self@intermediate_names) ||
-        any(!nzchar(self@intermediate_names)) ||
-        anyDuplicated(self@intermediate_names)
+        any(!nzchar(self@intermediate_names))
     ) {
-      problems <- c(problems, "@intermediate_names must contain unique non-empty strings")
+      problems <- c(problems, "@intermediate_names must contain non-empty strings")
     }
     intermediate_slots_are_typed <- vapply(
       self@intermediate_slots,
@@ -317,6 +317,28 @@ TccqBackendFunctionInterface <- S7::new_class(
         logical(1)
       ))) {
         problems <- c(problems, "@intermediate_slots must be materialized temporary slots")
+      }
+      allocations_are_present <- vapply(
+        self@intermediate_slots,
+        function(slot) !is.null(slot@allocation),
+        logical(1)
+      )
+      if (!all(allocations_are_present)) {
+        problems <- c(problems, "@intermediate_slots must carry physical allocations")
+      } else {
+        allocation_ids <- vapply(
+          self@intermediate_slots,
+          function(slot) slot@allocation@id,
+          character(1)
+        )
+        allocation_names <- split(self@intermediate_names, allocation_ids)
+        if (any(vapply(allocation_names, function(names) length(unique(names)) != 1L, logical(1)))) {
+          problems <- c(problems, "one allocation id must have one generated name")
+        }
+        named_allocations <- split(allocation_ids, self@intermediate_names)
+        if (any(vapply(named_allocations, function(ids) length(unique(ids)) != 1L, logical(1)))) {
+          problems <- c(problems, "one generated name must identify one allocation")
+        }
       }
     }
     if (length(self@extent_symbols) != length(self@extent_names)) {
@@ -949,7 +971,8 @@ tccq_bridge_plan <- function(
 #' @param local_names Generated scalar-local names.
 #' @param local_value_ids Neutral value ids corresponding to locals.
 #' @param local_storage_types Scalar storage types corresponding to locals.
-#' @param intermediate_names Generated names for materialized intermediate slots.
+#' @param intermediate_names Generated physical-allocation names for materialized
+#'   intermediate slots. Slots sharing an allocation repeat the same name.
 #' @param intermediate_slots Typed materialized intermediate storage slots.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
@@ -1102,13 +1125,12 @@ tccq_backend_function_interface <- function(
   }
   if (
     !is.character(intermediate_names) ||
-      anyNA(intermediate_names) ||
-      any(!nzchar(intermediate_names)) ||
-      anyDuplicated(intermediate_names)
+    anyNA(intermediate_names) ||
+      any(!nzchar(intermediate_names))
   ) {
     tccq_abort(
       "schema.invalid_backend_function_intermediates",
-      "`intermediate_names` must contain unique non-empty strings.",
+      "`intermediate_names` must contain non-empty strings.",
       phase = "schema",
       path = "backend_function.intermediate_names"
     )
@@ -2090,7 +2112,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         accumulator_names,
         c_identifier("local", seq_len(statement_local_count))
       )
-      intermediate_names <- c_identifier("intermediate", seq_along(intermediate_nests))
+      intermediate_allocation_ids <- vapply(
+        intermediate_nests,
+        function(nest) nest@storage@allocation@id,
+        character(1)
+      )
+      allocation_ids <- unique(intermediate_allocation_ids)
+      allocation_names <- stats::setNames(
+        c_identifier("intermediate", seq_along(allocation_ids)),
+        allocation_ids
+      )
+      intermediate_names <- unname(allocation_names[intermediate_allocation_ids])
       extents <- extent_plan(formals, nests)
       kind <- if (length(result_nest@axes) == 0L) "scalar" else "loop_nest"
       for (nest in nests) {
@@ -2397,6 +2429,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         interface = interface,
         emit_context = emit_context
       )
+      intermediate_allocation_ids <- vapply(
+        intermediate_nests,
+        function(nest) nest@storage@allocation@id,
+        character(1)
+      )
+      first_allocation_use <- !duplicated(intermediate_allocation_ids)
       plan <- loop_plan(interface, result_nest, emit_context)
       parameter_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
@@ -2554,11 +2592,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push("}")
       }
       intermediate_buffer_names <- vapply(
-        intermediate_plans[vapply(
-          intermediate_nests,
-          function(nest) nest@storage@type@shape@rank > 0L,
-          logical(1)
-        )],
+        intermediate_plans[vapply(intermediate_nests, function(nest) {
+          nest@storage@type@shape@rank > 0L
+        }, logical(1)) & first_allocation_use],
         function(intermediate_plan) intermediate_plan$materialization_name,
         character(1)
       )
@@ -2569,7 +2605,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         intermediate_plan <- intermediate_plans[[position]]
         intermediate <- intermediate_nests[[position]]
         materializes_buffer <- intermediate@storage@type@shape@rank > 0L
-        if (!materializes_buffer) {
+        if (!materializes_buffer && isTRUE(first_allocation_use[[position]])) {
           push(sprintf(
             "%s %s;",
             source_scalar_type(intermediate@storage@type, "c"),
@@ -2577,7 +2613,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           ))
         }
         open_guards(intermediate_plan$guards)
-        if (materializes_buffer) {
+        if (materializes_buffer && isTRUE(first_allocation_use[[position]])) {
           push(sprintf(
             "%s = (double *)malloc(sizeof(double) * (size_t)(%s));",
             intermediate_plan$materialization_name,
@@ -2723,6 +2759,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         interface = interface,
         emit_context = emit_context
       )
+      intermediate_allocation_ids <- vapply(
+        intermediate_nests,
+        function(nest) nest@storage@allocation@id,
+        character(1)
+      )
+      first_allocation_use <- !duplicated(intermediate_allocation_ids)
       plan <- loop_plan(interface, result_nest, emit_context)
       returns_buffer <- result@type@shape@rank > 0L
       domain_parameter_names <- c(
@@ -2800,7 +2842,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             intermediate_plan$accumulator_name
           )
         }, intermediate_nests, intermediate_plans)),
-        unlist(Map(function(intermediate, intermediate_plan) {
+        unlist(Map(function(intermediate, intermediate_plan, first_use) {
+          if (!isTRUE(first_use)) {
+            return(character())
+          }
           if (intermediate@storage@type@shape@rank == 0L) {
             return(sprintf(
               "  %s :: %s",
@@ -2819,7 +2864,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             intermediate_plan$materialization_name,
             buffer_size_text(intermediate, emit_context)
           )
-        }, intermediate_nests, intermediate_plans)),
+        }, intermediate_nests, intermediate_plans, as.list(first_allocation_use))),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
         }
@@ -2938,7 +2983,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         intermediate <- intermediate_nests[[position]]
         materializes_buffer <- intermediate@storage@type@shape@rank > 0L
         open_guards(intermediate_plan$guards)
-        if (materializes_buffer && length(intermediate_plan$guards) > 0L) {
+        if (
+          materializes_buffer &&
+            isTRUE(first_allocation_use[[position]]) &&
+            length(intermediate_plan$guards) > 0L
+        ) {
           push(sprintf(
             "allocate(%s(%s))",
             intermediate_plan$materialization_name,
@@ -3043,6 +3092,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         intermediate <- intermediate_nests[[position]]
         if (
           intermediate@storage@type@shape@rank > 0L &&
+            isTRUE(first_allocation_use[[position]]) &&
             length(intermediate@guards) > 0L
         ) {
           intermediate_name <- intermediate_plans[[position]]$materialization_name

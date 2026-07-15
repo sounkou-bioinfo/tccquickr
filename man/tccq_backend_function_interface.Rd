@@ -50,7 +50,8 @@ tccq_backend_function_interface(
 
 \item{local_storage_types}{Scalar storage types corresponding to locals.}
 
-\item{intermediate_names}{Generated names for materialized intermediate slots.}
+\item{intermediate_names}{Generated physical-allocation names for materialized
+intermediate slots. Slots sharing an allocation repeat the same name.}
 
 \item{intermediate_slots}{Typed materialized intermediate storage slots.}
 

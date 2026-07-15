@@ -150,7 +150,6 @@ expect_true(all(vapply(
   function(domain_policy) S7::S7_inherits(domain_policy, TccqDomainPolicy),
   logical(1)
 )))
-expect_equal(map_reduce_result@value@storage_plan@attrs$strategy, "fused-map-reduce")
 
 matrix_reduce <- function(x, y) {
   declare(type(x = double(n, p), y = double(n, p)))
@@ -196,7 +195,6 @@ expect_equal(column_axis_fusion@domain@shape@rank, 2L)
 expect_true(S7::S7_inherits(column_axis_fusion@contract, TccqFusionContract))
 expect_equal(column_axis_fusion@contract@fusion_kind, "axis_reduce")
 expect_equal(column_axis_fusion@contract@storage_strategy, "fused-axis-reduce")
-expect_equal(column_axis_reduce_result@value@storage_plan@attrs$strategy, "fused-axis-reduce")
 
 power_program <- function(x) {
   declare(type(x = integer(n)))
@@ -396,11 +394,18 @@ names(bound_storage_slots_by_value) <- vapply(
 )
 expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0001@lifetime, TccqStorageLifetime))
 expect_equal(bound_storage_slots_by_value$value_0001@lifetime@defined_at, 3L)
-expect_equal(bound_storage_slots_by_value$value_0001@lifetime@last_used_at, 4L)
+expect_equal(bound_storage_slots_by_value$value_0001@lifetime@last_used_at, 6L)
 expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0004@lifetime, TccqStorageLifetime))
 expect_equal(bound_storage_slots_by_value$value_0004@lifetime@defined_at, 6L)
-expect_equal(bound_storage_slots_by_value$value_0004@lifetime@last_used_at, 7L)
-expect_equal(bound_result@value@storage_plan@reuse_groups, list())
+expect_equal(bound_storage_slots_by_value$value_0004@lifetime@last_used_at, 8L)
+expect_true(S7::S7_inherits(
+  bound_storage_slots_by_value$value_0001@allocation,
+  TccqStorageAllocation
+))
+expect_true(S7::S7_inherits(
+  bound_storage_slots_by_value$value_0004@allocation,
+  TccqStorageAllocation
+))
 
 fused_local_chain <- function(x) {
   declare(type(x = double(n)))
@@ -417,7 +422,7 @@ fused_local_slot <- fused_local_slots[[match(
   vapply(fused_local_slots, function(slot) slot@value_id, character(1))
 )]]
 expect_false(fused_local_slot@materialized)
-expect_false(fused_local_slot@reusable)
+expect_null(fused_local_slot@allocation)
 expect_equal(length(tccq_program_loop_nests(fused_local_result@value)@value), 1L)
 
 warning_local_chain <- function(x) {

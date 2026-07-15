@@ -4,14 +4,10 @@
 \alias{TccqStoragePlan}
 \title{Storage plan}
 \usage{
-TccqStoragePlan(slots = list(), reuse_groups = list(), attrs = list())
+TccqStoragePlan(slots = list())
 }
 \arguments{
 \item{slots}{List of storage slots.}
-
-\item{reuse_groups}{List of storage-slot ids that may share allocation.}
-
-\item{attrs}{Structured storage-plan metadata.}
 }
 \description{
 A storage plan belongs to the middle end. It is consumed by backends but does

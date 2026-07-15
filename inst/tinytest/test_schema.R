@@ -544,19 +544,22 @@ expect_false(region@touches_rapi)
 expect_equal(length(region@fusion_groups), 1L)
 
 lifetime <- tccq_storage_lifetime("value_0001", defined_at = 2L, last_used_at = 4L)
+allocation <- tccq_storage_allocation("allocation_0001", finite@type)
 storage_slot <- tccq_storage_slot(
   "slot_0001",
   "value_0001",
   finite@type,
   role = "temporary",
   materialized = TRUE,
-  reusable = TRUE,
-  lifetime = lifetime
+  lifetime = lifetime,
+  allocation = allocation
 )
 
 expect_true(S7::S7_inherits(lifetime, TccqStorageLifetime))
+expect_true(S7::S7_inherits(allocation, TccqStorageAllocation))
 expect_true(S7::S7_inherits(storage_slot, TccqStorageSlot))
 expect_equal(storage_slot@lifetime@last_used_at, 4L)
+expect_identical(storage_slot@allocation, allocation)
 
 bad_lifetime <- tryCatch(
   tccq_storage_lifetime("value_0001", defined_at = 4L, last_used_at = 2L),
@@ -564,32 +567,92 @@ bad_lifetime <- tryCatch(
 )
 expect_true(inherits(bad_lifetime, "tccq_error"))
 
-bad_reusable_slot <- tryCatch(
+missing_allocation_slot <- tryCatch(
   tccq_storage_slot(
     "slot_bad",
     "value_0001",
     finite@type,
     role = "temporary",
-    materialized = FALSE,
-    reusable = TRUE
+    materialized = TRUE,
+    lifetime = lifetime
   ),
   error = identity
 )
-expect_true(inherits(bad_reusable_slot, "tccq_error"))
+expect_true(inherits(missing_allocation_slot, "error"))
 
-unmaterialized_reusable_slot <- tryCatch(
+unmaterialized_allocation_slot <- tryCatch(
   tccq_storage_slot(
     "slot_unmaterialized",
     "value_0001",
     finite@type,
     role = "temporary",
     materialized = FALSE,
-    reusable = TRUE,
-    lifetime = lifetime
+    lifetime = lifetime,
+    allocation = allocation
   ),
   error = identity
 )
-expect_true(inherits(unmaterialized_reusable_slot, "error"))
+expect_true(inherits(unmaterialized_allocation_slot, "error"))
+
+second_lifetime <- tccq_storage_lifetime("value_0002", defined_at = 5L, last_used_at = 6L)
+second_storage_slot <- tccq_storage_slot(
+  "slot_0002",
+  "value_0002",
+  finite@type,
+  role = "temporary",
+  materialized = TRUE,
+  lifetime = second_lifetime,
+  allocation = allocation
+)
+shared_storage_plan <- tccq_storage_plan(list(storage_slot, second_storage_slot))
+expect_equal(
+  vapply(shared_storage_plan@slots, function(slot) slot@allocation@id, character(1)),
+  rep("allocation_0001", 2L)
+)
+
+conflicting_allocation <- tccq_storage_allocation(
+  "allocation_0001",
+  finite@type,
+  memory_space = "device"
+)
+conflicting_allocation_slot <- tccq_storage_slot(
+  "slot_conflicting_allocation",
+  "value_conflicting_allocation",
+  finite@type,
+  role = "temporary",
+  materialized = TRUE,
+  lifetime = tccq_storage_lifetime(
+    "value_conflicting_allocation",
+    defined_at = 7L,
+    last_used_at = 8L
+  ),
+  allocation = conflicting_allocation
+)
+conflicting_storage_plan <- tryCatch(
+  tccq_storage_plan(list(storage_slot, conflicting_allocation_slot)),
+  error = identity
+)
+expect_true(inherits(conflicting_storage_plan, "error"))
+
+overlapping_lifetime <- tccq_storage_lifetime(
+  "value_0003",
+  defined_at = 4L,
+  last_used_at = 5L
+)
+overlapping_slot <- tccq_storage_slot(
+  "slot_0003",
+  "value_0003",
+  finite@type,
+  role = "temporary",
+  materialized = TRUE,
+  lifetime = overlapping_lifetime,
+  allocation = allocation
+)
+overlapping_storage_plan <- tryCatch(
+  tccq_storage_plan(list(storage_slot, overlapping_slot)),
+  error = identity
+)
+expect_true(inherits(overlapping_storage_plan, "error"))
 
 bad_fusion <- tryCatch(
   tccq_fusion_group(

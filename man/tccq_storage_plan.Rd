@@ -4,14 +4,10 @@
 \alias{tccq_storage_plan}
 \title{Construct a storage plan}
 \usage{
-tccq_storage_plan(slots = list(), reuse_groups = list(), attrs = list())
+tccq_storage_plan(slots = list())
 }
 \arguments{
 \item{slots}{List of storage slots.}
-
-\item{reuse_groups}{List of storage-slot ids that may share allocation.}
-
-\item{attrs}{Structured storage-plan metadata.}
 }
 \description{
 Construct a storage plan

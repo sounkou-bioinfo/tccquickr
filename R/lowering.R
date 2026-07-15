@@ -1061,9 +1061,10 @@ tccq_lower_function <- function(
     "elementwise"
   }
 
-  plan_storage <- function(values, result_id, schedule_steps) {
+  plan_storage <- function(values, result_id, schedule) {
     lowered_values <- unname(values)
-    lifetimes <- storage_lifetimes(lowered_values, result_id)
+    schedule_steps <- schedule@steps
+    lifetimes <- storage_lifetimes(values, schedule)
     effect_allows_reordering <- function(effect) {
       !isTRUE(effect@writes) &&
         !isTRUE(effect@allocates) &&
@@ -1171,7 +1172,38 @@ tccq_lower_function <- function(
       function(step) step@binding@value_id,
       character(1)
     ))
-    slots <- Map(function(value, slot_index) {
+
+    control_dependent_value_ids <- character()
+    note_control_dependence <- function(value_id, controlled = FALSE, active = character()) {
+      if (value_id %in% active) {
+        return(invisible(NULL))
+      }
+      value <- values[[value_id]]
+      if (is.null(value) || S7::S7_inherits(value, TccqBindingReference)) {
+        return(invisible(NULL))
+      }
+      if (isTRUE(controlled)) {
+        control_dependent_value_ids <<- c(control_dependent_value_ids, value_id)
+      }
+      if (S7::S7_inherits(value, TccqBranch)) {
+        note_control_dependence(value@condition, controlled, c(active, value_id))
+        note_control_dependence(value@consequent, TRUE, c(active, value_id))
+        note_control_dependence(value@alternative, TRUE, c(active, value_id))
+        return(invisible(NULL))
+      }
+      for (input_id in vapply(value@inputs, as.character, character(1))) {
+        note_control_dependence(input_id, controlled, c(active, value_id))
+      }
+      invisible(NULL)
+    }
+    for (value in lowered_values) {
+      if (S7::S7_inherits(value, TccqBranch)) {
+        note_control_dependence(value@id)
+      }
+    }
+    control_dependent_value_ids <- unique(control_dependent_value_ids)
+
+    slot_facts <- Map(function(value, slot_index) {
       role <- storage_role(value, result_id)
       operation_intermediate <- identical(role, "temporary") &&
         (value_is_reduction(value) || value_is_contraction(value))
@@ -1179,48 +1211,168 @@ tccq_lower_function <- function(
       materialized <- role %in% c("input", "output") ||
         operation_intermediate ||
         (scheduled_binding_value && !value@id %in% fusible_binding_value_ids)
-      reusable <- FALSE
-      lifetime <- lifetimes[[value@id]]
-      tccq_storage_slot(
-        id = sprintf("slot_%04d", slot_index),
-        value_id = value@id,
-        type = value@type,
+      list(
+        slot_id = sprintf("slot_%04d", slot_index),
+        value = value,
         role = role,
         materialized = materialized,
-        reusable = reusable,
-        lifetime = lifetime,
-        attrs = list(op = value@op)
+        lifetime = lifetimes[[value@id]]
       )
     }, lowered_values, seq_along(lowered_values))
-    slot_ids <- vapply(slots, function(slot) slot@id, character(1))
-    slots_by_id <- slots
-    names(slots_by_id) <- slot_ids
-    tccq_storage_plan(
-      slots = unname(slots_by_id),
-      reuse_groups = list(),
-      attrs = list(
-        strategy = sprintf("fused-%s", result_strategy(values, result_id)),
-        lifetimes = lifetimes
-      )
-    )
-  }
 
-  storage_lifetimes <- function(lowered_values, result_id) {
-    value_ids <- vapply(lowered_values, function(value) value@id, character(1))
-    def_positions <- seq_along(value_ids)
-    names(def_positions) <- value_ids
-    last_use_positions <- def_positions
-
-    for (use_position in seq_along(lowered_values)) {
-      value <- lowered_values[[use_position]]
-      for (input_id in vapply(value@inputs, as.character, character(1))) {
-        if (input_id %in% names(last_use_positions)) {
-          last_use_positions[[input_id]] <- max(last_use_positions[[input_id]], use_position)
+    allocation_states <- list()
+    allocations_by_value_id <- list()
+    for (slot_fact in slot_facts) {
+      owns_temporary <- identical(slot_fact$role, "temporary") &&
+        isTRUE(slot_fact$materialized)
+      if (!isTRUE(owns_temporary)) {
+        next
+      }
+      value <- slot_fact$value
+      shareable <- value@type@shape@rank > 0L &&
+        !value@id %in% control_dependent_value_ids
+      matching_state <- 0L
+      if (isTRUE(shareable) && length(allocation_states) > 0L) {
+        compatible <- vapply(allocation_states, function(state) {
+          isTRUE(state$shareable) &&
+            identical(state$allocation@type, value@type) &&
+            state$last_used_at < slot_fact$lifetime@defined_at
+        }, logical(1))
+        compatible_positions <- which(compatible)
+        if (length(compatible_positions) > 0L) {
+          matching_state <- compatible_positions[[1L]]
         }
       }
+      if (matching_state == 0L) {
+        allocation <- tccq_storage_allocation(
+          sprintf("allocation_%04d", length(allocation_states) + 1L),
+          value@type,
+          memory_space = "host"
+        )
+        allocation_states[[length(allocation_states) + 1L]] <- list(
+          allocation = allocation,
+          last_used_at = slot_fact$lifetime@last_used_at,
+          shareable = shareable
+        )
+      } else {
+        allocation <- allocation_states[[matching_state]]$allocation
+        allocation_states[[matching_state]]$last_used_at <- slot_fact$lifetime@last_used_at
+      }
+      allocations_by_value_id[[value@id]] <- allocation
     }
-    if (result_id %in% names(last_use_positions)) {
-      last_use_positions[[result_id]] <- length(lowered_values) + 1L
+
+    slots <- lapply(slot_facts, function(slot_fact) {
+      value <- slot_fact$value
+      tccq_storage_slot(
+        id = slot_fact$slot_id,
+        value_id = value@id,
+        type = value@type,
+        role = slot_fact$role,
+        materialized = slot_fact$materialized,
+        lifetime = slot_fact$lifetime,
+        allocation = allocations_by_value_id[[value@id]]
+      )
+    })
+    tccq_storage_plan(slots = slots)
+  }
+
+  storage_lifetimes <- function(values, schedule) {
+    value_ids <- vapply(values, function(value) value@id, character(1))
+    values_by_id <- values
+    names(values_by_id) <- value_ids
+
+    preexisting_ids <- value_ids[vapply(
+      values_by_id,
+      function(value) identical(value@op, "formal"),
+      logical(1)
+    )]
+    evaluation_order <- preexisting_ids
+    visited <- preexisting_ids
+    schedule_value <- function(value_id, active = character()) {
+      if (value_id %in% visited) {
+        return(invisible(NULL))
+      }
+      if (value_id %in% active) {
+        tccq_abort(
+          "lowering.cyclic_value_graph",
+          "Storage planning requires an acyclic scheduled value graph.",
+          phase = "lowering",
+          path = "storage.lifetime",
+          data = list(value_id = value_id, active = active)
+        )
+      }
+      value <- values_by_id[[value_id]]
+      if (is.null(value)) {
+        tccq_abort(
+          "lowering.unknown_scheduled_value",
+          "Storage planning encountered a scheduled value outside the lowered graph.",
+          phase = "lowering",
+          path = "storage.lifetime",
+          data = list(value_id = value_id)
+        )
+      }
+      if (!S7::S7_inherits(value, TccqBindingReference)) {
+        for (input_id in vapply(value@inputs, as.character, character(1))) {
+          schedule_value(input_id, c(active, value_id))
+        }
+      }
+      visited <<- c(visited, value_id)
+      evaluation_order <<- c(evaluation_order, value_id)
+      invisible(NULL)
+    }
+    for (step in schedule@steps) {
+      schedule_value(step@value_id)
+    }
+    unscheduled_ids <- setdiff(value_ids, evaluation_order)
+    if (length(unscheduled_ids) > 0L) {
+      tccq_abort(
+        "lowering.unscheduled_value",
+        "Every non-formal lowered value must belong to the program schedule.",
+        phase = "lowering",
+        path = "storage.lifetime",
+        data = list(value_ids = unscheduled_ids)
+      )
+    }
+
+    def_positions <- seq_along(evaluation_order)
+    names(def_positions) <- evaluation_order
+    last_use_positions <- def_positions
+
+    note_reads <- function(value_id, step_use_position, active = character()) {
+      if (value_id %in% active) {
+        return(invisible(NULL))
+      }
+      value <- values_by_id[[value_id]]
+      if (is.null(value)) {
+        return(invisible(NULL))
+      }
+      if (S7::S7_inherits(value, TccqBindingReference)) {
+        storage_value_id <- value@binding@value_id
+        if (storage_value_id %in% names(last_use_positions)) {
+          last_use_positions[[storage_value_id]] <<- max(
+            last_use_positions[[storage_value_id]],
+            step_use_position
+          )
+        }
+        return(invisible(NULL))
+      }
+      value_position <- def_positions[[value_id]]
+      for (input_id in vapply(value@inputs, as.character, character(1))) {
+        if (input_id %in% names(last_use_positions)) {
+          last_use_positions[[input_id]] <<- max(
+            last_use_positions[[input_id]],
+            value_position
+          )
+        }
+        note_reads(input_id, step_use_position, c(active, value_id))
+      }
+      invisible(NULL)
+    }
+    for (step in schedule@steps) {
+      note_reads(step@value_id, def_positions[[step@value_id]])
+    }
+    if (schedule@result %in% names(last_use_positions)) {
+      last_use_positions[[schedule@result]] <- length(evaluation_order) + 1L
     }
 
     lifetimes <- Map(function(value_id, def_position, last_use_position) {
@@ -1388,17 +1540,17 @@ tccq_lower_function <- function(
     }
   }
 
-  storage_plan <- plan_storage(
-    state$values,
-    result$value_id,
-    state$schedule_steps
-  )
-  regions <- plan_regions(state$values, result$value_id)
   schedule <- tccq_program_schedule(
     state$schedule_steps,
     result$value_id,
     state$values
   )
+  storage_plan <- plan_storage(
+    state$values,
+    result$value_id,
+    schedule
+  )
+  regions <- plan_regions(state$values, result$value_id)
   new_plan(
     values = state$values,
     schedule = schedule,

@@ -9,7 +9,7 @@ tccq_storage_lifetime(value_id, defined_at, last_used_at)
 \arguments{
 \item{value_id}{Value whose lifetime is described.}
 
-\item{defined_at}{Linear definition position in the lowered value stream.}
+\item{defined_at}{Linear definition position in schedule-derived value order.}
 
 \item{last_used_at}{Last position where the value must remain live.}
 }

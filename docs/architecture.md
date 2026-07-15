@@ -236,12 +236,21 @@ and "operation lowerable but unsupported by this backend".
 
 The minimal storage plan marks formals, literals, temporaries, and the output
 explicitly so printers can consume a typed plan. It records each slot's
-definition and last use as a `TccqStorageLifetime`. A non-materialized slot is
-an expression fact and cannot be marked reusable because no allocation exists.
-Current materialized intermediates remain non-reusable because the source
-consumers do not yet consume allocation-reuse groups. Aliasing, mutation,
-layout, views, device memory, and an emitted reuse discipline need explicit
-passes before storage reuse can become real.
+definition and last use as a `TccqStorageLifetime`. Lifetime analysis derives
+value order from `TccqProgramSchedule`, then walks the complete expression
+evaluated by each step. It stops at a
+`TccqBindingReference` after extending the referenced storage lifetime through
+that consumer. This prevents a dependent contraction from overwriting its
+input while permitting reuse after an intervening scalar reduction has
+finished. Every materialized temporary owns a `TccqStorageAllocation`; sharing
+that typed identity is the storage-reuse decision. The current first-fit rule
+shares only exact-type, rank-positive, control-independent host allocations
+whose lifetimes do not overlap. Exact type includes shape, while layout remains
+the one fixed dense column-major convention. Scalars and guarded buffers retain
+distinct allocations. A non-materialized slot is an expression fact and owns
+no allocation. Mutation, aliases beyond immutable local references, layout
+choices, views, and device memory remain barriers until their own typed facts
+exist.
 
 Source printers consume an ordered sequence of `TccqLoopNest` values built
 from the lowered program: backend-neutral with-loops in the SAC lineage,
@@ -255,8 +264,10 @@ Scalar programs, elementwise maps, full and per-axis reductions, contractions,
 stencils, control-valued results, and scalar- or buffer-intermediate
 compositions are all sequences of this one value, so C, Fortran, and Rtinycc
 share a single generic per-nest emitter instead of per-family printer cases;
-the C emitter owns buffer allocation and free discipline, and Fortran declares
-automatic arrays. A branch-valued nest body is a typed `TccqBlock` containing
+the C emitter emits one allocation and free per `TccqStorageAllocation`, while
+Fortran declares one automatic array for each unconditional allocation and one
+guarded allocatable array for each selected-path allocation. A branch-valued
+nest body is a typed `TccqBlock` containing
 `TccqAssignment` and `TccqConditional` statements over `TccqWriteTarget`
 destinations. Both source families consume that block, preserving that exactly
 one arm is evaluated.

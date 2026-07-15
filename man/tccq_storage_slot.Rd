@@ -10,10 +10,8 @@ tccq_storage_slot(
   type,
   role,
   materialized,
-  reusable = FALSE,
-  aliases = character(),
   lifetime = NULL,
-  attrs = list()
+  allocation = NULL
 )
 }
 \arguments{
@@ -27,13 +25,9 @@ tccq_storage_slot(
 
 \item{materialized}{Whether storage exists at runtime.}
 
-\item{reusable}{Whether later planning may reuse the slot.}
-
-\item{aliases}{Value ids known to share storage with this slot.}
-
 \item{lifetime}{Optional typed liveness interval for storage reuse.}
 
-\item{attrs}{Structured slot metadata.}
+\item{allocation}{Physical allocation for a materialized temporary.}
 }
 \description{
 Construct a storage slot

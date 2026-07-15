@@ -253,6 +253,16 @@ reducer carries a separate typed scalar accumulator target.
 `TccqBackendFunctionInterface` binds generated names to those values for
 C, TinyCC, and Fortran.
 
+A materialized temporary slot owns a `TccqStorageAllocation`. Two
+same-typed buffer slots share that physical identity only when
+schedule-derived, complete expression liveness proves that the first
+dies before the second definition and neither slot is control-dependent.
+A direct consumer therefore overlaps its producer, while a buffer
+reduced to a retained scalar can be reused by a later buffer. The shared
+allocation is consumed by all source paths: C emits one allocation and
+one free, and Fortran emits one automatic array. Non-materialized
+expressions own no allocation, and guarded buffers remain distinct.
+
 **Dimensions and recycling.** A declared dimension symbol is a scalar in
 the body: `colSums(x) / n` reads the extent parameter already carried by
 the ABI. Rank-mixed operands follow R’s recycling rule with GNU-R as the

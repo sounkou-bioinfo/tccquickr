@@ -1019,7 +1019,7 @@ TccqRegion <- S7::new_class(
 #' metadata.
 #'
 #' @param value_id Value whose lifetime is described.
-#' @param defined_at Linear definition position in the lowered value stream.
+#' @param defined_at Linear definition position in schedule-derived value order.
 #' @param last_used_at Last position where the value must remain live.
 #' @export
 TccqStorageLifetime <- S7::new_class(
@@ -1045,20 +1045,52 @@ TccqStorageLifetime <- S7::new_class(
   }
 )
 
+#' Physical storage allocation
+#'
+#' A storage allocation is the physical storage identity assigned to one or
+#' more non-overlapping materialized temporary slots. Sharing an allocation is
+#' the representation of storage reuse; it is not inferred by source printers.
+#'
+#' @param id Stable allocation id.
+#' @param type Semantic storage type shared by every assigned slot.
+#' @param memory_space Memory space in which the allocation exists.
+#' @export
+TccqStorageAllocation <- S7::new_class(
+  "TccqStorageAllocation",
+  package = "tccquickr",
+  properties = list(
+    id = S7::class_character,
+    type = TccqType,
+    memory_space = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@id) != 1L || is.na(self@id) || !nzchar(self@id)) {
+      problems <- c(problems, "@id must be a single non-empty string")
+    }
+    if (
+      length(self@memory_space) != 1L ||
+        is.na(self@memory_space) ||
+        !self@memory_space %in% TCCQ_MEMORY_SPACES
+    ) {
+      problems <- c(problems, "@memory_space must be one supported memory space")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Storage slot
 #'
-#' A storage slot records whether a value is materialized, reusable, or only
-#' present as a fused expression inside a generated region.
+#' A storage slot records whether a value is materialized, which typed lifetime
+#' it occupies, and which physical allocation owns a materialized temporary.
 #'
 #' @param id Stable storage-slot id.
 #' @param value_id Value owned by this slot.
 #' @param type Slot value type.
 #' @param role Storage role.
 #' @param materialized Whether storage exists at runtime.
-#' @param reusable Whether later planning may reuse the slot.
-#' @param aliases Value ids known to share storage with this slot.
 #' @param lifetime Optional typed liveness interval for storage reuse.
-#' @param attrs Structured slot metadata.
+#' @param allocation Physical allocation for a materialized temporary.
 #' @export
 TccqStorageSlot <- S7::new_class(
   "TccqStorageSlot",
@@ -1069,10 +1101,8 @@ TccqStorageSlot <- S7::new_class(
     type = TccqType,
     role = S7::class_character,
     materialized = S7::class_logical,
-    reusable = S7::class_logical,
-    aliases = S7::class_character,
     lifetime = S7::new_union(NULL, TccqStorageLifetime),
-    attrs = S7::class_list
+    allocation = S7::new_union(NULL, TccqStorageAllocation)
   ),
   validator = function(self) {
     problems <- character()
@@ -1088,26 +1118,24 @@ TccqStorageSlot <- S7::new_class(
     if (length(self@materialized) != 1L || is.na(self@materialized)) {
       problems <- c(problems, "@materialized must be a single TRUE/FALSE value")
     }
-    if (length(self@reusable) != 1L || is.na(self@reusable)) {
-      problems <- c(problems, "@reusable must be a single TRUE/FALSE value")
-    }
-    if (anyNA(self@aliases) || any(!nzchar(self@aliases))) {
-      problems <- c(problems, "@aliases must contain non-empty value ids")
-    }
     if (identical(self@role, "literal") && isTRUE(self@materialized)) {
       problems <- c(problems, "literal storage slots must not be materialized")
     }
-    if (identical(self@role, "input") && isTRUE(self@reusable)) {
-      problems <- c(problems, "input storage slots must not be reusable")
-    }
-    if (isTRUE(self@reusable) && is.null(self@lifetime)) {
-      problems <- c(problems, "reusable storage slots must carry a typed lifetime")
-    }
-    if (isTRUE(self@reusable) && !isTRUE(self@materialized)) {
-      problems <- c(problems, "only materialized storage slots can be reused")
-    }
     if (!is.null(self@lifetime) && !identical(self@lifetime@value_id, self@value_id)) {
       problems <- c(problems, "@lifetime value id must match @value_id")
+    }
+    owns_temporary <- identical(self@role, "temporary") && isTRUE(self@materialized)
+    if (isTRUE(owns_temporary) && is.null(self@lifetime)) {
+      problems <- c(problems, "materialized temporary slots must carry a lifetime")
+    }
+    if (isTRUE(owns_temporary) && is.null(self@allocation)) {
+      problems <- c(problems, "materialized temporary slots must own an allocation")
+    }
+    if (!isTRUE(owns_temporary) && !is.null(self@allocation)) {
+      problems <- c(problems, "only materialized temporary slots may own an allocation")
+    }
+    if (!is.null(self@allocation) && !identical(self@allocation@type, self@type)) {
+      problems <- c(problems, "@allocation type must match @type")
     }
     if (length(problems) > 0L) problems
   }
@@ -1119,16 +1147,12 @@ TccqStorageSlot <- S7::new_class(
 #' not depend on C, Fortran, TinyCC, or any concrete emitter.
 #'
 #' @param slots List of storage slots.
-#' @param reuse_groups List of storage-slot ids that may share allocation.
-#' @param attrs Structured storage-plan metadata.
 #' @export
 TccqStoragePlan <- S7::new_class(
   "TccqStoragePlan",
   package = "tccquickr",
   properties = list(
-    slots = S7::class_list,
-    reuse_groups = S7::class_list,
-    attrs = S7::class_list
+    slots = S7::class_list
   ),
   validator = function(self) {
     problems <- character()
@@ -1141,13 +1165,49 @@ TccqStoragePlan <- S7::new_class(
     if (!all(slots_are_tccq_storage_slots)) {
       problems <- c(problems, "@slots must contain only <TccqStorageSlot> values")
     }
-    for (group_index in seq_along(self@reuse_groups)) {
-      group <- self@reuse_groups[[group_index]]
-      if (!is.character(group) || anyNA(group) || any(!nzchar(group))) {
-        problems <- c(
-          problems,
-          sprintf("@reuse_groups[[%d]] must contain non-empty storage-slot ids", group_index)
+    if (all(slots_are_tccq_storage_slots)) {
+      slot_ids <- vapply(self@slots, function(slot) slot@id, character(1))
+      value_ids <- vapply(self@slots, function(slot) slot@value_id, character(1))
+      if (anyDuplicated(slot_ids)) {
+        problems <- c(problems, "@slots must have unique slot ids")
+      }
+      if (anyDuplicated(value_ids)) {
+        problems <- c(problems, "@slots must have unique value ids")
+      }
+      allocated_slots <- Filter(function(slot) !is.null(slot@allocation), self@slots)
+      if (length(allocated_slots) > 0L) {
+        allocation_ids <- vapply(
+          allocated_slots,
+          function(slot) slot@allocation@id,
+          character(1)
         )
+        for (allocation_id in unique(allocation_ids)) {
+          allocation_slots <- allocated_slots[allocation_ids == allocation_id]
+          allocation <- allocation_slots[[1L]]@allocation
+          if (any(vapply(
+            allocation_slots,
+            function(slot) !identical(slot@allocation, allocation),
+            logical(1)
+          ))) {
+            problems <- c(problems, "one allocation id must describe one allocation")
+          }
+          ordered_slots <- allocation_slots[order(vapply(
+            allocation_slots,
+            function(slot) slot@lifetime@defined_at,
+            integer(1)
+          ))]
+          if (length(ordered_slots) > 1L) {
+            for (position in seq_len(length(ordered_slots) - 1L)) {
+              if (
+                ordered_slots[[position]]@lifetime@last_used_at >=
+                  ordered_slots[[position + 1L]]@lifetime@defined_at
+              ) {
+                problems <- c(problems, "slots sharing an allocation must not have overlapping lifetimes")
+                break
+              }
+            }
+          }
+        }
       }
     }
     if (length(problems) > 0L) problems
@@ -2164,6 +2224,29 @@ tccq_region <- function(
   )
 }
 
+#' Construct a physical storage allocation
+#'
+#' @param id Stable allocation id.
+#' @param type Semantic storage type shared by every assigned slot.
+#' @param memory_space Memory space in which the allocation exists.
+#' @export
+tccq_storage_allocation <- function(id, type, memory_space = "host") {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(type, TccqType, "TccqType", "type")
+  .tccq_check_character_scalar(memory_space, "memory_space")
+  if (!memory_space %in% TCCQ_MEMORY_SPACES) {
+    tccq_abort(
+      "schema.invalid_memory_space",
+      "`memory_space` is not supported.",
+      phase = "schema",
+      path = "storage_allocation.memory_space",
+      data = list(memory_space = memory_space, supported = TCCQ_MEMORY_SPACES)
+    )
+  }
+
+  TccqStorageAllocation(id = id, type = type, memory_space = memory_space)
+}
+
 #' Construct a storage slot
 #'
 #' @param id Stable storage-slot id.
@@ -2171,10 +2254,8 @@ tccq_region <- function(
 #' @param type Slot value type.
 #' @param role Storage role.
 #' @param materialized Whether storage exists at runtime.
-#' @param reusable Whether later planning may reuse the slot.
-#' @param aliases Value ids known to share storage with this slot.
 #' @param lifetime Optional typed liveness interval for storage reuse.
-#' @param attrs Structured slot metadata.
+#' @param allocation Physical allocation for a materialized temporary.
 #' @export
 tccq_storage_slot <- function(
   id,
@@ -2182,10 +2263,8 @@ tccq_storage_slot <- function(
   type,
   role,
   materialized,
-  reusable = FALSE,
-  aliases = character(),
   lifetime = NULL,
-  attrs = list()
+  allocation = NULL
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_character_scalar(value_id, "value_id")
@@ -2201,25 +2280,13 @@ tccq_storage_slot <- function(
     )
   }
   .tccq_check_logical_scalar(materialized, "materialized")
-  .tccq_check_logical_scalar(reusable, "reusable")
-  if (!is.character(aliases) || anyNA(aliases) || any(!nzchar(aliases))) {
-    tccq_abort(
-      "schema.invalid_storage_aliases",
-      "`aliases` must contain non-empty value ids.",
-      phase = "schema",
-      path = "storage.aliases"
-    )
-  }
   .tccq_check_optional_s7(lifetime, TccqStorageLifetime, "TccqStorageLifetime", "lifetime")
-  if (isTRUE(reusable) && is.null(lifetime)) {
-    tccq_abort(
-      "schema.storage_lifetime_required",
-      "Reusable storage slots must carry a typed lifetime.",
-      phase = "schema",
-      path = "storage.lifetime",
-      data = list(slot = id, value_id = value_id)
-    )
-  }
+  .tccq_check_optional_s7(
+    allocation,
+    TccqStorageAllocation,
+    "TccqStorageAllocation",
+    "allocation"
+  )
   if (!is.null(lifetime) && !identical(lifetime@value_id, value_id)) {
     tccq_abort(
       "schema.storage_lifetime_mismatch",
@@ -2229,7 +2296,6 @@ tccq_storage_slot <- function(
       data = list(slot = id, value_id = value_id, lifetime_value_id = lifetime@value_id)
     )
   }
-  .tccq_check_list(attrs, "attrs")
 
   TccqStorageSlot(
     id = id,
@@ -2237,17 +2303,15 @@ tccq_storage_slot <- function(
     type = type,
     role = role,
     materialized = materialized,
-    reusable = reusable,
-    aliases = aliases,
     lifetime = lifetime,
-    attrs = attrs
+    allocation = allocation
   )
 }
 
 #' Construct a storage lifetime interval
 #'
 #' @param value_id Value whose lifetime is described.
-#' @param defined_at Linear definition position in the lowered value stream.
+#' @param defined_at Linear definition position in schedule-derived value order.
 #' @param last_used_at Last position where the value must remain live.
 #' @export
 tccq_storage_lifetime <- function(value_id, defined_at, last_used_at) {
@@ -2274,22 +2338,10 @@ tccq_storage_lifetime <- function(value_id, defined_at, last_used_at) {
 #' Construct a storage plan
 #'
 #' @param slots List of storage slots.
-#' @param reuse_groups List of storage-slot ids that may share allocation.
-#' @param attrs Structured storage-plan metadata.
 #' @export
-tccq_storage_plan <- function(slots = list(), reuse_groups = list(), attrs = list()) {
+tccq_storage_plan <- function(slots = list()) {
   .tccq_check_list_of(slots, TccqStorageSlot, "TccqStorageSlot", "slots")
-  if (!is.list(reuse_groups)) {
-    tccq_abort(
-      "schema.invalid_storage_reuse_groups",
-      "`reuse_groups` must be a list.",
-      phase = "schema",
-      path = "storage.reuse_groups"
-    )
-  }
-  .tccq_check_list(attrs, "attrs")
-
-  TccqStoragePlan(slots = slots, reuse_groups = reuse_groups, attrs = attrs)
+  TccqStoragePlan(slots = slots)
 }
 
 #' Construct a program schema

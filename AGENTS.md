@@ -357,10 +357,12 @@ For the reset core, keep these rules explicit:
   own nest — a named scalar for rank-0 results, a materialized temporary
   buffer otherwise — consumed by later nests through ordinary typed accesses.
   Extraction is keyed by value id, so a value consumed twice materializes
-  once. Every intermediate is a storage-plan fact represented by a materialized,
-  non-reusable `TccqStorageSlot`; scalar slots become locals, C owns buffer
-  allocation and free discipline, and Fortran uses automatic arrays for
-  unconditional storage and allocatable arrays for guarded storage. Guarded
+  once. Every intermediate is a storage-plan fact represented by a materialized
+  `TccqStorageSlot` with a typed `TccqStorageAllocation`. Allocation identity,
+  not an emitter name or reuse hint, records physical reuse. Scalar slots become
+  locals, C owns one allocation/free pair per buffer allocation, and Fortran
+  uses one automatic array per unconditional allocation and one allocatable
+  array per guarded allocation. Guarded
   materialization happens only inside the nest's typed control path and cleanup
   tolerates an unselected, therefore unallocated, slot. Intermediates never
   change the callable ABI.
@@ -386,10 +388,14 @@ For the reset core, keep these rules explicit:
   `TccqBranch` is not fabricated into a lowered operation; a control-only
   fusion contract may have no operations.
 - Storage reuse must be derived from typed planning facts such as
-  `TccqStorageLifetime`, storage compatibility, aliasing, materialization,
-  layout, and memory space. Do not group temporaries by role alone or hide
-  reuse assumptions in source printers. A non-materialized fused expression
-  owns no allocation and therefore cannot be reusable storage.
+  `TccqStorageLifetime`, `TccqStorageAllocation`, storage compatibility,
+  aliasing, materialization, layout, control dependence, and memory space. The
+  current accepted reuse is exact-type, rank-positive, control-independent host
+  storage with schedule-derived, strictly non-overlapping complete-expression
+  lifetimes. A direct consumer overlaps its producer and must not reuse that
+  allocation. Do not
+  group temporaries by role alone or hide reuse assumptions in source printers.
+  A non-materialized fused expression owns no allocation.
 - Source printers consume `TccqExpression` trees and `TccqBlock` statement
   bodies built from lowered programs. Do not make C, Fortran, TinyCC, CUDA, or
   graph printers rediscover expression or control semantics by walking raw

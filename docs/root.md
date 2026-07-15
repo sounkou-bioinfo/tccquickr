@@ -14,7 +14,10 @@ Each `TccqLoopNest` owns one typed materialized storage slot and reductions own
 a separate typed scalar accumulator target. Generated local and intermediate
 names are backend-interface bindings to those values; they are not loop-nest
 attributes or operation-name conventions. The storage slot is the single owner
-of a nest result's identity and type.
+of a nest result's identity and type. A materialized temporary slot additionally
+owns a `TccqStorageAllocation`, and non-overlapping same-typed buffer lifetimes
+may share that physical identity. C, TinyCC, and Fortran consume the same
+allocation identity; reuse is not reconstructed from generated names.
 TinyCC and Fortran execution now both exercise composite kernels, including the
 logistic-gradient apotheosis, so the next failures should come from semantics
 that are not yet modeled rather than from target-specific source shortcuts.
@@ -54,6 +57,13 @@ effects are barriers, so `sqrt` remains eager and materialized while a silent
 `exp` chain can become one nest. The storage slot's `materialized` field is the
 single optimization decision consumed by the neutral loop planner; C, TinyCC,
 and Fortran do not rediscover it.
+
+The first storage-reuse decision is similarly narrow. Lifetime propagation
+derives order from the typed program schedule and accounts for complete
+consumer expressions and lexical binding references.
+Only exact-type host buffers outside control paths can share one typed physical
+allocation, and only when the earlier lifetime ends before the later
+definition. Directly dependent or simultaneously live buffers remain distinct.
 
 The remaining north-star pressure is loop and evaluator structure. Viterbi and
 smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement

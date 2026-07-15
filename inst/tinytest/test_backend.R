@@ -1448,6 +1448,14 @@ expect_equal(
   ),
   c(1L, 1L)
 )
+expect_equal(
+  length(unique(vapply(
+    guarded_buffer_nests@value[1:2],
+    function(nest) nest@storage@allocation@id,
+    character(1)
+  ))),
+  2L
+)
 guarded_buffer_c <- tccq_plan_backend(guarded_buffer_program, tccq_c_backend())
 guarded_buffer_fortran <- tccq_plan_backend(
   guarded_buffer_program,
@@ -2739,7 +2747,7 @@ expect_equal(
 
 axis_feed_buffer_slot <- axis_feed_nests@value[[1L]]@storage
 expect_true(axis_feed_buffer_slot@materialized)
-expect_false(axis_feed_buffer_slot@reusable)
+expect_true(S7::S7_inherits(axis_feed_buffer_slot@allocation, TccqStorageAllocation))
 
 contraction_feed <- function(x, w, y) {
   declare(type(x = double(n, p), w = double(p), y = double(n)))
@@ -2769,7 +2777,207 @@ col_normalize_nests <- tccq_program_loop_nests(col_normalize_program@value)
 expect_true(col_normalize_nests@success)
 expect_equal(length(col_normalize_nests@value), 3L)
 
+# Physical allocation identity, rather than a reuse hint, joins compatible
+# materialized buffers whose typed lifetimes do not overlap.
+reuse_storage <- function(x, y, z) {
+  declare(type(x = double(n, n), y = double(n, n), z = double(n, n)))
+  first <- x %*% y
+  first_total <- sum(first)
+  second <- y %*% z
+  sum(second) + first_total
+}
+reuse_storage_program <- tccq_analyze(reuse_storage, strict = TRUE)
+expect_true(reuse_storage_program@success)
+reuse_storage_nests <- tccq_program_loop_nests(reuse_storage_program@value)
+expect_true(reuse_storage_nests@success)
+reuse_buffer_nests <- Filter(
+  function(nest) nest@storage@type@shape@rank > 0L,
+  reuse_storage_nests@value
+)
+expect_equal(length(reuse_buffer_nests), 2L)
+expect_equal(
+  length(unique(vapply(
+    reuse_buffer_nests,
+    function(nest) nest@storage@allocation@id,
+    character(1)
+  ))),
+  1L
+)
+
+overlapping_storage <- function(x, y, z) {
+  declare(type(x = double(n, n), y = double(n, n), z = double(n, n)))
+  first <- x %*% y
+  second <- y %*% z
+  sum(first + second)
+}
+overlapping_storage_program <- tccq_analyze(overlapping_storage, strict = TRUE)
+expect_true(overlapping_storage_program@success)
+overlapping_storage_nests <- tccq_program_loop_nests(overlapping_storage_program@value)
+expect_true(overlapping_storage_nests@success)
+overlapping_buffer_nests <- Filter(
+  function(nest) nest@storage@type@shape@rank > 0L,
+  overlapping_storage_nests@value
+)
+expect_equal(length(overlapping_buffer_nests), 2L)
+expect_equal(
+  length(unique(vapply(
+    overlapping_buffer_nests,
+    function(nest) nest@storage@allocation@id,
+    character(1)
+  ))),
+  2L
+)
+
+dependent_storage <- function(x, y, z) {
+  declare(type(x = double(n, n), y = double(n, n), z = double(n, n)))
+  first <- x %*% y
+  second <- first %*% z
+  sum(second)
+}
+dependent_storage_program <- tccq_analyze(dependent_storage, strict = TRUE)
+expect_true(dependent_storage_program@success)
+dependent_storage_nests <- tccq_program_loop_nests(dependent_storage_program@value)
+expect_true(dependent_storage_nests@success)
+dependent_buffer_nests <- Filter(
+  function(nest) nest@storage@type@shape@rank > 0L,
+  dependent_storage_nests@value
+)
+expect_equal(length(dependent_buffer_nests), 2L)
+expect_equal(
+  length(unique(vapply(
+    dependent_buffer_nests,
+    function(nest) nest@storage@allocation@id,
+    character(1)
+  ))),
+  2L
+)
+expect_equal(
+  dependent_buffer_nests[[1L]]@storage@lifetime@last_used_at,
+  dependent_buffer_nests[[2L]]@storage@lifetime@defined_at
+)
+
+alias_storage <- function(x, y, z) {
+  declare(type(x = double(n, n), y = double(n, n), z = double(n, n)))
+  first <- x %*% y
+  alias <- first
+  second <- y %*% z
+  sum(alias + second)
+}
+alias_storage_program <- tccq_analyze(alias_storage, strict = TRUE)
+expect_true(alias_storage_program@success)
+alias_storage_nests <- tccq_program_loop_nests(alias_storage_program@value)
+expect_true(alias_storage_nests@success)
+alias_buffer_nests <- Filter(
+  function(nest) nest@storage@type@shape@rank > 0L,
+  alias_storage_nests@value
+)
+expect_equal(length(alias_buffer_nests), 2L)
+expect_equal(
+  length(unique(vapply(
+    alias_buffer_nests,
+    function(nest) nest@storage@allocation@id,
+    character(1)
+  ))),
+  2L
+)
+
+shape_mismatch_storage <- function(x, y, z) {
+  declare(type(x = double(n, n), y = double(n, n), z = double(n, p)))
+  first <- x %*% y
+  first_total <- sum(first)
+  second <- x %*% z
+  sum(second) + first_total
+}
+shape_mismatch_program <- tccq_analyze(shape_mismatch_storage, strict = TRUE)
+expect_true(shape_mismatch_program@success)
+shape_mismatch_nests <- tccq_program_loop_nests(shape_mismatch_program@value)
+expect_true(shape_mismatch_nests@success)
+shape_mismatch_buffers <- Filter(
+  function(nest) nest@storage@type@shape@rank > 0L,
+  shape_mismatch_nests@value
+)
+expect_equal(length(shape_mismatch_buffers), 2L)
+expect_false(identical(
+  shape_mismatch_buffers[[1L]]@storage@type,
+  shape_mismatch_buffers[[2L]]@storage@type
+))
+expect_equal(
+  length(unique(vapply(
+    shape_mismatch_buffers,
+    function(nest) nest@storage@allocation@id,
+    character(1)
+  ))),
+  2L
+)
+
+reuse_storage_c <- tccq_plan_backend(
+  reuse_storage_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+reuse_storage_fortran <- tccq_plan_backend(
+  reuse_storage_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(reuse_storage_c@success)
+expect_true(reuse_storage_fortran@success)
+expect_equal(
+  sum(grepl("malloc", strsplit(backend_source(reuse_storage_c), "\n", fixed = TRUE)[[1L]], fixed = TRUE)),
+  1L
+)
+expect_equal(
+  sum(grepl(
+    "real(c_double) :: intermediate_0001(",
+    strsplit(backend_source(reuse_storage_fortran), "\n", fixed = TRUE)[[1L]],
+    fixed = TRUE
+  )),
+  1L
+)
+
+reuse_x <- matrix(c(1, 2, 3, 4), nrow = 2)
+reuse_y <- matrix(c(2, -1, 0.5, 3), nrow = 2)
+reuse_z <- matrix(c(-2, 1, 4, 0.25), nrow = 2)
+reuse_expected <- sum(reuse_x %*% reuse_y) + sum(reuse_y %*% reuse_z)
+
+if (can_build_shared_library("c")) {
+  reuse_storage_c_shared <- tccq_plan_backend(
+    reuse_storage_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(reuse_storage_c_shared@success)
+  expect_equal(
+    backend_callable(reuse_storage_c_shared)(reuse_x, reuse_y, reuse_z),
+    reuse_expected
+  )
+}
+
+if (can_build_shared_library("fortran")) {
+  reuse_storage_fortran_shared <- tccq_plan_backend(
+    reuse_storage_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(reuse_storage_fortran_shared@success)
+  expect_equal(
+    backend_callable(reuse_storage_fortran_shared)(reuse_x, reuse_y, reuse_z),
+    reuse_expected
+  )
+}
+
 if (rtinycc_jit_available) {
+  reuse_storage_jit <- tccq_plan_backend(
+    reuse_storage_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(reuse_storage_jit@success)
+  expect_equal(
+    backend_callable(reuse_storage_jit)(reuse_x, reuse_y, reuse_z),
+    reuse_expected
+  )
+
   axis_feed_jit <- tccq_plan_backend(
     axis_reduction_feed_program@value,
     tccq_rtinycc_backend(),
