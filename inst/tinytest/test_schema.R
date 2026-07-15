@@ -211,18 +211,25 @@ bad_conditional_result <- tryCatch(
 )
 expect_true(inherits(bad_conditional_result, "error"))
 
+statement_storage <- tccq_storage_slot(
+  "slot_statement",
+  "value_0003",
+  finite@type,
+  role = "output",
+  materialized = TRUE
+)
 statement_nest <- tccq_loop_nest(
   "loop_nest_statement",
   axes = list(),
   body = statement_block,
-  result_type = finite@type
+  storage = statement_storage
 )
 loop_guard <- tccq_loop_guard(condition_expression, branch_value, selected = TRUE)
 guarded_statement_nest <- tccq_loop_nest(
   "loop_nest_guarded_statement",
   axes = list(),
   body = statement_block,
-  result_type = finite@type,
+  storage = statement_storage,
   guards = list(loop_guard)
 )
 statement_products <- tccq_backend_products(
@@ -247,6 +254,8 @@ expect_equal(statement_interface@local_storage_types[[1L]]@base, "logical")
 expect_true(S7::S7_inherits(loop_guard, TccqLoopGuard))
 expect_true(loop_guard@selected)
 expect_identical(guarded_statement_nest@guards[[1L]], loop_guard)
+expect_identical(statement_nest@storage, statement_storage)
+expect_null(statement_nest@accumulator)
 
 bad_loop_guard <- tryCatch(
   tccq_loop_guard(condition_expression, branch_value, selected = NA),

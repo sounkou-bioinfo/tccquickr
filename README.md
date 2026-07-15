@@ -114,9 +114,12 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 ```
 
 Programs are no longer limited to one loop nest. A scalar reduction
-feeding later work becomes its own all-reduce nest whose result is a
-named scalar, and the final nest reads that scalar — SAC-style
-composition, visible in the emitted source:
+feeding later work becomes its own all-reduce nest. Its reducer folds
+through a typed scalar accumulator, then writes a distinct typed
+materialized scalar slot that the final nest reads. The backend
+interface assigns source names to both values; the loop nest contains no
+target names or generic metadata bag. This SAC-style composition is
+visible in the emitted source:
 
 ``` r
 normalize <- function(x) {
@@ -144,12 +147,14 @@ cat(normalize_plan@value@products@attrs$source)
 #>   if (output == NULL) {
 #>     return NULL;
 #>   }
-#>   double scalar_value_0001 = 0.0;
+#>   double intermediate_0001;
+#>   double accumulator_0001 = 0.0;
 #>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
-#>     scalar_value_0001 = scalar_value_0001 + input_0001[axis_0001];
+#>     accumulator_0001 = accumulator_0001 + input_0001[axis_0001];
 #>   }
+#>   intermediate_0001 = accumulator_0001;
 #>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
-#>     output[axis_0001] = (input_0001[axis_0001] / scalar_value_0001);
+#>     output[axis_0001] = (input_0001[axis_0001] / intermediate_0001);
 #>   }
 #>   return output;
 #> }
@@ -216,7 +221,11 @@ declared dimension symbols. Locals are single-assignment bindings.
 intermediate nests — named scalars for rank-0 results and materialized
 temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
 `(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` compile as ordered
-nest sequences. A value consumed twice materializes once.
+nest sequences. A value consumed twice materializes once. Every nest
+carries the typed storage slot that receives its result, and every
+reducer carries a separate typed scalar accumulator target.
+`TccqBackendFunctionInterface` binds generated names to those values for
+C, TinyCC, and Fortran.
 
 **Dimensions and recycling.** A declared dimension symbol is a scalar in
 the body: `colSums(x) / n` reads the extent parameter already carried by

@@ -124,8 +124,8 @@ TccqBridgePlan <- S7::new_class(
 #' by C, Rtinycc, Fortran, and later source printers. It records the generated
 #' symbol, ABI, formal parameter mapping, result placement, the loop-nest
 #' iteration domain, one extent parameter per symbolic dimension, per-axis loop
-#' index names, typed result dimensions, and the reduction accumulator name
-#' before any concrete syntax is emitted.
+#' index names, typed result dimensions, generated scalar-local mappings, and
+#' materialized intermediate-slot mappings before concrete syntax is emitted.
 #'
 #' @param symbol Generated function symbol.
 #' @param source_language Source language consumed by the printer.
@@ -137,6 +137,8 @@ TccqBridgePlan <- S7::new_class(
 #' @param local_names Generated scalar-local names.
 #' @param local_value_ids Neutral value ids corresponding to locals.
 #' @param local_storage_types Scalar storage types corresponding to locals.
+#' @param intermediate_names Generated names for materialized intermediate slots.
+#' @param intermediate_slots Typed materialized intermediate storage slots.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
@@ -148,8 +150,6 @@ TccqBridgePlan <- S7::new_class(
 #' @param result_dims Typed result dimensions.
 #' @param result_count_name Generated result element-count parameter name, or
 #'   empty string for scalar results.
-#' @param accumulator_name Generated reduction accumulator name, or empty string.
-#' @param attrs Structured interface metadata.
 #' @export
 TccqBackendFunctionInterface <- S7::new_class(
   "TccqBackendFunctionInterface",
@@ -165,6 +165,8 @@ TccqBackendFunctionInterface <- S7::new_class(
     local_names = S7::class_character,
     local_value_ids = S7::class_character,
     local_storage_types = S7::class_list,
+    intermediate_names = S7::class_character,
+    intermediate_slots = S7::class_list,
     result_value_id = S7::class_character,
     result_type = TccqType,
     result_placement = S7::class_character,
@@ -174,9 +176,7 @@ TccqBackendFunctionInterface <- S7::new_class(
     extent_names = S7::class_character,
     index_names = S7::class_character,
     result_dims = S7::class_list,
-    result_count_name = S7::class_character,
-    accumulator_name = S7::class_character,
-    attrs = S7::class_list
+    result_count_name = S7::class_character
   ),
   validator = function(self) {
     problems <- character()
@@ -188,8 +188,7 @@ TccqBackendFunctionInterface <- S7::new_class(
       result_value_id = self@result_value_id,
       result_placement = self@result_placement,
       result_name = self@result_name,
-      result_count_name = self@result_count_name,
-      accumulator_name = self@accumulator_name
+      result_count_name = self@result_count_name
     )
     for (field_name in names(scalar_strings)) {
       field_value <- scalar_strings[[field_name]]
@@ -283,6 +282,42 @@ TccqBackendFunctionInterface <- S7::new_class(
       logical(1)
     ))) {
       problems <- c(problems, "@local_storage_types must contain only scalar values")
+    }
+    if (length(self@intermediate_names) != length(self@intermediate_slots)) {
+      problems <- c(problems, "@intermediate_names and @intermediate_slots must have the same length")
+    }
+    if (
+      anyNA(self@intermediate_names) ||
+        any(!nzchar(self@intermediate_names)) ||
+        anyDuplicated(self@intermediate_names)
+    ) {
+      problems <- c(problems, "@intermediate_names must contain unique non-empty strings")
+    }
+    intermediate_slots_are_typed <- vapply(
+      self@intermediate_slots,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqStorageSlot
+    )
+    if (!all(intermediate_slots_are_typed)) {
+      problems <- c(problems, "@intermediate_slots must contain only <TccqStorageSlot> values")
+    }
+    if (all(intermediate_slots_are_typed)) {
+      intermediate_value_ids <- vapply(
+        self@intermediate_slots,
+        function(slot) slot@value_id,
+        character(1)
+      )
+      if (anyDuplicated(intermediate_value_ids)) {
+        problems <- c(problems, "@intermediate_slots must have unique value ids")
+      }
+      if (any(vapply(
+        self@intermediate_slots,
+        function(slot) !identical(slot@role, "temporary") || !isTRUE(slot@materialized),
+        logical(1)
+      ))) {
+        problems <- c(problems, "@intermediate_slots must be materialized temporary slots")
+      }
     }
     if (length(self@extent_symbols) != length(self@extent_names)) {
       problems <- c(problems, "@extent_symbols and @extent_names must have the same length")
@@ -914,6 +949,8 @@ tccq_bridge_plan <- function(
 #' @param local_names Generated scalar-local names.
 #' @param local_value_ids Neutral value ids corresponding to locals.
 #' @param local_storage_types Scalar storage types corresponding to locals.
+#' @param intermediate_names Generated names for materialized intermediate slots.
+#' @param intermediate_slots Typed materialized intermediate storage slots.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
@@ -925,8 +962,6 @@ tccq_bridge_plan <- function(
 #' @param result_dims Typed result dimensions.
 #' @param result_count_name Generated result element-count parameter name, or
 #'   empty string for scalar results.
-#' @param accumulator_name Generated reduction accumulator name, or empty string.
-#' @param attrs Structured interface metadata.
 #' @export
 tccq_backend_function_interface <- function(
   symbol,
@@ -939,6 +974,8 @@ tccq_backend_function_interface <- function(
   local_names = character(),
   local_value_ids = character(),
   local_storage_types = list(),
+  intermediate_names = character(),
+  intermediate_slots = list(),
   result_value_id,
   result_type,
   result_placement = "return",
@@ -948,9 +985,7 @@ tccq_backend_function_interface <- function(
   extent_names = character(),
   index_names = character(),
   result_dims = list(),
-  result_count_name = "",
-  accumulator_name = "",
-  attrs = list()
+  result_count_name = ""
 ) {
   .tccq_check_character_scalar(symbol, "symbol")
   .tccq_check_character_scalar(source_language, "source_language")
@@ -1065,6 +1100,33 @@ tccq_backend_function_interface <- function(
       path = "backend_function.locals"
     )
   }
+  if (
+    !is.character(intermediate_names) ||
+      anyNA(intermediate_names) ||
+      any(!nzchar(intermediate_names)) ||
+      anyDuplicated(intermediate_names)
+  ) {
+    tccq_abort(
+      "schema.invalid_backend_function_intermediates",
+      "`intermediate_names` must contain unique non-empty strings.",
+      phase = "schema",
+      path = "backend_function.intermediate_names"
+    )
+  }
+  .tccq_check_list_of(
+    intermediate_slots,
+    TccqStorageSlot,
+    "TccqStorageSlot",
+    "intermediate_slots"
+  )
+  if (length(intermediate_names) != length(intermediate_slots)) {
+    tccq_abort(
+      "schema.invalid_backend_function_intermediates",
+      "`intermediate_names` and `intermediate_slots` must have the same length.",
+      phase = "schema",
+      path = "backend_function.intermediates"
+    )
+  }
   .tccq_check_character_scalar(result_value_id, "result_value_id")
   .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
   .tccq_check_character_scalar(result_placement, "result_placement")
@@ -1108,8 +1170,6 @@ tccq_backend_function_interface <- function(
   }
   .tccq_check_list_of(result_dims, TccqDim, "TccqDim", "result_dims")
   .tccq_check_character_or_empty(result_count_name, "result_count_name")
-  .tccq_check_character_or_empty(accumulator_name, "accumulator_name")
-  .tccq_check_list(attrs, "attrs")
 
   TccqBackendFunctionInterface(
     symbol = symbol,
@@ -1122,6 +1182,8 @@ tccq_backend_function_interface <- function(
     local_names = local_names,
     local_value_ids = local_value_ids,
     local_storage_types = local_storage_types,
+    intermediate_names = intermediate_names,
+    intermediate_slots = intermediate_slots,
     result_value_id = result_value_id,
     result_type = result_type,
     result_placement = result_placement,
@@ -1131,9 +1193,7 @@ tccq_backend_function_interface <- function(
     extent_names = extent_names,
     index_names = index_names,
     result_dims = result_dims,
-    result_count_name = result_count_name,
-    accumulator_name = accumulator_name,
-    attrs = attrs
+    result_count_name = result_count_name
   )
 }
 
@@ -1826,7 +1886,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in nest@axes) {
           note_dim(axis@extent)
         }
-        for (dim in nest@result_type@shape@dims) {
+        for (dim in nest@storage@type@shape@dims) {
           note_dim(dim)
         }
       }
@@ -1991,10 +2051,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
     backend_function_interface <- function(symbol, nests, result, formals) {
       result_nest <- nests[[length(nests)]]
+      intermediate_nests <- nests[-length(nests)]
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
+      accumulator_targets <- Filter(
+        function(target) !is.null(target),
+        lapply(nests, function(nest) nest@accumulator)
+      )
       local_targets <- list()
       local_value_ids <- character()
+      for (accumulator_target in accumulator_targets) {
+        local_targets[[length(local_targets) + 1L]] <- accumulator_target
+        local_value_ids <- c(local_value_ids, accumulator_target@value_id)
+      }
       collect_block_locals <- function(block) {
         for (local_target in block@locals) {
           if (!local_target@value_id %in% local_value_ids) {
@@ -2015,7 +2084,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           collect_block_locals(nest@body)
         }
       }
-      local_names <- c_identifier("local", seq_along(local_targets))
+      accumulator_names <- c_identifier("accumulator", seq_along(accumulator_targets))
+      statement_local_count <- length(local_targets) - length(accumulator_targets)
+      local_names <- c(
+        accumulator_names,
+        c_identifier("local", seq_len(statement_local_count))
+      )
+      intermediate_names <- c_identifier("intermediate", seq_along(intermediate_nests))
       extents <- extent_plan(formals, nests)
       kind <- if (length(result_nest@axes) == 0L) "scalar" else "loop_nest"
       for (nest in nests) {
@@ -2047,6 +2122,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         local_names = local_names,
         local_value_ids = local_value_ids,
         local_storage_types = lapply(local_targets, function(target) target@storage_type),
+        intermediate_names = intermediate_names,
+        intermediate_slots = lapply(intermediate_nests, function(nest) nest@storage),
         result_value_id = result@id,
         result_type = result@type,
         result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
@@ -2066,8 +2143,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         extent_names = extents$names,
         index_names = index_names,
         result_dims = result@type@shape@dims,
-        result_count_name = if (result_rank > 0L) "result_count_0001" else "",
-        accumulator_name = if (!is.null(result_nest@reducer)) "accumulator_0001" else ""
+        result_count_name = if (result_rank > 0L) "result_count_0001" else ""
       )
     }
 
@@ -2078,11 +2154,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         interface@parameter_value_ids
       ))
       source_name_by_value_id[interface@local_value_ids] <- as.list(interface@local_names)
+      intermediate_value_ids <- vapply(
+        interface@intermediate_slots,
+        function(slot) slot@value_id,
+        character(1)
+      )
+      source_name_by_value_id[intermediate_value_ids] <- as.list(interface@intermediate_names)
       storage_type_by_value_id <- lapply(
         stats::setNames(formals, vapply(formals, function(value) value@id, character(1))),
         function(value) value@type
       )
       storage_type_by_value_id[interface@local_value_ids] <- interface@local_storage_types
+      storage_type_by_value_id[intermediate_value_ids] <- lapply(
+        interface@intermediate_slots,
+        function(slot) slot@type
+      )
       list(
         extent_by_symbol = extent_by_symbol,
         source_name_by_value_id = source_name_by_value_id,
@@ -2128,27 +2214,44 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       literal_text(identity_result@value, language)
     }
 
-    reduction_combine_text <- function(reduction_spec, accumulator, value, language) {
-      combine_result <- tccq_reduction_combine(
-        reduction_spec,
-        accumulator,
-        value,
-        tccq_op_render_context(
-          language = language,
-          backend_id = backend@id,
-          attrs = list(reducer = reduction_spec@name)
-        )
-      )
-      if (!combine_result@success) {
-        tccq_abort_diagnostic(combine_result@diagnostics[[1L]])
-      }
-      combine_result@value
-    }
-
     loop_plan <- function(interface, nest, emit_context) {
       map_axes <- Filter(function(axis) identical(axis@role, "map"), nest@axes)
       reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
-      accumulator_name <- nest@attrs$scalar_name %||% interface@accumulator_name
+      accumulator_name <- if (is.null(nest@accumulator)) {
+        ""
+      } else {
+        emit_context$source_name_by_value_id[[nest@accumulator@value_id]]
+      }
+      if (!is.null(nest@reducer) && (is.null(accumulator_name) || !nzchar(accumulator_name))) {
+        tccq_abort(
+          "backend.unbound_accumulator",
+          "A reduction loop nest has no generated accumulator name.",
+          phase = "backend",
+          path = sprintf("backend.%s.accumulator", backend@id),
+          data = list(backend = backend@id, nest = nest@id)
+        )
+      }
+      materialization_name <- if (identical(nest@storage@role, "temporary")) {
+        emit_context$source_name_by_value_id[[nest@storage@value_id]]
+      } else {
+        interface@result_name
+      }
+      if (
+        identical(nest@storage@role, "temporary") &&
+          (is.null(materialization_name) || !nzchar(materialization_name))
+      ) {
+        tccq_abort(
+          "backend.unbound_intermediate",
+          "A materialized intermediate has no generated source name.",
+          phase = "backend",
+          path = sprintf("backend.%s.intermediate", backend@id),
+          data = list(
+            backend = backend@id,
+            nest = nest@id,
+            value_id = nest@storage@value_id
+          )
+        )
+      }
       body_requires_statements <- S7::S7_inherits(nest@body, TccqBlock)
       body_text <- if (!body_requires_statements) {
         expression_text(nest@body, emit_context)
@@ -2222,7 +2325,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       output_index <- if (!is.null(nest@output)) {
         linear_index_text(
           nest@output,
-          nest@result_type@shape@dims,
+          nest@storage@type@shape@dims,
           emit_context$extent_by_symbol
         )
       } else {
@@ -2232,6 +2335,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         map_axes = map_axes,
         reduce_axes = reduce_axes,
         accumulator_name = accumulator_name,
+        accumulator_type = if (is.null(nest@accumulator)) NULL else nest@accumulator@storage_type,
+        materialization_name = materialization_name,
         body_text = body_text,
         value_text = value_text,
         identity_text = identity_text,
@@ -2241,16 +2346,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         body_requires_statements = body_requires_statements,
         guards = nest@guards
       )
-    }
-
-    register_intermediates <- function(emit_context, intermediate_nests) {
-      for (intermediate in intermediate_nests) {
-        id <- intermediate@attrs$result_value_id
-        emit_context$source_name_by_value_id[[id]] <-
-          intermediate@attrs$buffer_name %||% intermediate@attrs$scalar_name
-        emit_context$storage_type_by_value_id[[id]] <- intermediate@result_type
-      }
-      emit_context
     }
 
     register_dim_symbols <- function(emit_context) {
@@ -2282,7 +2377,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     buffer_size_text <- function(nest, emit_context) {
       paste(
         vapply(
-          nest@result_type@shape@dims,
+          nest@storage@type@shape@dims,
           extent_text,
           character(1),
           extent_by_symbol = emit_context$extent_by_symbol
@@ -2295,7 +2390,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "c")
-      emit_context <- register_intermediates(emit_context, intermediate_nests)
       emit_context <- register_dim_symbols(emit_context)
       intermediate_plans <- lapply(
         intermediate_nests,
@@ -2317,12 +2411,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
       )
       returns_buffer <- result@type@shape@rank > 0L
+      has_intermediate_buffer <- any(vapply(
+        intermediate_nests,
+        function(nest) nest@storage@type@shape@rank > 0L,
+        logical(1)
+      ))
       return_type <- if (returns_buffer) "double" else source_scalar_type(result@type, "c")
       lines <- c(
         "#include <math.h>",
         "#include <stdbool.h>",
         "#include <stddef.h>",
-        if (returns_buffer) "#include <stdlib.h>",
+        if (returns_buffer || has_intermediate_buffer) "#include <stdlib.h>",
         "",
         sprintf(
           "%s %s%s(%s) {",
@@ -2458,19 +2557,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
         intermediate <- intermediate_nests[[position]]
-        buffer_name <- intermediate@attrs$buffer_name
-        guarded <- length(intermediate_plan$guards) > 0L
-        if (guarded && is.null(buffer_name)) {
-          push(sprintf("double %s;", intermediate_plan$accumulator_name))
+        materializes_buffer <- intermediate@storage@type@shape@rank > 0L
+        if (!materializes_buffer) {
+          push(sprintf(
+            "%s %s;",
+            source_scalar_type(intermediate@storage@type, "c"),
+            intermediate_plan$materialization_name
+          ))
         }
         open_guards(intermediate_plan$guards)
-        if (!is.null(buffer_name)) {
+        if (materializes_buffer) {
           push(sprintf(
             "double *%s = (double *)malloc(sizeof(double) * (size_t)(%s));",
-            buffer_name,
+            intermediate_plan$materialization_name,
             buffer_size_text(intermediate, emit_context)
           ))
-          push(sprintf("if (%s == NULL) {", buffer_name))
+          push(sprintf("if (%s == NULL) {", intermediate_plan$materialization_name))
           for (prior_buffer in allocated_buffers) {
             push(sprintf("free(%s);", prior_buffer), depth + 1L)
           }
@@ -2481,14 +2583,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             push("return NAN;", depth + 1L)
           }
           push("}")
-          allocated_buffers <- c(allocated_buffers, buffer_name)
+          allocated_buffers <- c(allocated_buffers, intermediate_plan$materialization_name)
         }
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
         push(sprintf(
-          "%s%s = %s;",
-          if (guarded && is.null(buffer_name)) "" else "double ",
+          "%s %s = %s;",
+          source_scalar_type(intermediate_plan$accumulator_type, "c"),
           intermediate_plan$accumulator_name,
           intermediate_plan$identity_text
         ))
@@ -2517,17 +2619,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$reduce_axes) {
           close_loop(axis)
         }
-        if (!is.null(buffer_name)) {
+        if (materializes_buffer) {
           push(sprintf(
             "%s[%s] = %s;",
-            buffer_name,
+            intermediate_plan$materialization_name,
             intermediate_plan$output_index,
             intermediate_plan$value_text
           ))
-        } else if (!identical(intermediate_plan$value_text, intermediate_plan$accumulator_name)) {
+        } else {
           push(sprintf(
             "%s = %s;",
-            intermediate_plan$accumulator_name,
+            intermediate_plan$materialization_name,
             intermediate_plan$value_text
           ))
         }
@@ -2540,7 +2642,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         open_loop(axis)
       }
       if (!is.null(result_nest@reducer)) {
-        push(sprintf("double %s = %s;", plan$accumulator_name, plan$identity_text))
+        push(sprintf(
+          "%s %s = %s;",
+          source_scalar_type(plan$accumulator_type, "c"),
+          plan$accumulator_name,
+          plan$identity_text
+        ))
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
@@ -2593,7 +2700,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       result_nest <- nests[[length(nests)]]
       intermediate_nests <- nests[-length(nests)]
       emit_context <- new_emit_context(interface, formals, "fortran")
-      emit_context <- register_intermediates(emit_context, intermediate_nests)
       emit_context <- register_dim_symbols(emit_context)
       intermediate_plans <- lapply(
         intermediate_nests,
@@ -2662,22 +2768,33 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         },
         if (!is.null(result_nest@reducer)) {
-          sprintf("  real(c_double) :: %s", plan$accumulator_name)
+          sprintf(
+            "  %s :: %s",
+            source_scalar_type(plan$accumulator_type, "fortran"),
+            plan$accumulator_name
+          )
         },
         unlist(lapply(intermediate_plans, function(intermediate_plan) {
-          sprintf("  real(c_double) :: %s", intermediate_plan$accumulator_name)
+          sprintf(
+            "  %s :: %s",
+            source_scalar_type(intermediate_plan$accumulator_type, "fortran"),
+            intermediate_plan$accumulator_name
+          )
         })),
-        unlist(lapply(intermediate_nests, function(intermediate) {
-          buffer_name <- intermediate@attrs$buffer_name
-          if (is.null(buffer_name)) {
-            return(character())
+        unlist(Map(function(intermediate, intermediate_plan) {
+          if (intermediate@storage@type@shape@rank == 0L) {
+            return(sprintf(
+              "  %s :: %s",
+              source_scalar_type(intermediate@storage@type, "fortran"),
+              intermediate_plan$materialization_name
+            ))
           }
           sprintf(
             "  real(c_double) :: %s(%s)",
-            buffer_name,
+            intermediate_plan$materialization_name,
             buffer_size_text(intermediate, emit_context)
           )
-        })),
+        }, intermediate_nests, intermediate_plans)),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
         }
@@ -2793,7 +2910,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
-        buffer_name <- intermediate_nests[[position]]@attrs$buffer_name
+        intermediate <- intermediate_nests[[position]]
+        materializes_buffer <- intermediate@storage@type@shape@rank > 0L
         open_guards(intermediate_plan$guards)
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
@@ -2828,17 +2946,17 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$reduce_axes) {
           close_loop(axis)
         }
-        if (!is.null(buffer_name)) {
+        if (materializes_buffer) {
           push(sprintf(
             "%s(%s + 1) = %s",
-            buffer_name,
+            intermediate_plan$materialization_name,
             intermediate_plan$output_index,
             intermediate_plan$value_text
           ))
-        } else if (!identical(intermediate_plan$value_text, intermediate_plan$accumulator_name)) {
+        } else {
           push(sprintf(
             "%s = %s",
-            intermediate_plan$accumulator_name,
+            intermediate_plan$materialization_name,
             intermediate_plan$value_text
           ))
         }

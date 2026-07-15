@@ -733,12 +733,12 @@ tccq_loop_guard <- function(condition, branch, selected) {
 #' @param axes Ordered `TccqLoopAxis` values, outermost first.
 #' @param body Body expression or typed statement block with access-carrying
 #'   references.
-#' @param result_type Result type of the loop nest.
 #' @param output Output access over map axes, or `NULL` for scalar results.
 #' @param reducer Reduction metadata for reduce axes, or `NULL`.
 #' @param identity Reducer identity literal, or `NULL`.
+#' @param accumulator Typed scalar accumulator target, or `NULL`.
+#' @param storage Typed storage slot receiving the nest result.
 #' @param guards Ordered `TccqLoopGuard` control path selecting this nest.
-#' @param attrs Structured metadata.
 #' @export
 TccqLoopNest <- S7::new_class(
   "TccqLoopNest",
@@ -748,12 +748,12 @@ TccqLoopNest <- S7::new_class(
     domain = TccqDomain,
     axes = S7::class_list,
     body = S7::new_union(TccqExpression, TccqBlock),
-    result_type = TccqType,
     output = S7::new_union(NULL, TccqAccess),
     reducer = S7::new_union(NULL, TccqReductionSpec),
     identity = S7::new_union(NULL, TccqLiteral),
-    guards = S7::class_list,
-    attrs = S7::class_list
+    accumulator = S7::new_union(NULL, TccqWriteTarget),
+    storage = TccqStorageSlot,
+    guards = S7::class_list
   ),
   validator = function(self) {
     problems <- character()
@@ -793,6 +793,27 @@ TccqLoopNest <- S7::new_class(
     if (reducer_present != identity_present) {
       problems <- c(problems, "@reducer and @identity must be present together")
     }
+    accumulator_present <- S7::S7_inherits(self@accumulator, TccqWriteTarget)
+    if (reducer_present != accumulator_present) {
+      problems <- c(problems, "@reducer and @accumulator must be present together")
+    }
+    if (accumulator_present) {
+      if (!identical(self@accumulator@kind, "local")) {
+        problems <- c(problems, "@accumulator must be a local write target")
+      }
+      if (self@accumulator@type@shape@rank != 0L) {
+        problems <- c(problems, "@accumulator must have scalar semantic type")
+      }
+      if (!identical(self@accumulator@type@base, self@storage@type@base)) {
+        problems <- c(problems, "@accumulator and @storage must have the same base type")
+      }
+    }
+    if (!self@storage@role %in% c("temporary", "output")) {
+      problems <- c(problems, "@storage must be a temporary or output slot")
+    }
+    if (!isTRUE(self@storage@materialized)) {
+      problems <- c(problems, "@storage must describe a materialized result")
+    }
     guards_are_typed <- vapply(
       self@guards,
       S7::S7_inherits,
@@ -802,11 +823,14 @@ TccqLoopNest <- S7::new_class(
     if (!all(guards_are_typed)) {
       problems <- c(problems, "@guards must contain only <TccqLoopGuard> values")
     }
-    if (self@result_type@shape@rank > 0L && is.null(self@output)) {
+    if (self@storage@type@shape@rank > 0L && is.null(self@output)) {
       problems <- c(problems, "non-scalar loop nests must carry an output access")
     }
-    if (self@result_type@shape@rank == 0L && !is.null(self@output)) {
+    if (self@storage@type@shape@rank == 0L && !is.null(self@output)) {
       problems <- c(problems, "scalar loop nests cannot carry an output access")
+    }
+    if (!is.null(self@output) && !identical(self@output@value_id, self@storage@value_id)) {
+      problems <- c(problems, "@output must write the value owned by @storage")
     }
     if (length(problems) > 0L) problems
   }
@@ -818,25 +842,25 @@ TccqLoopNest <- S7::new_class(
 #' @param axes Ordered `TccqLoopAxis` values, outermost first.
 #' @param body Body expression or typed statement block with access-carrying
 #'   references.
-#' @param result_type Result type of the loop nest.
 #' @param output Output access over map axes, or `NULL` for scalar results.
 #' @param reducer Reduction metadata for reduce axes, or `NULL`.
 #' @param identity Reducer identity literal, or `NULL`.
 #' @param domain Optional iteration domain. Defaults to one built from `axes`.
+#' @param accumulator Typed scalar accumulator target, or `NULL`.
+#' @param storage Typed storage slot receiving the nest result.
 #' @param guards Ordered `TccqLoopGuard` control path selecting this nest.
-#' @param attrs Structured metadata.
 #' @export
 tccq_loop_nest <- function(
   id,
   axes,
   body,
-  result_type,
+  storage,
   output = NULL,
   reducer = NULL,
   identity = NULL,
   domain = NULL,
-  guards = list(),
-  attrs = list()
+  accumulator = NULL,
+  guards = list()
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_list_of(axes, TccqLoopAxis, "TccqLoopAxis", "axes")
@@ -849,12 +873,12 @@ tccq_loop_nest <- function(
       path = "loop_nest.body"
     )
   }
-  .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
+  .tccq_check_s7(storage, TccqStorageSlot, "TccqStorageSlot", "storage")
   .tccq_check_optional_s7(output, TccqAccess, "TccqAccess", "output")
   .tccq_check_optional_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
   .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
+  .tccq_check_optional_s7(accumulator, TccqWriteTarget, "TccqWriteTarget", "accumulator")
   .tccq_check_list_of(guards, TccqLoopGuard, "TccqLoopGuard", "guards")
-  .tccq_check_list(attrs, "attrs")
   if (is.null(domain)) {
     domain <- tccq_domain(
       sprintf("%s.domain", id),
@@ -869,12 +893,12 @@ tccq_loop_nest <- function(
     domain = domain,
     axes = axes,
     body = body,
-    result_type = result_type,
     output = output,
     reducer = reducer,
     identity = identity,
-    guards = guards,
-    attrs = attrs
+    accumulator = accumulator,
+    storage = storage,
+    guards = guards
   )
 }
 
@@ -913,6 +937,33 @@ tccq_program_loop_nests <- function(program) {
       "loop_nest.missing_result",
       "Loop-nest planning needs a lowered program result."
     )))
+  }
+  if (!S7::S7_inherits(program@storage_plan, TccqStoragePlan)) {
+    return(failed(nest_diagnostic(
+      "loop_nest.missing_storage_plan",
+      "Loop-nest planning needs the typed program storage plan."
+    )))
+  }
+  storage_slots <- program@storage_plan@slots
+  storage_value_ids <- vapply(storage_slots, function(slot) slot@value_id, character(1))
+  if (anyDuplicated(storage_value_ids)) {
+    return(failed(nest_diagnostic(
+      "loop_nest.duplicate_storage_value",
+      "The storage plan must assign one slot to each lowered value."
+    )))
+  }
+  storage_by_value_id <- storage_slots
+  names(storage_by_value_id) <- storage_value_ids
+  storage_for <- function(value_id) {
+    storage <- storage_by_value_id[[value_id]]
+    if (is.null(storage)) {
+      tccq_abort_diagnostic(nest_diagnostic(
+        "loop_nest.missing_value_storage",
+        "A loop-nest result has no typed storage slot.",
+        data = list(value_id = value_id)
+      ))
+    }
+    storage
   }
   expression_result <- tccq_expression_tree(program)
   if (!expression_result@success) {
@@ -1148,21 +1199,7 @@ tccq_program_loop_nests <- function(program) {
     })
   }
 
-  nest_role_attrs <- function(expression, role) {
-    attrs <- list(result_value_id = expression@value_id)
-    if (identical(role, "result")) {
-      return(attrs)
-    }
-    if (expression@type@shape@rank == 0L) {
-      attrs$scalar_name <- sprintf("scalar_%s", expression@value_id)
-    } else {
-      attrs$buffer_name <- sprintf("buffer_%s", expression@value_id)
-      attrs$scalar_name <- sprintf("acc_%s", expression@value_id)
-    }
-    attrs
-  }
-
-  reduction_nest <- function(expression, nest_id, role, guards = list()) {
+  reduction_nest <- function(expression, nest_id, guards = list()) {
     operation <- expression@attrs$operation
     input_shape <- expression@inputs[[1L]]@type@shape
     reduction_axes <- as.integer(operation@attrs$reduction_axes %||% seq_len(input_shape@rank))
@@ -1217,17 +1254,21 @@ tccq_program_loop_nests <- function(program) {
       nest_id,
       axes = axes,
       body = body,
-      result_type = expression@type,
+      storage = storage_for(expression@value_id),
       output = output,
       reducer = operation@reduction,
       identity = operation@identity,
       domain = domain,
-      guards = guards,
-      attrs = nest_role_attrs(expression, role)
+      accumulator = tccq_write_target(
+        sprintf("%s.accumulator", nest_id),
+        tccq_type(expression@type@base),
+        kind = "local"
+      ),
+      guards = guards
     )
   }
 
-  contraction_nest <- function(expression, nest_id, role, guards = list()) {
+  contraction_nest <- function(expression, nest_id, guards = list()) {
     operation <- expression@attrs$operation
     contraction_spec <- operation@contraction
     contract_dims <- as.integer(contraction_spec@attrs$contract_dims %||% c(2L, 1L))
@@ -1321,22 +1362,26 @@ tccq_program_loop_nests <- function(program) {
       nest_id,
       axes = axes,
       body = body,
-      result_type = expression@type,
+      storage = storage_for(expression@value_id),
       output = output,
       reducer = contraction_spec@reducer,
       identity = operation@identity,
       domain = domain,
-      guards = guards,
-      attrs = nest_role_attrs(expression, role)
+      accumulator = tccq_write_target(
+        sprintf("%s.accumulator", nest_id),
+        tccq_type(expression@type@base),
+        kind = "local"
+      ),
+      guards = guards
     )
   }
 
   intermediate_nest <- function(expression, nest_index, guards) {
     nest_id <- sprintf("loop_nest_%04d", nest_index)
     if (identical(expression_family(expression), "contraction")) {
-      contraction_nest(expression, nest_id, "intermediate", guards)
+      contraction_nest(expression, nest_id, guards)
     } else {
-      reduction_nest(expression, nest_id, "intermediate", guards)
+      reduction_nest(expression, nest_id, guards)
     }
   }
 
@@ -1523,10 +1568,10 @@ tccq_program_loop_nests <- function(program) {
     result_value <- program@values[[program@result]]
 
     if (identical(root_family, "reduction")) {
-      return(reduction_nest(root, "loop_nest_main", "result"))
+      return(reduction_nest(root, "loop_nest_main"))
     }
     if (identical(root_family, "contraction")) {
-      return(contraction_nest(root, "loop_nest_main", "result"))
+      return(contraction_nest(root, "loop_nest_main"))
     }
 
     result_shape <- result_value@type@shape
@@ -1561,10 +1606,9 @@ tccq_program_loop_nests <- function(program) {
       "loop_nest_main",
       axes = axes,
       body = body,
-      result_type = result_value@type,
+      storage = storage_for(program@result),
       output = output,
-      domain = domain,
-      attrs = list(result_value_id = program@result)
+      domain = domain
     )
   }
 

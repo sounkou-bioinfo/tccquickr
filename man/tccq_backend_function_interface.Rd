@@ -15,6 +15,8 @@ tccq_backend_function_interface(
   local_names = character(),
   local_value_ids = character(),
   local_storage_types = list(),
+  intermediate_names = character(),
+  intermediate_slots = list(),
   result_value_id,
   result_type,
   result_placement = "return",
@@ -24,9 +26,7 @@ tccq_backend_function_interface(
   extent_names = character(),
   index_names = character(),
   result_dims = list(),
-  result_count_name = "",
-  accumulator_name = "",
-  attrs = list()
+  result_count_name = ""
 )
 }
 \arguments{
@@ -50,6 +50,10 @@ tccq_backend_function_interface(
 
 \item{local_storage_types}{Scalar storage types corresponding to locals.}
 
+\item{intermediate_names}{Generated names for materialized intermediate slots.}
+
+\item{intermediate_slots}{Typed materialized intermediate storage slots.}
+
 \item{result_value_id}{Lowered result value id.}
 
 \item{result_type}{Declared semantic result type.}
@@ -70,10 +74,6 @@ tccq_backend_function_interface(
 
 \item{result_count_name}{Generated result element-count parameter name, or
 empty string for scalar results.}
-
-\item{accumulator_name}{Generated reduction accumulator name, or empty string.}
-
-\item{attrs}{Structured interface metadata.}
 }
 \description{
 Construct a backend function interface

@@ -10,6 +10,11 @@ handoff.
 The current useful center is the typed loop-nest path. Elementwise maps,
 reductions, axis reductions, contractions, intermediate materialization,
 dimension symbols, and rank-mixed recycling are represented before printing.
+Each `TccqLoopNest` owns one typed materialized storage slot and reductions own
+a separate typed scalar accumulator target. Generated local and intermediate
+names are backend-interface bindings to those values; they are not loop-nest
+attributes or operation-name conventions. The storage slot is the single owner
+of a nest result's identity and type.
 TinyCC and Fortran execution now both exercise composite kernels, including the
 logistic-gradient apotheosis, so the next failures should come from semantics
 that are not yet modeled rather than from target-specific source shortcuts.

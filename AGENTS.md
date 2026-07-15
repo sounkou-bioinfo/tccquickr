@@ -280,13 +280,14 @@ For the reset core, keep these rules explicit:
   `buffer -> SEXP`, or R call-evaluation boundaries inside emitted strings.
 - Backend planning must also make generated callable shape explicit through
   `TccqBackendFunctionInterface`, including ordered parameter `TccqType` values
-  and the result `TccqType`, plus generated names and types for neutral scalar
-  locals. Do not make C, Rtinycc, Fortran, or later source printers independently
-  infer scalar/map/reduction/axis-reduction shape, generated parameter or local
-  mapping, semantic types, ABI, result placement, generated result names,
-  iteration domain, per-axis input extent parameters, total input element-count
-  parameter, per-axis result extent parameters, result-count parameter, index
-  variable, or reduction accumulator names.
+  and the result `TccqType`, generated names and types for neutral scalar locals,
+  and generated names paired with typed materialized intermediate slots. Do not
+  make C, Rtinycc, Fortran, or later source printers independently infer
+  scalar/map/reduction/axis-reduction shape, generated parameter, local, or
+  intermediate mapping, semantic types, ABI, result placement, generated result
+  names, iteration domain, per-axis input extent parameters, total input
+  element-count parameter, per-axis result extent parameters, result-count
+  parameter, index variable, or reduction accumulator names.
 - Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
   the SAC-style with-loop, planned as an ordered sequence (intermediate nests
   first, result nest last). A selected-arm scalar intermediate extends that
@@ -295,8 +296,12 @@ For the reset core, keep these rules explicit:
   (`map` produces output positions, `reduce` folds into an accumulator), a
   value-expression or typed-statement-block body whose references carry typed
   `TccqAccess`/`TccqIndexExpr` affine access maps, an optional reducer with
-  identity, and an output access; intermediate nests name the scalar their
-  accumulator materializes. Scalar programs, maps, full and per-axis
+  identity and typed scalar accumulator target, a typed materialized
+  `TccqStorageSlot` owning the result identity and type, and an output access.
+  The accumulator and materialized result are distinct values even when both
+  are scalar. Loop nests and backend function interfaces are closed schemas;
+  do not restore generic `attrs` bags or duplicate result-type fields to carry
+  storage identity or generated names. Scalar programs, maps, full and per-axis
   reductions, `%*%` contractions, interior stencils, control-valued results,
   and scalar-intermediate compositions are sequences of this one value. Do not
   reintroduce per-family printer cases, linear element-count ABIs, string-built
@@ -321,10 +326,10 @@ For the reset core, keep these rules explicit:
   own nest — a named scalar for rank-0 results, a materialized temporary
   buffer otherwise — consumed by later nests through ordinary typed accesses.
   Extraction is keyed by value id, so a value consumed twice materializes
-  once. Buffer intermediates are storage-plan facts (`materialized`,
-  non-reusable slots), C emitters own their allocation and free discipline,
-  and Fortran uses automatic arrays; intermediates never change the callable
-  ABI.
+  once. Every intermediate is a storage-plan fact represented by a materialized,
+  non-reusable `TccqStorageSlot`; scalar slots become locals, C owns buffer
+  allocation and free discipline, and Fortran uses automatic arrays.
+  Intermediates never change the callable ABI.
 - Backend planning must make concrete products explicit through
   `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
   expression trees, storage plans, generated source, shared libraries, wrappers,

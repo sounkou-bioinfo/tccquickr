@@ -9,12 +9,12 @@ TccqLoopNest(
   domain = TccqDomain(),
   axes = list(),
   body = TccqExpression(),
-  result_type = TccqType(),
   output = NULL,
   reducer = NULL,
   identity = NULL,
-  guards = list(),
-  attrs = list()
+  accumulator = NULL,
+  storage = TccqStorageSlot(),
+  guards = list()
 )
 }
 \arguments{
@@ -27,17 +27,17 @@ TccqLoopNest(
 \item{body}{Body expression or typed statement block with access-carrying
 references.}
 
-\item{result_type}{Result type of the loop nest.}
-
 \item{output}{Output access over map axes, or \code{NULL} for scalar results.}
 
 \item{reducer}{Reduction metadata for reduce axes, or \code{NULL}.}
 
 \item{identity}{Reducer identity literal, or \code{NULL}.}
 
-\item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
+\item{accumulator}{Typed scalar accumulator target, or \code{NULL}.}
 
-\item{attrs}{Structured metadata.}
+\item{storage}{Typed storage slot receiving the nest result.}
+
+\item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
 }
 \description{
 \code{TccqLoopNest} is the single backend-neutral iteration plan consumed by

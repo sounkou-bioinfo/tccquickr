@@ -8,13 +8,13 @@ tccq_loop_nest(
   id,
   axes,
   body,
-  result_type,
+  storage,
   output = NULL,
   reducer = NULL,
   identity = NULL,
   domain = NULL,
-  guards = list(),
-  attrs = list()
+  accumulator = NULL,
+  guards = list()
 )
 }
 \arguments{
@@ -25,7 +25,7 @@ tccq_loop_nest(
 \item{body}{Body expression or typed statement block with access-carrying
 references.}
 
-\item{result_type}{Result type of the loop nest.}
+\item{storage}{Typed storage slot receiving the nest result.}
 
 \item{output}{Output access over map axes, or \code{NULL} for scalar results.}
 
@@ -35,9 +35,9 @@ references.}
 
 \item{domain}{Optional iteration domain. Defaults to one built from \code{axes}.}
 
-\item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
+\item{accumulator}{Typed scalar accumulator target, or \code{NULL}.}
 
-\item{attrs}{Structured metadata.}
+\item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
 }
 \description{
 Construct a loop nest

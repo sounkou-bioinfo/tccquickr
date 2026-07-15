@@ -671,7 +671,16 @@ expect_true(S7::S7_inherits(
 ))
 expect_equal(reduction_c_interface@kind, "loop_nest")
 expect_equal(reduction_c_interface@result_placement, "return")
-expect_equal(reduction_c_interface@accumulator_name, "accumulator_0001")
+reduction_c_accumulator_id <- backend_products(
+  reduction_c_source_plan
+)@loop_nest@accumulator@value_id
+expect_equal(
+  reduction_c_interface@local_names[[match(
+    reduction_c_accumulator_id,
+    reduction_c_interface@local_value_ids
+  )]],
+  "accumulator_0001"
+)
 expect_true(S7::S7_inherits(reduction_c_interface@domain, TccqDomain))
 expect_equal(reduction_c_interface@domain@shape@rank, 1L)
 expect_equal(reduction_c_interface@extent_names, "extent_n")
@@ -771,7 +780,16 @@ expect_equal(column_axis_c_interface@kind, "loop_nest")
 expect_equal(column_axis_c_interface@domain@shape@rank, 2L)
 expect_equal(column_axis_c_interface@extent_names, c("extent_n", "extent_p"))
 expect_equal(column_axis_c_interface@result_count_name, "result_count_0001")
-expect_equal(column_axis_c_interface@accumulator_name, "accumulator_0001")
+column_axis_accumulator_id <- backend_products(
+  column_axis_c_source_plan
+)@loop_nest@accumulator@value_id
+expect_equal(
+  column_axis_c_interface@local_names[[match(
+    column_axis_accumulator_id,
+    column_axis_c_interface@local_value_ids
+  )]],
+  "accumulator_0001"
+)
 expect_equal(
   vapply(column_axis_c_interface@result_dims, function(dim) dim@label, character(1)),
   "p"
@@ -1480,7 +1498,7 @@ expect_equal(
     function(type) type@shape@rank,
     integer(1)
   ),
-  0L
+  c(0L, 0L)
 )
 
 branch_x <- c(1, -2, 3.5)
@@ -2078,7 +2096,10 @@ expect_true(all(vapply(
   function(axis) identical(axis@role, "reduce"),
   logical(1)
 )))
-expect_true(nzchar(normalize_intermediate@attrs$scalar_name))
+expect_true(S7::S7_inherits(normalize_intermediate@storage, TccqStorageSlot))
+expect_equal(normalize_intermediate@storage@role, "temporary")
+expect_true(normalize_intermediate@storage@materialized)
+expect_true(S7::S7_inherits(normalize_intermediate@accumulator, TccqWriteTarget))
 expect_null(normalize_final@reducer)
 
 # The singular planner refuses multi-nest programs with a classed diagnostic.
@@ -2097,6 +2118,17 @@ normalize_source_plan <- tccq_plan_backend(
 )
 expect_true(normalize_source_plan@success)
 expect_equal(length(backend_products(normalize_source_plan)@loop_nests), 2L)
+normalize_c_interface <- backend_interface(normalize_source_plan)
+expect_equal(normalize_c_interface@intermediate_names, "intermediate_0001")
+expect_identical(
+  normalize_c_interface@intermediate_slots[[1L]],
+  normalize_intermediate@storage
+)
+expect_true(grepl(
+  "double intermediate_0001;",
+  backend_source(normalize_source_plan),
+  fixed = TRUE
+))
 
 normalize_fortran_plan <- tccq_plan_backend(
   normalize_program@value,
@@ -2164,7 +2196,8 @@ expect_true(axis_reduction_feed_program@success)
 axis_feed_nests <- tccq_program_loop_nests(axis_reduction_feed_program@value)
 expect_true(axis_feed_nests@success)
 expect_equal(length(axis_feed_nests@value), 2L)
-expect_true(nzchar(axis_feed_nests@value[[1L]]@attrs$buffer_name))
+expect_true(S7::S7_inherits(axis_feed_nests@value[[1L]]@storage, TccqStorageSlot))
+expect_equal(axis_feed_nests@value[[1L]]@storage@type@shape@rank, 1L)
 expect_true(S7::S7_inherits(axis_feed_nests@value[[1L]]@output, TccqAccess))
 
 axis_feed_groups <- axis_reduction_feed_program@value@regions[[1L]]@fusion_groups
@@ -2173,11 +2206,7 @@ expect_equal(
   c("axis_reduce", "map")
 )
 
-axis_feed_slots <- axis_reduction_feed_program@value@storage_plan@slots
-axis_feed_buffer_slot <- Filter(
-  function(slot) identical(slot@value_id, axis_feed_nests@value[[1L]]@attrs$result_value_id),
-  axis_feed_slots
-)[[1L]]
+axis_feed_buffer_slot <- axis_feed_nests@value[[1L]]@storage
 expect_true(axis_feed_buffer_slot@materialized)
 expect_false(axis_feed_buffer_slot@reusable)
 
@@ -2190,7 +2219,11 @@ expect_true(contraction_feed_program@success)
 contraction_feed_nests <- tccq_program_loop_nests(contraction_feed_program@value)
 expect_true(contraction_feed_nests@success)
 expect_equal(length(contraction_feed_nests@value), 2L)
-expect_true(nzchar(contraction_feed_nests@value[[1L]]@attrs$buffer_name))
+expect_true(S7::S7_inherits(
+  contraction_feed_nests@value[[1L]]@storage,
+  TccqStorageSlot
+))
+expect_equal(contraction_feed_nests@value[[1L]]@storage@type@shape@rank, 1L)
 
 # A value consumed twice materializes once: cs feeds both the scalar
 # reduction and the final map, so the program plans three nests, not four.

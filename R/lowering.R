@@ -990,10 +990,9 @@ tccq_lower_function <- function(
     lifetimes <- storage_lifetimes(lowered_values, result_id)
     slots <- Map(function(value, slot_index) {
       role <- storage_role(value, result_id)
-      buffer_intermediate <- identical(role, "temporary") &&
-        value@type@shape@rank > 0L &&
+      operation_intermediate <- identical(role, "temporary") &&
         (value_is_reduction(value) || value_is_contraction(value))
-      materialized <- role %in% c("input", "output") || buffer_intermediate
+      materialized <- role %in% c("input", "output") || operation_intermediate
       reusable <- identical(role, "temporary") && !isTRUE(materialized)
       lifetime <- lifetimes[[value@id]]
       tccq_storage_slot(

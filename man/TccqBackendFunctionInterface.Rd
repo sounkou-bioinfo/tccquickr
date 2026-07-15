@@ -15,6 +15,8 @@ TccqBackendFunctionInterface(
   local_names = character(0),
   local_value_ids = character(0),
   local_storage_types = list(),
+  intermediate_names = character(0),
+  intermediate_slots = list(),
   result_value_id = character(0),
   result_type = TccqType(),
   result_placement = character(0),
@@ -24,9 +26,7 @@ TccqBackendFunctionInterface(
   extent_names = character(0),
   index_names = character(0),
   result_dims = list(),
-  result_count_name = character(0),
-  accumulator_name = character(0),
-  attrs = list()
+  result_count_name = character(0)
 )
 }
 \arguments{
@@ -50,6 +50,10 @@ TccqBackendFunctionInterface(
 
 \item{local_storage_types}{Scalar storage types corresponding to locals.}
 
+\item{intermediate_names}{Generated names for materialized intermediate slots.}
+
+\item{intermediate_slots}{Typed materialized intermediate storage slots.}
+
 \item{result_value_id}{Lowered result value id.}
 
 \item{result_type}{Declared semantic result type.}
@@ -70,16 +74,12 @@ TccqBackendFunctionInterface(
 
 \item{result_count_name}{Generated result element-count parameter name, or
 empty string for scalar results.}
-
-\item{accumulator_name}{Generated reduction accumulator name, or empty string.}
-
-\item{attrs}{Structured interface metadata.}
 }
 \description{
 A backend function interface is the source-level callable boundary consumed
 by C, Rtinycc, Fortran, and later source printers. It records the generated
 symbol, ABI, formal parameter mapping, result placement, the loop-nest
 iteration domain, one extent parameter per symbolic dimension, per-axis loop
-index names, typed result dimensions, and the reduction accumulator name
-before any concrete syntax is emitted.
+index names, typed result dimensions, generated scalar-local mappings, and
+materialized intermediate-slot mappings before concrete syntax is emitted.
 }
