@@ -277,12 +277,13 @@ operation_expression <- tccq_expression(
 )
 logical_scalar <- tccq_type("logical")
 combined_effect <- tccq_effect_union(
-  tccq_effect(reads = TRUE),
+  tccq_effect(reads = TRUE, may_warn = TRUE),
   tccq_effect(writes = TRUE, may_error = TRUE)
 )
 expect_true(combined_effect@reads)
 expect_true(combined_effect@writes)
 expect_true(combined_effect@may_error)
+expect_true(combined_effect@may_warn)
 expect_false(combined_effect@allocates)
 expect_false(combined_effect@boundary)
 branch_value <- tccq_branch(
@@ -548,7 +549,7 @@ storage_slot <- tccq_storage_slot(
   "value_0001",
   finite@type,
   role = "temporary",
-  materialized = FALSE,
+  materialized = TRUE,
   reusable = TRUE,
   lifetime = lifetime
 )
@@ -575,6 +576,20 @@ bad_reusable_slot <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_reusable_slot, "tccq_error"))
+
+unmaterialized_reusable_slot <- tryCatch(
+  tccq_storage_slot(
+    "slot_unmaterialized",
+    "value_0001",
+    finite@type,
+    role = "temporary",
+    materialized = FALSE,
+    reusable = TRUE,
+    lifetime = lifetime
+  ),
+  error = identity
+)
+expect_true(inherits(unmaterialized_reusable_slot, "error"))
 
 bad_fusion <- tryCatch(
   tccq_fusion_group(

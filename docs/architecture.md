@@ -216,6 +216,17 @@ mutating through a formal such as `x[i] <- value` produces a classed lowering
 diagnostic. That remains intentionally strict until mutation barriers, aliasing,
 materialization, and view semantics are represented in the middle-end.
 
+One local-definition optimization now consumes this schedule. The storage
+planner counts actual `TccqBindingReference` occurrences rather than the
+schedule's deduplicated binding-use set. It marks a definition non-materialized
+only when that occurrence is unique and belongs to the immediately following
+step, producer and consumer are pure elementwise trees with identical result
+shapes, and neither tree may write, allocate, cross a boundary, error, or warn.
+The loop-nest planner then substitutes the dominating typed expression at that
+one read. Duplicate reads, later reads, control, reductions, contractions, and
+observable effects retain a storage boundary. The decision is
+`TccqStorageSlot@materialized`; it is not repeated in attrs or emitter logic.
+
 The important constraint is that lowering failure is not frontend failure. A
 registered opaque operation can be a valid analyzed operation even when the
 current lowerer cannot emit it. Backend planning then reports that no lowered
@@ -225,10 +236,12 @@ and "operation lowerable but unsupported by this backend".
 
 The minimal storage plan marks formals, literals, temporaries, and the output
 explicitly so printers can consume a typed plan. It records each slot's
-definition and last use as a `TccqStorageLifetime`, then only groups same-type
-temporary slots for reuse when those typed lifetimes do not overlap. This is
-still conservative: aliasing, mutation, materialization, layout, views, and
-device memory need explicit passes before storage reuse can become aggressive.
+definition and last use as a `TccqStorageLifetime`. A non-materialized slot is
+an expression fact and cannot be marked reusable because no allocation exists.
+Current materialized intermediates remain non-reusable because the source
+consumers do not yet consume allocation-reuse groups. Aliasing, mutation,
+layout, views, device memory, and an emitted reuse discipline need explicit
+passes before storage reuse can become real.
 
 Source printers consume an ordered sequence of `TccqLoopNest` values built
 from the lowered program: backend-neutral with-loops in the SAC lineage,
@@ -393,15 +406,17 @@ storage strategy for that group. This distinction matters for control values:
 a `TccqBranch` remains the result without being misrepresented as whichever
 ordinary operation happened to occur in one arm.
 
-Simple `f(g(x))` fusion is just one case: a pure single-use producer and pure
-consumer over the same domain with compatible implementations and domain
-policies. Map-reduce, stencil, tile, and device fusion are extensions of the
-same domain/access/region model.
+Simple `f(g(x))` fusion is just one case. The first implemented case requires
+one exact, adjacent lexical use; pure elementwise producer and consumer trees;
+the same iteration shape; and effects that cannot write, allocate, cross a
+boundary, error, or warn. Purity alone is not a reordering proof. Map-reduce,
+stencil, tile, and device fusion are extensions of the same
+domain/access/region model.
 
-Fusion stops at explicit barriers: R call-evaluation boundaries, unknown
-effects, mutation, incompatible layouts, unmodeled missing-value semantics,
-illegal region effects, or domain mismatches without an explicit
-broadcast/recycle rule.
+Fusion stops at explicit barriers: R call-evaluation boundaries, unknown or
+observable effects, mutation, multiple or non-adjacent reads, control,
+incompatible layouts, unmodeled missing-value semantics, illegal region
+effects, or domain mismatches without an explicit broadcast/recycle rule.
 
 ## Diagnostics
 

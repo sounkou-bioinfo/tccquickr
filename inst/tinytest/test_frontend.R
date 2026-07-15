@@ -400,7 +400,94 @@ expect_equal(bound_storage_slots_by_value$value_0001@lifetime@last_used_at, 4L)
 expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0004@lifetime, TccqStorageLifetime))
 expect_equal(bound_storage_slots_by_value$value_0004@lifetime@defined_at, 6L)
 expect_equal(bound_storage_slots_by_value$value_0004@lifetime@last_used_at, 7L)
-expect_true(length(bound_result@value@storage_plan@reuse_groups) > 0L)
+expect_equal(bound_result@value@storage_plan@reuse_groups, list())
+
+fused_local_chain <- function(x) {
+  declare(type(x = double(n)))
+  transformed <- exp(x)
+  exp(transformed)
+}
+
+fused_local_result <- tccq_analyze(fused_local_chain, strict = TRUE)
+expect_true(fused_local_result@success)
+fused_local_binding <- fused_local_result@value@schedule@steps[[1L]]@binding
+fused_local_slots <- fused_local_result@value@storage_plan@slots
+fused_local_slot <- fused_local_slots[[match(
+  fused_local_binding@value_id,
+  vapply(fused_local_slots, function(slot) slot@value_id, character(1))
+)]]
+expect_false(fused_local_slot@materialized)
+expect_false(fused_local_slot@reusable)
+expect_equal(length(tccq_program_loop_nests(fused_local_result@value)@value), 1L)
+
+warning_local_chain <- function(x) {
+  declare(type(x = double(n)))
+  transformed <- sqrt(x)
+  exp(transformed)
+}
+
+warning_local_result <- tccq_analyze(warning_local_chain, strict = TRUE)
+warning_local_binding <- warning_local_result@value@schedule@steps[[1L]]@binding
+warning_local_slots <- warning_local_result@value@storage_plan@slots
+warning_local_slot <- warning_local_slots[[match(
+  warning_local_binding@value_id,
+  vapply(warning_local_slots, function(slot) slot@value_id, character(1))
+)]]
+expect_true(warning_local_slot@materialized)
+expect_true(warning_local_result@value@schedule@steps[[1L]]@effect@may_warn)
+
+duplicated_local_read <- function(x) {
+  declare(type(x = double(n)))
+  transformed <- exp(x)
+  transformed / transformed
+}
+
+duplicated_local_result <- tccq_analyze(duplicated_local_read, strict = TRUE)
+duplicated_local_binding <- duplicated_local_result@value@schedule@steps[[1L]]@binding
+duplicated_local_slots <- duplicated_local_result@value@storage_plan@slots
+duplicated_local_slot <- duplicated_local_slots[[match(
+  duplicated_local_binding@value_id,
+  vapply(duplicated_local_slots, function(slot) slot@value_id, character(1))
+)]]
+expect_true(duplicated_local_slot@materialized)
+expect_equal(length(duplicated_local_result@value@schedule@steps[[2L]]@uses), 1L)
+
+nonadjacent_local_read <- function(x) {
+  declare(type(x = double(n)))
+  first <- exp(x)
+  second <- exp(x)
+  first / second
+}
+
+nonadjacent_local_result <- tccq_analyze(nonadjacent_local_read, strict = TRUE)
+nonadjacent_bindings <- lapply(
+  nonadjacent_local_result@value@schedule@steps[1:2],
+  function(step) step@binding
+)
+nonadjacent_slots <- nonadjacent_local_result@value@storage_plan@slots
+nonadjacent_slots_by_value <- nonadjacent_slots
+names(nonadjacent_slots_by_value) <- vapply(
+  nonadjacent_slots,
+  function(slot) slot@value_id,
+  character(1)
+)
+expect_true(nonadjacent_slots_by_value[[nonadjacent_bindings[[1L]]@value_id]]@materialized)
+expect_false(nonadjacent_slots_by_value[[nonadjacent_bindings[[2L]]@value_id]]@materialized)
+
+control_local_chain <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  transformed <- if (flag) exp(x) else exp(-x)
+  exp(transformed)
+}
+
+control_local_result <- tccq_analyze(control_local_chain, strict = TRUE)
+control_local_binding <- control_local_result@value@schedule@steps[[1L]]@binding
+control_local_slots <- control_local_result@value@storage_plan@slots
+control_local_slot <- control_local_slots[[match(
+  control_local_binding@value_id,
+  vapply(control_local_slots, function(slot) slot@value_id, character(1))
+)]]
+expect_true(control_local_slot@materialized)
 
 rebound_local <- function(x) {
   declare(type(x = double(n)))

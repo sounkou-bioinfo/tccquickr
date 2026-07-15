@@ -239,6 +239,15 @@ For the reset core, keep these rules explicit:
   branch remains unguarded, and a conditional definition retains only its own
   guards. Later uses may reuse a definition-owned materialization across
   consumer paths; they must not reschedule it from a common use path.
+- Eager local evaluation may be fused away only when the storage plan proves
+  one exact binding-reference occurrence in the immediately following step,
+  pure elementwise producer and consumer trees, identical iteration shapes,
+  and no writes, allocation, boundary, error, or warning effect. `pure = TRUE`
+  alone is not a reordering proof. `TccqStorageSlot@materialized = FALSE` is
+  the consumed decision; do not duplicate it in attrs or source-printer
+  peepholes. Duplicate reads, non-adjacent uses, control, reductions,
+  contractions, and warning-capable operations remain materialization
+  barriers until stronger typed proofs exist.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.
@@ -379,7 +388,8 @@ For the reset core, keep these rules explicit:
 - Storage reuse must be derived from typed planning facts such as
   `TccqStorageLifetime`, storage compatibility, aliasing, materialization,
   layout, and memory space. Do not group temporaries by role alone or hide
-  reuse assumptions in source printers.
+  reuse assumptions in source printers. A non-materialized fused expression
+  owns no allocation and therefore cannot be reusable storage.
 - Source printers consume `TccqExpression` trees and `TccqBlock` statement
   bodies built from lowered programs. Do not make C, Fortran, TinyCC, CUDA, or
   graph printers rediscover expression or control semantics by walking raw

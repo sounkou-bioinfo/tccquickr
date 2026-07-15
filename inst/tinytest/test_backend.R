@@ -614,6 +614,35 @@ expect_true(grepl(
   fixed = TRUE
 ))
 
+fused_local_chain <- function(x) {
+  declare(type(x = double(n)))
+  transformed <- exp(x)
+  exp(transformed)
+}
+
+fused_local_program <- tccq_analyze(fused_local_chain, strict = TRUE)@value
+fused_local_input <- c(-1, 0, 1)
+fused_local_expected <- exp(exp(fused_local_input))
+fused_local_c <- tccq_plan_backend(fused_local_program, tccq_c_backend())
+fused_local_fortran <- tccq_plan_backend(
+  fused_local_program,
+  tccq_fortran_backend()
+)
+expect_true(fused_local_c@success)
+expect_true(fused_local_fortran@success)
+expect_false(grepl("intermediate_0001", backend_source(fused_local_c), fixed = TRUE))
+expect_false(grepl("intermediate_0001", backend_source(fused_local_fortran), fixed = TRUE))
+expect_true(grepl(
+  "exp(exp(input_0001[axis_0001]))",
+  backend_source(fused_local_c),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "exp(exp(input_0001(axis_0001 + 1)))",
+  backend_source(fused_local_fortran),
+  fixed = TRUE
+))
+
 if (rtinycc_jit_available) {
   jit_plan <- tccq_plan_backend(
     vector_program@value,
@@ -654,6 +683,17 @@ if (rtinycc_jit_available) {
   matrix_jit_value <- backend_callable(matrix_jit_plan)(matrix_x, matrix_y)
   expect_equal(matrix_jit_value, matrix_expected)
   expect_equal(dim(matrix_jit_value), dim(matrix_x))
+
+  fused_local_jit <- tccq_plan_backend(
+    fused_local_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(fused_local_jit@success)
+  expect_equal(
+    backend_callable(fused_local_jit)(fused_local_input),
+    fused_local_expected
+  )
 }
 
 map_reduce <- function(x, y) {
@@ -850,6 +890,17 @@ column_axis_expected <- colSums(exp(matrix_x))
 row_axis_expected <- rowSums(exp(matrix_x))
 
 if (can_build_shared_library("c")) {
+  fused_local_c_shared <- tccq_plan_backend(
+    fused_local_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(fused_local_c_shared@success)
+  expect_equal(
+    backend_callable(fused_local_c_shared)(fused_local_input),
+    fused_local_expected
+  )
+
   reduction_c_shared_plan <- tccq_plan_backend(
     reduction_program@value,
     tccq_c_backend(),
@@ -890,6 +941,17 @@ if (can_build_shared_library("c")) {
 }
 
 if (can_build_shared_library("fortran")) {
+  fused_local_fortran_shared <- tccq_plan_backend(
+    fused_local_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(fused_local_fortran_shared@success)
+  expect_equal(
+    backend_callable(fused_local_fortran_shared)(fused_local_input),
+    fused_local_expected
+  )
+
   reduction_fortran_shared_plan <- tccq_plan_backend(
     reduction_program@value,
     tccq_fortran_backend(),

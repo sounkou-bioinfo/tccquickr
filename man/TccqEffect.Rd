@@ -9,7 +9,8 @@ TccqEffect(
   writes = logical(0),
   allocates = logical(0),
   boundary = logical(0),
-  may_error = logical(0)
+  may_error = logical(0),
+  may_warn = logical(0)
 )
 }
 \arguments{
@@ -22,6 +23,8 @@ TccqEffect(
 \item{boundary}{Whether the operation crosses an unsupported boundary.}
 
 \item{may_error}{Whether the operation may signal at runtime.}
+
+\item{may_warn}{Whether the operation may warn at runtime.}
 }
 \description{
 Compiler effect summary

@@ -181,6 +181,17 @@ conditional, its intermediate nests retain the definition's selected-arm
 guards. Later consumers reuse that schedule rather than moving evaluation to a
 use site.
 
+The first local fusion rule is intentionally stricter than textual
+`f(g(x))`. A definition is kept as an expression only when it has one exact
+lexical read in the immediately following elementwise step, producer and
+consumer have the same iteration shape, and neither typed effect may write,
+allocate, cross a boundary, error, or warn. The resulting
+`TccqStorageSlot@materialized = FALSE` is consumed by the shared loop-nest
+planner, so C, TinyCC, and Fortran all remove the same intermediate. Duplicate
+reads, later reads, branches, reductions, contractions, and warning-capable
+operations such as `sqrt` remain materialized. Purity alone is not treated as
+a proof that eager R evaluation can be reordered.
+
 **Composition.** Non-root reductions and contractions become intermediate
 nests — named scalars for rank-0 results and materialized temporary buffers
 otherwise — so `x / sum(x)`, `colSums(x) + 1`, `(x %*% w) + y`, and

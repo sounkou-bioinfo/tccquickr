@@ -118,6 +118,7 @@ expect_true(inherits(bad_elementwise_arity, "tccq_error"))
 resolved_plus <- tccq_resolve_call(default_registry, tccq_call("+"), tccq_op_context())
 expect_true(resolved_plus@success)
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise, TccqElementwiseSpec))
+expect_true(resolved_plus@value@effect@may_warn)
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature, TccqOpSignature))
 expect_true(S7::S7_inherits(resolved_plus@value@elementwise@signature@domain_policy, TccqDomainPolicy))
 lowered_plus <- tccq_lowered_operation("elementwise", resolved_plus@value)
@@ -165,6 +166,11 @@ fortran_power <- tccq_op_render(
 )
 expect_true(fortran_power@success)
 expect_equal(fortran_power@value, "(left ** right)")
+
+resolved_sqrt <- tccq_resolve_call(default_registry, tccq_call("sqrt"), tccq_op_context())
+resolved_exp <- tccq_resolve_call(default_registry, tccq_call("exp"), tccq_op_context())
+expect_true(resolved_sqrt@value@effect@may_warn)
+expect_false(resolved_exp@value@effect@may_warn)
 
 unary_foo <- tccq_op_impl(
   "foo",

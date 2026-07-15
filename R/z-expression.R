@@ -1013,6 +1013,7 @@ tccq_program_loop_nests <- function(program) {
   # value id so a value consumed twice materializes once.
   intermediates <- list()
   replacements <- new.env(parent = emptyenv())
+  fused_definitions <- new.env(parent = emptyenv())
   intermediate_guards <- new.env(parent = emptyenv())
   materialization_definitions <- new.env(parent = emptyenv())
   materialize <- function(expression, guards, definition_binding = NULL) {
@@ -1047,6 +1048,25 @@ tccq_program_loop_nests <- function(program) {
     replacement
   }
   extract <- function(expression, is_root, guards = list(), definition_binding = NULL) {
+    if (
+      identical(expression@kind, "reference") &&
+        identical(expression@op, "local") &&
+        S7::S7_inherits(expression@attrs$binding, TccqLocalBinding)
+    ) {
+      binding <- expression@attrs$binding
+      binding_storage <- storage_for(binding@value_id)
+      if (!isTRUE(binding_storage@materialized)) {
+        fused_definition <- fused_definitions[[binding@name]]
+        if (is.null(fused_definition)) {
+          tccq_abort_diagnostic(nest_diagnostic(
+            "loop_nest.missing_fused_definition",
+            "A non-materialized local read must have one dominating fused definition.",
+            data = list(binding = binding@name, value_id = binding@value_id)
+          ))
+        }
+        return(fused_definition)
+      }
+    }
     replacement <- replacements[[expression@value_id]]
     materialization_definition <- materialization_definitions[[expression@value_id]]
     definition_owns_schedule <- S7::S7_inherits(
@@ -1070,6 +1090,8 @@ tccq_program_loop_nests <- function(program) {
       definition_binding,
       TccqLocalBinding
     ) && identical(definition_binding@value_id, expression@value_id)
+    definition_requires_materialization <- definition_is_expression &&
+      isTRUE(storage_for(definition_binding@value_id)@materialized)
 
     if (identical(expression@kind, "branch")) {
       expression@inputs[[1L]] <- extract(
@@ -1100,7 +1122,7 @@ tccq_program_loop_nests <- function(program) {
         guards = c(guards, list(alternative_guard)),
         definition_binding = definition_binding
       )
-      if (!is_root && definition_is_expression) {
+      if (!is_root && definition_requires_materialization) {
         return(materialize(expression, guards, definition_binding))
       }
       return(expression)
@@ -1110,7 +1132,7 @@ tccq_program_loop_nests <- function(program) {
       already_has_source_storage <- identical(expression@kind, "reference") &&
         expression@op %in% c("formal", "dim_symbol") &&
         identical(storage_value_id, expression@value_id)
-      if (!is_root && definition_is_expression && !already_has_source_storage) {
+      if (!is_root && definition_requires_materialization && !already_has_source_storage) {
         return(materialize(expression, guards, definition_binding))
       }
       return(expression)
@@ -1127,7 +1149,7 @@ tccq_program_loop_nests <- function(program) {
       !is_root &&
         (
           (!is.null(family) && family %in% c("reduction", "contraction")) ||
-            definition_is_expression
+            definition_requires_materialization
         )
     ) {
       return(materialize(expression, guards, definition_binding))
@@ -1164,6 +1186,12 @@ tccq_program_loop_nests <- function(program) {
         success = FALSE,
         diagnostics = list(tccq_condition_diagnostic(step_expression))
       ))
+    }
+    if (
+      S7::S7_inherits(step@binding, TccqLocalBinding) &&
+        !isTRUE(storage_for(step@binding@value_id)@materialized)
+    ) {
+      fused_definitions[[step@binding@name]] <- step_expression
     }
   }
   root <- tryCatch(extract(root, is_root = TRUE), tccq_error = identity)

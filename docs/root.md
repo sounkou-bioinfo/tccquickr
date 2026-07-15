@@ -46,6 +46,15 @@ arrays. Both allocate only in the selected definition path and clean up safely
 after the final consumer. A shared materialization without a typed definition
 remains a refusal when its uses imply incompatible paths.
 
+The first schedule-aware fusion is deliberately narrow. A local elementwise
+definition can remain an expression only when it has one exact lexical read in
+the immediately following elementwise evaluation, both trees have the same
+iteration shape, and their typed effects permit reordering. Warning and error
+effects are barriers, so `sqrt` remains eager and materialized while a silent
+`exp` chain can become one nest. The storage slot's `materialized` field is the
+single optimization decision consumed by the neutral loop planner; C, TinyCC,
+and Fortran do not rediscover it.
+
 The remaining north-star pressure is loop and evaluator structure. Viterbi and
 smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement
 calls, dispatch, promises, side effects, and interruption should fail with

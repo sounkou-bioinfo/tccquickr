@@ -2431,6 +2431,15 @@ tccq_default_op_registry <- function() {
       domain_policy = elementwise_domain_policy
     )
   )
+  elementwise_effects <- list(
+    "+" = tccq_effect(reads = TRUE, may_warn = TRUE),
+    "-" = tccq_effect(reads = TRUE, may_warn = TRUE),
+    "*" = tccq_effect(reads = TRUE, may_warn = TRUE),
+    "/" = tccq_effect(reads = TRUE),
+    "^" = tccq_effect(reads = TRUE),
+    sqrt = tccq_effect(reads = TRUE, may_warn = TRUE),
+    exp = tccq_effect(reads = TRUE)
+  )
   sum_identity <- function(type) {
     if (!type@base %in% c("integer", "double")) {
       tccq_abort(
@@ -2634,6 +2643,7 @@ tccq_default_op_registry <- function() {
         op,
         target = "pure_c",
         region_kind = "kernel",
+        effect = elementwise_effects[[op]],
         render = scalar_renderers[[op]],
         elementwise = elementwise_specs[[op]]
       )

@@ -9,7 +9,8 @@ tccq_effect(
   writes = FALSE,
   allocates = FALSE,
   boundary = FALSE,
-  may_error = FALSE
+  may_error = FALSE,
+  may_warn = FALSE
 )
 }
 \arguments{
@@ -22,6 +23,8 @@ tccq_effect(
 \item{boundary}{Whether the operation crosses an unsupported boundary.}
 
 \item{may_error}{Whether the operation may signal at runtime.}
+
+\item{may_warn}{Whether the operation may warn at runtime.}
 }
 \description{
 Construct an effect summary

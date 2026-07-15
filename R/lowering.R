@@ -1064,6 +1064,104 @@ tccq_lower_function <- function(
   plan_storage <- function(values, result_id, schedule_steps) {
     lowered_values <- unname(values)
     lifetimes <- storage_lifetimes(lowered_values, result_id)
+    effect_allows_reordering <- function(effect) {
+      !isTRUE(effect@writes) &&
+        !isTRUE(effect@allocates) &&
+        !isTRUE(effect@boundary) &&
+        !isTRUE(effect@may_error) &&
+        !isTRUE(effect@may_warn)
+    }
+    elementwise_tree_allows_fusion <- function(value_id, require_operation = FALSE) {
+      value <- values[[value_id]]
+      if (is.null(value)) {
+        return(FALSE)
+      }
+      if (S7::S7_inherits(value, TccqBindingReference)) {
+        return(!isTRUE(require_operation) && effect_allows_reordering(value@effect))
+      }
+      operation <- lowered_operation(value)
+      if (is.null(operation)) {
+        return(
+          !isTRUE(require_operation) &&
+            value@op %in% c("formal", "literal", "dim_symbol") &&
+            effect_allows_reordering(value@effect)
+        )
+      }
+      if (
+        !identical(operation@family, "elementwise") ||
+          !isTRUE(operation@resolved_op@pure) ||
+          !effect_allows_reordering(value@effect)
+      ) {
+        return(FALSE)
+      }
+      all(vapply(
+        value@inputs,
+        elementwise_tree_allows_fusion,
+        logical(1)
+      ))
+    }
+    binding_reference_count <- function(value_id, binding, active = character()) {
+      if (value_id %in% active) {
+        return(Inf)
+      }
+      value <- values[[value_id]]
+      if (is.null(value)) {
+        return(Inf)
+      }
+      if (S7::S7_inherits(value, TccqBindingReference)) {
+        return(as.integer(identical(value@binding, binding)))
+      }
+      sum(vapply(
+        value@inputs,
+        binding_reference_count,
+        numeric(1),
+        binding = binding,
+        active = c(active, value_id)
+      ))
+    }
+    fusible_binding_value_ids <- character()
+    if (length(schedule_steps) > 1L) {
+      for (step_index in seq_len(length(schedule_steps) - 1L)) {
+        producer_step <- schedule_steps[[step_index]]
+        binding <- producer_step@binding
+        if (
+          !S7::S7_inherits(binding, TccqLocalBinding) ||
+            !identical(binding@value_id, producer_step@value_id)
+        ) {
+          next
+        }
+        reference_counts <- vapply(
+          schedule_steps,
+          function(step) binding_reference_count(step@value_id, binding),
+          numeric(1)
+        )
+        consumer_step <- schedule_steps[[step_index + 1L]]
+        producer_value <- values[[producer_step@value_id]]
+        consumer_value <- values[[consumer_step@value_id]]
+        same_iteration_shape <- identical(
+          producer_value@type@shape,
+          consumer_value@type@shape
+        )
+        if (
+          sum(reference_counts) == 1 &&
+            reference_counts[[step_index + 1L]] == 1 &&
+            isTRUE(same_iteration_shape) &&
+            elementwise_tree_allows_fusion(
+              producer_step@value_id,
+              require_operation = TRUE
+            ) &&
+            elementwise_tree_allows_fusion(
+              consumer_step@value_id,
+              require_operation = TRUE
+            )
+        ) {
+          fusible_binding_value_ids <- c(
+            fusible_binding_value_ids,
+            binding@value_id
+          )
+        }
+      }
+    }
     binding_steps <- Filter(
       function(step) S7::S7_inherits(step@binding, TccqLocalBinding),
       schedule_steps
@@ -1080,8 +1178,8 @@ tccq_lower_function <- function(
       scheduled_binding_value <- value@id %in% scheduled_binding_value_ids
       materialized <- role %in% c("input", "output") ||
         operation_intermediate ||
-        scheduled_binding_value
-      reusable <- identical(role, "temporary") && !isTRUE(materialized)
+        (scheduled_binding_value && !value@id %in% fusible_binding_value_ids)
+      reusable <- FALSE
       lifetime <- lifetimes[[value@id]]
       tccq_storage_slot(
         id = sprintf("slot_%04d", slot_index),
@@ -1097,10 +1195,9 @@ tccq_lower_function <- function(
     slot_ids <- vapply(slots, function(slot) slot@id, character(1))
     slots_by_id <- slots
     names(slots_by_id) <- slot_ids
-    reuse_groups <- storage_reuse_groups(slots_by_id)
     tccq_storage_plan(
       slots = unname(slots_by_id),
-      reuse_groups = reuse_groups,
+      reuse_groups = list(),
       attrs = list(
         strategy = sprintf("fused-%s", result_strategy(values, result_id)),
         lifetimes = lifetimes
@@ -1135,52 +1232,6 @@ tccq_lower_function <- function(
     }, value_ids, def_positions, last_use_positions)
     names(lifetimes) <- value_ids
     lifetimes
-  }
-
-  storage_reuse_groups <- function(slots_by_id) {
-    temporary_slots <- Filter(
-      function(slot) identical(slot@role, "temporary") && isTRUE(slot@reusable),
-      slots_by_id
-    )
-    ordered_slots <- temporary_slots[order(vapply(
-      temporary_slots,
-      function(slot) slot@lifetime@defined_at,
-      integer(1)
-    ))]
-    reuse_groups <- list()
-
-    for (slot in ordered_slots) {
-      added_to_group <- FALSE
-      for (group_index in seq_along(reuse_groups)) {
-        group <- reuse_groups[[group_index]]
-        can_share_group <- all(vapply(
-          group,
-          function(slot_id) storage_slots_can_share(slots_by_id[[slot_id]], slot),
-          logical(1)
-        ))
-        if (isTRUE(can_share_group)) {
-          reuse_groups[[group_index]] <- c(group, slot@id)
-          added_to_group <- TRUE
-          break
-        }
-      }
-      if (!isTRUE(added_to_group)) {
-        reuse_groups[[length(reuse_groups) + 1L]] <- slot@id
-      }
-    }
-
-    Filter(function(group) length(group) > 1L, reuse_groups)
-  }
-
-  storage_slots_can_share <- function(existing_slot, candidate_slot) {
-    storage_types_compatible(existing_slot@type, candidate_slot@type) &&
-      existing_slot@lifetime@last_used_at < candidate_slot@lifetime@defined_at
-  }
-
-  storage_types_compatible <- function(left_type, right_type) {
-    identical(left_type@base, right_type@base) &&
-      identical(left_type@shape@rank, right_type@shape@rank) &&
-      identical(left_type@shape@dims, right_type@shape@dims)
   }
 
   storage_role <- function(value, result_id) {

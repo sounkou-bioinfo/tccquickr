@@ -462,6 +462,7 @@ TccqLiteral <- S7::new_class(
 #' @param allocates Whether the operation allocates storage.
 #' @param boundary Whether the operation crosses an unsupported boundary.
 #' @param may_error Whether the operation may signal at runtime.
+#' @param may_warn Whether the operation may warn at runtime.
 #' @export
 TccqEffect <- S7::new_class(
   "TccqEffect",
@@ -471,7 +472,8 @@ TccqEffect <- S7::new_class(
     writes = S7::class_logical,
     allocates = S7::class_logical,
     boundary = S7::class_logical,
-    may_error = S7::class_logical
+    may_error = S7::class_logical,
+    may_warn = S7::class_logical
   ),
   validator = function(self) {
     problems <- character()
@@ -480,7 +482,8 @@ TccqEffect <- S7::new_class(
       writes = self@writes,
       allocates = self@allocates,
       boundary = self@boundary,
-      may_error = self@may_error
+      may_error = self@may_error,
+      may_warn = self@may_warn
     )
     for (prop in names(values)) {
       value <- values[[prop]]
@@ -739,7 +742,8 @@ TccqBindingReference <- S7::new_class(
         isTRUE(self@effect@writes) ||
         isTRUE(self@effect@allocates) ||
         isTRUE(self@effect@boundary) ||
-        isTRUE(self@effect@may_error)
+        isTRUE(self@effect@may_error) ||
+        isTRUE(self@effect@may_warn)
     ) {
       problems <- c(problems, "binding references must be read-only effects")
     }
@@ -1098,6 +1102,9 @@ TccqStorageSlot <- S7::new_class(
     }
     if (isTRUE(self@reusable) && is.null(self@lifetime)) {
       problems <- c(problems, "reusable storage slots must carry a typed lifetime")
+    }
+    if (isTRUE(self@reusable) && !isTRUE(self@materialized)) {
+      problems <- c(problems, "only materialized storage slots can be reused")
     }
     if (!is.null(self@lifetime) && !identical(self@lifetime@value_id, self@value_id)) {
       problems <- c(problems, "@lifetime value id must match @value_id")
@@ -1557,26 +1564,30 @@ tccq_literal_inf <- function(sign = 1L) {
 #' @param allocates Whether the operation allocates storage.
 #' @param boundary Whether the operation crosses an unsupported boundary.
 #' @param may_error Whether the operation may signal at runtime.
+#' @param may_warn Whether the operation may warn at runtime.
 #' @export
 tccq_effect <- function(
   reads = FALSE,
   writes = FALSE,
   allocates = FALSE,
   boundary = FALSE,
-  may_error = FALSE
+  may_error = FALSE,
+  may_warn = FALSE
 ) {
   .tccq_check_logical_scalar(reads, "reads")
   .tccq_check_logical_scalar(writes, "writes")
   .tccq_check_logical_scalar(allocates, "allocates")
   .tccq_check_logical_scalar(boundary, "boundary")
   .tccq_check_logical_scalar(may_error, "may_error")
+  .tccq_check_logical_scalar(may_warn, "may_warn")
 
   TccqEffect(
     reads = reads,
     writes = writes,
     allocates = allocates,
     boundary = boundary,
-    may_error = may_error
+    may_error = may_error,
+    may_warn = may_warn
   )
 }
 
@@ -1601,7 +1612,8 @@ S7::method(tccq_effect_union, TccqEffect) <- function(effect, other) {
     writes = effect@writes || other@writes,
     allocates = effect@allocates || other@allocates,
     boundary = effect@boundary || other@boundary,
-    may_error = effect@may_error || other@may_error
+    may_error = effect@may_error || other@may_error,
+    may_warn = effect@may_warn || other@may_warn
   )
 }
 
