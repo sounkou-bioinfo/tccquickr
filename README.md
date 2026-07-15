@@ -207,12 +207,13 @@ carrying the scalar storage type actually written in each loop
 iteration; the shared function interface assigns its generated name.
 Every block names the write target produced by its terminal paths. A
 reducer or contraction can therefore consume a conditional element from
-a block-local target while the target is still in scope. A scalar
-reduction or contraction selected inside an arm becomes an intermediate
-loop nest carrying an ordered typed guard path, so nested branches
-execute only the selected nests. Selected-arm array intermediates remain
-a structured storage-lifetime diagnostic until conditional ownership and
-cleanup are shared across source backends.
+a block-local target while the target is still in scope. A reduction or
+contraction selected inside an arm becomes an intermediate loop nest
+carrying an ordered typed guard path, so nested branches execute and
+materialize only the selected nests. The guard path is the storage
+execution scope: extraction rejects references reached through a
+different path, C uses nullable owned buffers, and Fortran uses guarded
+allocatable arrays.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. Locals are single-assignment bindings.

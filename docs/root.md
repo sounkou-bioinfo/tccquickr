@@ -32,11 +32,13 @@ Each target separates the full semantic value type from the scalar storage type
 written in one loop iteration, and C and Fortran declare that storage in the
 lexical source block that owns it. Each block names the target produced by every
 terminal path, so reductions and contractions can consume conditional elements
-inside the reducer scope. A scalar reduction or contraction selected inside a
+inside the reducer scope. A reduction or contraction selected inside a
 branch arm becomes an intermediate loop nest with an ordered typed guard path;
 nested paths preserve outer-to-inner arm selection in every source backend.
-Selected-arm array intermediates still stop with a structured storage-lifetime
-diagnostic until conditional allocation, ownership, and cleanup are represented.
+The same path scopes materialized storage, and extraction rejects uses through
+incompatible paths. C represents guarded arrays as nullable owned buffers;
+Fortran uses guarded allocatable arrays. Both allocate only in the selected arm
+and clean up safely after the final consumer.
 
 The remaining north-star pressure is loop and evaluator structure. Viterbi and
 smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement

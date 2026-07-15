@@ -1045,16 +1045,6 @@ tccq_program_loop_nests <- function(program) {
         !is.null(family) &&
         family %in% c("reduction", "contraction")
     ) {
-      if (length(guards) > 0L && expression@type@shape@rank > 0L) {
-        tccq_abort_diagnostic(nest_diagnostic(
-          "loop_nest.guarded_buffer_materialization",
-          paste(
-            "A selected-arm array materialization needs conditional storage",
-            "lifetime planning before it can become a guarded loop nest."
-          ),
-          data = list(value_id = expression@value_id, rank = expression@type@shape@rank)
-        ))
-      }
       if (any(vapply(
         guards,
         function(guard) expression_contains(

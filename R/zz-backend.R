@@ -2553,7 +2553,18 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         push("return NULL;", depth + 1L)
         push("}")
       }
-      allocated_buffers <- character()
+      intermediate_buffer_names <- vapply(
+        intermediate_plans[vapply(
+          intermediate_nests,
+          function(nest) nest@storage@type@shape@rank > 0L,
+          logical(1)
+        )],
+        function(intermediate_plan) intermediate_plan$materialization_name,
+        character(1)
+      )
+      for (buffer_name in intermediate_buffer_names) {
+        push(sprintf("double *%s = NULL;", buffer_name))
+      }
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
         intermediate <- intermediate_nests[[position]]
@@ -2568,13 +2579,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         open_guards(intermediate_plan$guards)
         if (materializes_buffer) {
           push(sprintf(
-            "double *%s = (double *)malloc(sizeof(double) * (size_t)(%s));",
+            "%s = (double *)malloc(sizeof(double) * (size_t)(%s));",
             intermediate_plan$materialization_name,
             buffer_size_text(intermediate, emit_context)
           ))
           push(sprintf("if (%s == NULL) {", intermediate_plan$materialization_name))
-          for (prior_buffer in allocated_buffers) {
-            push(sprintf("free(%s);", prior_buffer), depth + 1L)
+          for (buffer_name in intermediate_buffer_names) {
+            push(sprintf("free(%s);", buffer_name), depth + 1L)
           }
           if (returns_buffer) {
             push(sprintf("free(%s);", interface@result_name), depth + 1L)
@@ -2583,7 +2594,6 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             push("return NAN;", depth + 1L)
           }
           push("}")
-          allocated_buffers <- c(allocated_buffers, intermediate_plan$materialization_name)
         }
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
@@ -2679,7 +2689,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       for (axis in plan$map_axes) {
         close_loop(axis)
       }
-      for (buffer_name in allocated_buffers) {
+      for (buffer_name in intermediate_buffer_names) {
         push(sprintf("free(%s);", buffer_name))
       }
       if (returns_buffer) {
@@ -2786,6 +2796,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             return(sprintf(
               "  %s :: %s",
               source_scalar_type(intermediate@storage@type, "fortran"),
+              intermediate_plan$materialization_name
+            ))
+          }
+          if (length(intermediate@guards) > 0L) {
+            return(sprintf(
+              "  real(c_double), allocatable :: %s(:)",
               intermediate_plan$materialization_name
             ))
           }
@@ -2913,6 +2929,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         intermediate <- intermediate_nests[[position]]
         materializes_buffer <- intermediate@storage@type@shape@rank > 0L
         open_guards(intermediate_plan$guards)
+        if (materializes_buffer && length(intermediate_plan$guards) > 0L) {
+          push(sprintf(
+            "allocate(%s(%s))",
+            intermediate_plan$materialization_name,
+            buffer_size_text(intermediate, emit_context)
+          ))
+        }
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
@@ -3000,6 +3023,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       for (axis in plan$map_axes) {
         close_loop(axis)
+      }
+      for (position in seq_along(intermediate_nests)) {
+        intermediate <- intermediate_nests[[position]]
+        if (
+          intermediate@storage@type@shape@rank > 0L &&
+            length(intermediate@guards) > 0L
+        ) {
+          intermediate_name <- intermediate_plans[[position]]$materialization_name
+          push(sprintf(
+            "if (allocated(%s)) deallocate(%s)",
+            intermediate_name,
+            intermediate_name
+          ))
+        }
       }
       if (!returns_buffer) {
         if (!is.null(result_nest@reducer)) {

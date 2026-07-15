@@ -1345,10 +1345,73 @@ guarded_buffer_program <- tccq_analyze(
   strict = TRUE
 )@value
 guarded_buffer_nests <- tccq_program_loop_nests(guarded_buffer_program)
-expect_false(guarded_buffer_nests@success)
+expect_true(guarded_buffer_nests@success)
+expect_equal(length(guarded_buffer_nests@value), 3L)
 expect_equal(
-  guarded_buffer_nests@diagnostics[[1L]]@code,
-  "loop_nest.guarded_buffer_materialization"
+  vapply(
+    guarded_buffer_nests@value[1:2],
+    function(nest) nest@guards[[1L]]@selected,
+    logical(1)
+  ),
+  c(TRUE, FALSE)
+)
+expect_equal(
+  vapply(
+    guarded_buffer_nests@value[1:2],
+    function(nest) nest@storage@type@shape@rank,
+    integer(1)
+  ),
+  c(1L, 1L)
+)
+guarded_buffer_c <- tccq_plan_backend(guarded_buffer_program, tccq_c_backend())
+guarded_buffer_fortran <- tccq_plan_backend(
+  guarded_buffer_program,
+  tccq_fortran_backend()
+)
+expect_true(guarded_buffer_c@success)
+expect_true(guarded_buffer_fortran@success)
+expect_true(grepl(
+  "double *intermediate_0001 = NULL;",
+  backend_source(guarded_buffer_c),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "if (input_0002) {\n    intermediate_0001 = (double *)malloc",
+  backend_source(guarded_buffer_c),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "real(c_double), allocatable :: intermediate_0001(:)",
+  backend_source(guarded_buffer_fortran),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "if (input_0002) then\n    allocate(intermediate_0001(extent_p))",
+  backend_source(guarded_buffer_fortran),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "if (allocated(intermediate_0001)) deallocate(intermediate_0001)",
+  backend_source(guarded_buffer_fortran),
+  fixed = TRUE
+))
+
+shared_guarded_buffer <- function(x, flag) {
+  declare(type(x = double(n, p), flag = logical()))
+  totals <- colSums(x)
+  if (flag) totals else -totals
+}
+shared_guarded_buffer_program <- tccq_analyze(
+  shared_guarded_buffer,
+  strict = TRUE
+)@value
+shared_guarded_buffer_nests <- tccq_program_loop_nests(
+  shared_guarded_buffer_program
+)
+expect_false(shared_guarded_buffer_nests@success)
+expect_equal(
+  shared_guarded_buffer_nests@diagnostics[[1L]]@code,
+  "loop_nest.incompatible_materialization_paths"
 )
 
 branch_reduction_c <- tccq_plan_backend(branch_reduction_program, tccq_c_backend())
@@ -1552,6 +1615,20 @@ if (rtinycc_jit_available) {
     backend_callable(nested_branch_reduction_jit)(branch_x, FALSE, TRUE),
     0
   )
+  guarded_buffer_jit <- tccq_plan_backend(
+    guarded_buffer_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(guarded_buffer_jit@success)
+  expect_equal(
+    backend_callable(guarded_buffer_jit)(conditional_matrix, TRUE),
+    colSums(conditional_matrix)
+  )
+  expect_equal(
+    backend_callable(guarded_buffer_jit)(conditional_matrix, FALSE),
+    -colSums(conditional_matrix)
+  )
 
   nested_branch_jit <- tccq_plan_backend(
     nested_branch_program,
@@ -1683,6 +1760,20 @@ if (can_build_shared_library("c")) {
     backend_callable(nested_branch_reduction_c_shared)(branch_x, TRUE, TRUE),
     sum(branch_x)
   )
+  guarded_buffer_c_shared <- tccq_plan_backend(
+    guarded_buffer_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(guarded_buffer_c_shared@success)
+  expect_equal(
+    backend_callable(guarded_buffer_c_shared)(conditional_matrix, TRUE),
+    colSums(conditional_matrix)
+  )
+  expect_equal(
+    backend_callable(guarded_buffer_c_shared)(conditional_matrix, FALSE),
+    -colSums(conditional_matrix)
+  )
 
   branch_condition_c_shared <- tccq_plan_backend(
     branch_condition_program,
@@ -1803,6 +1894,20 @@ if (can_build_shared_library("fortran")) {
   expect_equal(
     backend_callable(nested_branch_reduction_fortran_shared)(branch_x, FALSE, FALSE),
     0
+  )
+  guarded_buffer_fortran_shared <- tccq_plan_backend(
+    guarded_buffer_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(guarded_buffer_fortran_shared@success)
+  expect_equal(
+    backend_callable(guarded_buffer_fortran_shared)(conditional_matrix, TRUE),
+    colSums(conditional_matrix)
+  )
+  expect_equal(
+    backend_callable(guarded_buffer_fortran_shared)(conditional_matrix, FALSE),
+    -colSums(conditional_matrix)
   )
 
   nested_branch_fortran_shared <- tccq_plan_backend(
