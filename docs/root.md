@@ -37,7 +37,7 @@ The first control value is now real rather than a syntax exception. A pure R
 `if` becomes `TccqBranch`, retains its special-form forcing semantics, joins
 identically typed arms, and reaches C, TinyCC, and Fortran as a conditional
 statement over a typed logical ABI parameter. The loop-nest planner converts
-value-producing control into a neutral `TccqBlock` of typed assignments and
+value-producing control into a neutral `TccqValueBlock` of typed assignments and
 conditionals while retaining neutral expressions inside those statements. Pure
 branches may occur in either result arm, directly as another branch's
 condition, or below pure elementwise operations. Control-valued operands are

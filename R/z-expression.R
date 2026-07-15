@@ -591,15 +591,15 @@ TccqStatement <- S7::new_class(
 
 #' Neutral statement block
 #'
-#' A block owns ordered local declarations and ordered typed statements. Its
+#' A block owns lexical local declarations and ordered typed statements. Its
 #' nesting is semantic: locals and statements inside one branch arm are not
-#' evaluated from another arm.
+#' evaluated from another arm. A plain block does not imply that evaluation
+#' yields a value; [TccqValueBlock] adds that stronger completion contract.
 #'
 #' @param id Stable block id.
 #' @param locals Ordered local write targets declared by the block.
 #' @param statements Ordered `TccqStatement` values.
-#' @param result Typed target produced on every terminal path through the block.
-#' @param effect Effect summary of evaluating the block.
+#' @param effect Exact effect summary of evaluating the statements.
 #' @export
 TccqBlock <- S7::new_class(
   "TccqBlock",
@@ -608,7 +608,6 @@ TccqBlock <- S7::new_class(
     id = S7::class_character,
     locals = S7::class_list,
     statements = S7::class_list,
-    result = TccqWriteTarget,
     effect = TccqEffect
   ),
   validator = function(self) {
@@ -644,10 +643,44 @@ TccqBlock <- S7::new_class(
     if (!all(statements_are_typed)) {
       problems <- c(problems, "@statements must contain only <TccqStatement> values")
     }
-    if (all(statements_are_typed) && length(self@statements) == 0L) {
-      problems <- c(problems, "@statements must end in a statement producing @result")
+    if (all(statements_are_typed)) {
+      statement_ids <- vapply(self@statements, function(statement) statement@id, character(1))
+      if (anyDuplicated(statement_ids)) {
+        problems <- c(problems, "@statements must have unique ids")
+      }
+      statement_effect <- Reduce(
+        tccq_effect_union,
+        lapply(self@statements, function(statement) statement@effect),
+        init = tccq_effect()
+      )
+      if (!identical(self@effect, statement_effect)) {
+        problems <- c(problems, "@effect must equal the union of statement effects")
+      }
     }
-    if (all(statements_are_typed) && length(self@statements) > 0L) {
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Value-producing neutral statement block
+#'
+#' A value block strengthens [TccqBlock] by requiring its terminal statement to
+#' write one typed result target on every path. Array loop nests and reducers
+#' consume this subtype; future procedural control can use the base block
+#' without fabricating a result value.
+#'
+#' @inheritParams TccqBlock
+#' @param result Typed target produced on every terminal path through the block.
+#' @export
+TccqValueBlock <- S7::new_class(
+  "TccqValueBlock",
+  package = "tccquickr",
+  parent = TccqBlock,
+  properties = list(result = TccqWriteTarget),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@statements) == 0L) {
+      problems <- c(problems, "@statements must end in a statement producing @result")
+    } else {
       terminal_statement <- self@statements[[length(self@statements)]]
       terminal_produces_result <- if (S7::S7_inherits(terminal_statement, TccqAssignment)) {
         identical(terminal_statement@target, self@result)
@@ -680,9 +713,14 @@ TccqAssignment <- S7::new_class(
     value = TccqExpression
   ),
   validator = function(self) {
+    problems <- character()
     if (!identical(self@target@type, self@value@type)) {
-      "@target and @value must have identical semantic types"
+      problems <- c(problems, "@target and @value must have identical semantic types")
     }
+    if (!identical(self@effect, self@value@effect)) {
+      problems <- c(problems, "@effect must match the assigned expression")
+    }
+    if (length(problems) > 0L) problems
   }
 )
 
@@ -700,8 +738,8 @@ TccqConditional <- S7::new_class(
   parent = TccqStatement,
   properties = list(
     condition = TccqExpression,
-    consequent = TccqBlock,
-    alternative = TccqBlock,
+    consequent = TccqValueBlock,
+    alternative = TccqValueBlock,
     branch = TccqBranch
   ),
   validator = function(self) {
@@ -717,6 +755,9 @@ TccqConditional <- S7::new_class(
     }
     if (!identical(self@consequent@result, self@alternative@result)) {
       problems <- c(problems, "both branch blocks must produce the same result target")
+    }
+    if (!identical(self@effect, self@branch@effect)) {
+      problems <- c(problems, "@effect must match the source branch effect")
     }
     if (length(problems) > 0L) problems
   }
@@ -744,23 +785,26 @@ tccq_write_target <- function(
   )
 }
 
-#' Construct a neutral statement block
+#' Construct a value-producing neutral statement block
 #'
-#' @inheritParams TccqBlock
+#' @inheritParams TccqValueBlock
 #' @export
-tccq_block <- function(
+tccq_value_block <- function(
   id,
   result,
   locals = list(),
-  statements = list(),
-  effect = tccq_effect()
+  statements = list()
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_s7(result, TccqWriteTarget, "TccqWriteTarget", "result")
   .tccq_check_list_of(locals, TccqWriteTarget, "TccqWriteTarget", "locals")
   .tccq_check_list_of(statements, TccqStatement, "TccqStatement", "statements")
-  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
-  TccqBlock(
+  effect <- Reduce(
+    tccq_effect_union,
+    lapply(statements, function(statement) statement@effect),
+    init = tccq_effect()
+  )
+  TccqValueBlock(
     id = id,
     locals = locals,
     statements = statements,
@@ -773,12 +817,11 @@ tccq_block <- function(
 #'
 #' @inheritParams TccqAssignment
 #' @export
-tccq_assignment <- function(id, target, value, effect = tccq_effect()) {
+tccq_assignment <- function(id, target, value) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_s7(target, TccqWriteTarget, "TccqWriteTarget", "target")
   .tccq_check_s7(value, TccqExpression, "TccqExpression", "value")
-  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
-  TccqAssignment(id = id, effect = effect, target = target, value = value)
+  TccqAssignment(id = id, effect = value@effect, target = target, value = value)
 }
 
 #' Construct a neutral conditional
@@ -790,18 +833,16 @@ tccq_conditional <- function(
   condition,
   consequent,
   alternative,
-  branch,
-  effect = branch@effect
+  branch
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_s7(condition, TccqExpression, "TccqExpression", "condition")
-  .tccq_check_s7(consequent, TccqBlock, "TccqBlock", "consequent")
-  .tccq_check_s7(alternative, TccqBlock, "TccqBlock", "alternative")
+  .tccq_check_s7(consequent, TccqValueBlock, "TccqValueBlock", "consequent")
+  .tccq_check_s7(alternative, TccqValueBlock, "TccqValueBlock", "alternative")
   .tccq_check_s7(branch, TccqBranch, "TccqBranch", "branch")
-  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
   TccqConditional(
     id = id,
-    effect = effect,
+    effect = branch@effect,
     condition = condition,
     consequent = consequent,
     alternative = alternative,
@@ -888,7 +929,7 @@ TccqLoopNest <- S7::new_class(
     id = S7::class_character,
     domain = TccqDomain,
     axes = S7::class_list,
-    body = S7::new_union(TccqExpression, TccqBlock),
+    body = S7::new_union(TccqExpression, TccqValueBlock),
     output = S7::new_union(NULL, TccqAccess),
     reducer = S7::new_union(NULL, TccqReductionSpec),
     identity = S7::new_union(NULL, TccqLiteral),
@@ -1005,11 +1046,12 @@ tccq_loop_nest <- function(
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_list_of(axes, TccqLoopAxis, "TccqLoopAxis", "axes")
-  body_is_supported <- S7::S7_inherits(body, TccqExpression) || S7::S7_inherits(body, TccqBlock)
+  body_is_supported <- S7::S7_inherits(body, TccqExpression) ||
+    S7::S7_inherits(body, TccqValueBlock)
   if (!body_is_supported) {
     tccq_abort(
       "schema.invalid_loop_nest_body",
-      "`body` must inherit from <TccqExpression> or <TccqBlock>.",
+      "`body` must inherit from <TccqExpression> or <TccqValueBlock>.",
       phase = "schema",
       path = "loop_nest.body"
     )
@@ -1761,15 +1803,13 @@ tccq_program_loop_nests <- function(program) {
         condition = condition,
         consequent = consequent,
         alternative = alternative,
-        branch = expression@branch,
-        effect = expression@branch@effect
+        branch = expression@branch
       )
-      return(tccq_block(
+      return(tccq_value_block(
         next_block_id(),
         result = target,
         locals = locals,
-        statements = c(statements, list(conditional)),
-        effect = expression@branch@effect
+        statements = c(statements, list(conditional))
       ))
     }
 
@@ -1823,21 +1863,14 @@ tccq_program_loop_nests <- function(program) {
     assignment <- tccq_assignment(
       next_statement_id(),
       target,
-      expression,
-      effect = expression@effect
+      expression
     )
     statements <- c(statements, list(assignment))
-    block_effect <- Reduce(
-      tccq_effect_union,
-      lapply(statements, function(statement) statement@effect),
-      init = tccq_effect()
-    )
-    tccq_block(
+    tccq_value_block(
       next_block_id(),
       result = target,
       locals = locals,
-      statements = statements,
-      effect = block_effect
+      statements = statements
     )
   }
 
@@ -1856,12 +1889,11 @@ tccq_program_loop_nests <- function(program) {
     if (!isTRUE(target_is_block_local)) {
       return(block)
     }
-    tccq_block(
+    tccq_value_block(
       block@id,
       result = block@result,
       locals = c(list(target), block@locals),
-      statements = block@statements,
-      effect = block@effect
+      statements = block@statements
     )
   }
 

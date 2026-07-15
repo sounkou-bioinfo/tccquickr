@@ -4,7 +4,7 @@
 \alias{tccq_assignment}
 \title{Construct a neutral assignment}
 \usage{
-tccq_assignment(id, target, value, effect = tccq_effect())
+tccq_assignment(id, target, value)
 }
 \arguments{
 \item{id}{Stable statement id.}
@@ -12,8 +12,6 @@ tccq_assignment(id, target, value, effect = tccq_effect())
 \item{target}{Typed destination.}
 
 \item{value}{Backend-neutral value expression.}
-
-\item{effect}{Effect summary of evaluating the statement.}
 }
 \description{
 Construct a neutral assignment

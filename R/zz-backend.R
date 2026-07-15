@@ -575,7 +575,7 @@ TccqBackendProducts <- S7::new_class(
   package = "tccquickr",
   properties = list(
     function_interface = S7::new_union(NULL, TccqBackendFunctionInterface),
-    body = S7::new_union(NULL, TccqExpression, TccqBlock),
+    body = S7::new_union(NULL, TccqExpression, TccqValueBlock),
     loop_nest = S7::new_union(NULL, TccqLoopNest),
     loop_nests = S7::class_list,
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
@@ -1277,11 +1277,11 @@ tccq_backend_products <- function(
   )
   body_is_supported <- is.null(body) ||
     S7::S7_inherits(body, TccqExpression) ||
-    S7::S7_inherits(body, TccqBlock)
+    S7::S7_inherits(body, TccqValueBlock)
   if (!body_is_supported) {
     tccq_abort(
       "schema.invalid_backend_product_body",
-      "`body` must inherit from <TccqExpression> or <TccqBlock>, or be `NULL`.",
+      "`body` must inherit from <TccqExpression> or <TccqValueBlock>, or be `NULL`.",
       phase = "schema",
       path = "backend_products.body"
     )
@@ -2091,7 +2091,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         invisible(NULL)
       }
       for (nest in nests) {
-        if (S7::S7_inherits(nest@body, TccqBlock)) {
+        if (S7::S7_inherits(nest@body, TccqValueBlock)) {
           collect_block_locals(nest@body)
         }
       }
@@ -2151,7 +2151,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         vapply(nest@axes, function(axis) axis@name, character(1))
       }))) %||% character()
       result_rank <- result@type@shape@rank
-      result_needs_local <- S7::S7_inherits(result_nest@body, TccqBlock) &&
+      result_needs_local <- S7::S7_inherits(result_nest@body, TccqValueBlock) &&
         is.null(result_nest@reducer)
       tccq_backend_function_interface(
         symbol = symbol,
@@ -2305,7 +2305,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         )
       }
-      body_requires_statements <- S7::S7_inherits(nest@body, TccqBlock)
+      body_requires_statements <- S7::S7_inherits(nest@body, TccqValueBlock)
       body_text <- if (!body_requires_statements) {
         expression_text(nest@body, emit_context)
       } else if (!is.null(nest@reducer)) {

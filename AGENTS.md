@@ -198,13 +198,19 @@ For the reset core, keep these rules explicit:
   runtime error; native call boundaries must reject it rather than coerce it.
   Pure branches may nest in either result arm, directly as another branch's
   condition, or under pure elementwise operations. Loop-nest lowering turns
-  value-producing control into `TccqBlock`, `TccqAssignment`, and
+  value-producing control into `TccqValueBlock`, `TccqAssignment`, and
   `TccqConditional` values over typed `TccqWriteTarget` destinations. It
   normalizes control-valued operands left to right before their consumer. A
-  block explicitly names the result target produced by every terminal path;
+  value block explicitly names the result target produced by every terminal
+  path;
   reducers and contractions consume a block-local result inside the reduction
   scope rather than asking a source printer to infer the yielded value.
-  Every write target retains the full semantic value type and a distinct
+  `TccqBlock` is the general lexical statement scope and derives its exact
+  effect from its statements; it does not imply value completion.
+  `TccqValueBlock` is the stricter subtype consumed by expression loop nests,
+  and it must end by producing its result on every path. Do not fabricate a
+  result target for a procedural or future loop body. Every write target
+  retains the full semantic value type and a distinct
   scalar storage type for the element written inside the loop; block-owned
   locals receive backend names through `TccqBackendFunctionInterface` and are
   declared in the source block that owns them. Statement-block effects are the
@@ -401,7 +407,7 @@ For the reset core, keep these rules explicit:
   allocation. Do not
   group temporaries by role alone or hide reuse assumptions in source printers.
   A non-materialized fused expression owns no allocation.
-- Source printers consume `TccqExpression` trees and `TccqBlock` statement
+- Source printers consume `TccqExpression` trees and `TccqValueBlock` statement
   bodies built from lowered programs. `TccqExpression` has no `attrs`: every
   expression owns a typed effect, each reference owns one
   `TccqExpressionReference`, and each operation owns one complete

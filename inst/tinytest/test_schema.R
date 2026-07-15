@@ -346,23 +346,22 @@ alternative_assignment <- tccq_assignment(
 conditional_statement <- tccq_conditional(
   "statement_if",
   condition_expression,
-  tccq_block(
+  tccq_value_block(
     "block_consequent",
     result = result_target,
     statements = list(consequent_assignment)
   ),
-  tccq_block(
+  tccq_value_block(
     "block_alternative",
     result = result_target,
     statements = list(alternative_assignment)
   ),
   branch_value
 )
-statement_block <- tccq_block(
+statement_block <- tccq_value_block(
   "block_if",
   result = result_target,
-  statements = list(conditional_statement),
-  effect = branch_value@effect
+  statements = list(conditional_statement)
 )
 
 expect_true(S7::S7_inherits(result_target, TccqWriteTarget))
@@ -371,11 +370,67 @@ expect_true(S7::S7_inherits(consequent_assignment, TccqStatement))
 expect_true(S7::S7_inherits(consequent_assignment, TccqAssignment))
 expect_true(S7::S7_inherits(conditional_statement, TccqConditional))
 expect_true(S7::S7_inherits(statement_block, TccqBlock))
+expect_true(S7::S7_inherits(statement_block, TccqValueBlock))
 expect_identical(statement_block@result, result_target)
+expect_identical(statement_block@effect, conditional_statement@effect)
+
+procedural_block <- TccqBlock(
+  id = "block_procedural",
+  locals = list(),
+  statements = list(),
+  effect = tccq_effect()
+)
+expect_true(S7::S7_inherits(procedural_block, TccqBlock))
+expect_false(S7::S7_inherits(procedural_block, TccqValueBlock))
+
+incorrect_assignment_effect <- tryCatch(
+  TccqAssignment(
+    id = "statement_incorrect_effect",
+    effect = tccq_effect(reads = TRUE),
+    target = result_target,
+    value = reference_expression
+  ),
+  error = identity
+)
+expect_true(inherits(incorrect_assignment_effect, "error"))
+
+incorrect_conditional_effect <- tryCatch(
+  TccqConditional(
+    id = "conditional_incorrect_effect",
+    effect = tccq_effect(reads = TRUE),
+    condition = condition_expression,
+    consequent = conditional_statement@consequent,
+    alternative = conditional_statement@alternative,
+    branch = branch_value
+  ),
+  error = identity
+)
+expect_true(inherits(incorrect_conditional_effect, "error"))
+
+duplicate_statement_block <- tryCatch(
+  tccq_value_block(
+    "block_duplicate_statement",
+    result = result_target,
+    statements = list(consequent_assignment, consequent_assignment)
+  ),
+  error = identity
+)
+expect_true(inherits(duplicate_statement_block, "error"))
+
+incorrect_block_effect <- tryCatch(
+  TccqBlock(
+    id = "block_incorrect_effect",
+    locals = list(),
+    statements = list(consequent_assignment),
+    effect = tccq_effect(reads = TRUE)
+  ),
+  error = identity
+)
+expect_true(inherits(incorrect_block_effect, "error"))
 
 other_result_target <- tccq_write_target("value_other", finite@type, kind = "result")
 bad_block_result <- tryCatch(
-  tccq_block(
+  tccq_value_block(
     "block_bad_result",
     result = other_result_target,
     statements = list(consequent_assignment)
@@ -393,12 +448,12 @@ bad_conditional_result <- tryCatch(
   tccq_conditional(
     "statement_bad_result",
     condition_expression,
-    tccq_block(
+    tccq_value_block(
       "block_bad_consequent",
       result = result_target,
       statements = list(consequent_assignment)
     ),
-    tccq_block(
+    tccq_value_block(
       "block_bad_alternative",
       result = other_result_target,
       statements = list(other_result_assignment)
@@ -451,7 +506,7 @@ statement_interface <- tccq_backend_function_interface(
   result_name = "result_0001"
 )
 
-expect_true(S7::S7_inherits(statement_products@body, TccqBlock))
+expect_true(S7::S7_inherits(statement_products@body, TccqValueBlock))
 expect_true(S7::S7_inherits(statement_interface@locals[[1L]], TccqBackendValueBinding))
 expect_equal(statement_interface@locals[[1L]]@source_type@base, "logical")
 expect_true(S7::S7_inherits(loop_guard, TccqLoopGuard))

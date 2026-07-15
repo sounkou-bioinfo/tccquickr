@@ -8,8 +8,8 @@ TccqConditional(
   id = character(0),
   effect = TccqEffect(),
   condition = TccqExpression(),
-  consequent = TccqBlock(),
-  alternative = TccqBlock(),
+  consequent = TccqValueBlock(),
+  alternative = TccqValueBlock(),
   branch = TccqBranch()
 )
 }

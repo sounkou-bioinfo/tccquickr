@@ -8,7 +8,6 @@ TccqBlock(
   id = character(0),
   locals = list(),
   statements = list(),
-  result = TccqWriteTarget(),
   effect = TccqEffect()
 )
 }
@@ -19,12 +18,11 @@ TccqBlock(
 
 \item{statements}{Ordered \code{TccqStatement} values.}
 
-\item{result}{Typed target produced on every terminal path through the block.}
-
-\item{effect}{Effect summary of evaluating the block.}
+\item{effect}{Exact effect summary of evaluating the statements.}
 }
 \description{
-A block owns ordered local declarations and ordered typed statements. Its
+A block owns lexical local declarations and ordered typed statements. Its
 nesting is semantic: locals and statements inside one branch arm are not
-evaluated from another arm.
+evaluated from another arm. A plain block does not imply that evaluation
+yields a value; \link{TccqValueBlock} adds that stronger completion contract.
 }

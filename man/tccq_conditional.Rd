@@ -4,14 +4,7 @@
 \alias{tccq_conditional}
 \title{Construct a neutral conditional}
 \usage{
-tccq_conditional(
-  id,
-  condition,
-  consequent,
-  alternative,
-  branch,
-  effect = branch@effect
-)
+tccq_conditional(id, condition, consequent, alternative, branch)
 }
 \arguments{
 \item{id}{Stable statement id.}
@@ -23,8 +16,6 @@ tccq_conditional(
 \item{alternative}{Block evaluated when the condition is false.}
 
 \item{branch}{Source branch payload retaining R special-form semantics.}
-
-\item{effect}{Effect summary of evaluating the statement.}
 }
 \description{
 Construct a neutral conditional

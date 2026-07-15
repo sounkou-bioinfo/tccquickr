@@ -1124,7 +1124,7 @@ expect_true(branch_expression@success)
 expect_equal(branch_expression@value@kind, "branch")
 expect_true(S7::S7_inherits(branch_expression@value@branch, TccqBranch))
 expect_true(branch_nests@success)
-expect_true(S7::S7_inherits(branch_nests@value[[1L]]@body, TccqBlock))
+expect_true(S7::S7_inherits(branch_nests@value[[1L]]@body, TccqValueBlock))
 expect_true(S7::S7_inherits(
   branch_nests@value[[1L]]@body@statements[[1L]],
   TccqConditional
@@ -1204,7 +1204,7 @@ nested_branch_program <- tccq_analyze(nested_branch, strict = TRUE)@value
 nested_branch_nests <- tccq_program_loop_nests(nested_branch_program)
 expect_true(nested_branch_nests@success)
 nested_branch_body <- nested_branch_nests@value[[1L]]@body
-expect_true(S7::S7_inherits(nested_branch_body, TccqBlock))
+expect_true(S7::S7_inherits(nested_branch_body, TccqValueBlock))
 nested_branch_statement <- nested_branch_body@statements[[1L]]
 expect_true(S7::S7_inherits(nested_branch_statement, TccqConditional))
 expect_true(S7::S7_inherits(
@@ -1249,7 +1249,7 @@ branch_condition_program <- tccq_analyze(branch_condition, strict = TRUE)@value
 branch_condition_nests <- tccq_program_loop_nests(branch_condition_program)
 expect_true(branch_condition_nests@success)
 branch_condition_body <- branch_condition_nests@value[[1L]]@body
-expect_true(S7::S7_inherits(branch_condition_body, TccqBlock))
+expect_true(S7::S7_inherits(branch_condition_body, TccqValueBlock))
 expect_equal(length(branch_condition_body@locals), 1L)
 expect_true(S7::S7_inherits(branch_condition_body@locals[[1L]], TccqWriteTarget))
 expect_equal(branch_condition_body@locals[[1L]]@type@base, "logical")
@@ -1267,7 +1267,7 @@ branch_condition_fortran <- tccq_plan_backend(
 )
 expect_true(branch_condition_c@success)
 expect_true(branch_condition_fortran@success)
-expect_true(S7::S7_inherits(backend_products(branch_condition_c)@body, TccqBlock))
+expect_true(S7::S7_inherits(backend_products(branch_condition_c)@body, TccqValueBlock))
 expect_equal(
   vapply(
     backend_interface(branch_condition_c)@locals,
@@ -1355,7 +1355,7 @@ expect_equal(
 )
 
 conditional_composition_body <- conditional_composition_nests@value[[1L]]@body
-expect_true(S7::S7_inherits(conditional_composition_body, TccqBlock))
+expect_true(S7::S7_inherits(conditional_composition_body, TccqValueBlock))
 expect_true(conditional_composition_body@effect@may_error)
 expect_equal(length(conditional_composition_body@locals), 2L)
 expect_equal(
@@ -1618,7 +1618,7 @@ expect_equal(
 expect_equal(length(definition_guarded_buffer_nests@value[[3L]]@guards), 0L)
 expect_true(S7::S7_inherits(
   definition_guarded_buffer_nests@value[[3L]]@body,
-  TccqBlock
+  TccqValueBlock
 ))
 definition_guarded_buffer_c <- tccq_plan_backend(
   definition_guarded_buffer_program,
@@ -1804,7 +1804,7 @@ expect_true(conditional_reduction_composition_nests@success)
 expect_true(conditional_contraction_nests@success)
 
 conditional_reduction_body <- conditional_reduction_nests@value[[1L]]@body
-expect_true(S7::S7_inherits(conditional_reduction_body, TccqBlock))
+expect_true(S7::S7_inherits(conditional_reduction_body, TccqValueBlock))
 expect_equal(conditional_reduction_body@result@kind, "local")
 expect_identical(
   conditional_reduction_body@locals[[1L]],
@@ -1815,16 +1815,16 @@ expect_equal(conditional_reduction_body@result@storage_type@shape@rank, 0L)
 expect_equal(conditional_reduction_nests@value[[1L]]@reducer@name, "sum")
 expect_true(S7::S7_inherits(
   conditional_axis_reduction_nests@value[[1L]]@body,
-  TccqBlock
+  TccqValueBlock
 ))
 expect_equal(length(conditional_reduction_composition_nests@value), 2L)
 expect_true(S7::S7_inherits(
   conditional_reduction_composition_nests@value[[1L]]@body,
-  TccqBlock
+  TccqValueBlock
 ))
 expect_true(S7::S7_inherits(
   conditional_contraction_nests@value[[1L]]@body,
-  TccqBlock
+  TccqValueBlock
 ))
 
 conditional_reduction_c <- tccq_plan_backend(

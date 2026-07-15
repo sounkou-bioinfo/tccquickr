@@ -199,19 +199,22 @@ axis facts rather than target-source conventions.
 retains the special forcing facts from `TccqCallSemantics`; C and
 Fortran emit conditional statements, so the unselected arm is not
 evaluated, and native call boundaries reject a missing condition as R
-does. Loop-nest lowering represents control as a typed `TccqBlock`
-containing `TccqConditional` and `TccqAssignment` values; arithmetic in
-each assignment remains a neutral `TccqExpression`. Pure branches may
-nest in result arms, directly as another branch’s condition, or under
-pure elementwise operations. The normalizer evaluates each
-control-valued operand into a block-owned write target before its
-consumer. That target retains the full semantic array type while
-carrying the scalar storage type actually written in each loop
-iteration; the shared function interface assigns its generated name
-through a typed value binding. ABI parameters, scalar locals, physical
-allocations, and symbolic extents are bindings rather than parallel
-name/id/type arrays. Every block names the write target produced by its
-terminal paths. A reducer or contraction can therefore consume a
+does. Loop-nest lowering represents value-producing control as a typed
+`TccqValueBlock` containing `TccqConditional` and `TccqAssignment`
+values; arithmetic in each assignment remains a neutral
+`TccqExpression`. Pure branches may nest in result arms, directly as
+another branch’s condition, or under pure elementwise operations. The
+normalizer evaluates each control-valued operand into a block-owned
+write target before its consumer. That target retains the full semantic
+array type while carrying the scalar storage type actually written in
+each loop iteration; the shared function interface assigns its generated
+name through a typed value binding. ABI parameters, scalar locals,
+physical allocations, and symbolic extents are bindings rather than
+parallel name/id/type arrays. Every value block names the write target
+produced by its terminal paths. The general `TccqBlock` owns lexical
+statements and their exact effect without claiming to yield a value;
+`TccqValueBlock` adds the terminal-result contract needed by the current
+expression loop nests. A reducer or contraction can therefore consume a
 conditional element from a block-local target while the target is still
 in scope. A reduction or contraction selected inside an arm becomes an
 intermediate loop nest carrying an ordered typed guard path, so nested

@@ -278,7 +278,7 @@ share a single generic per-nest emitter instead of per-family printer cases;
 the C emitter emits one allocation and free per `TccqStorageAllocation`, while
 Fortran declares one automatic array for each unconditional allocation and one
 guarded allocatable array for each selected-path allocation. A branch-valued
-nest body is a typed `TccqBlock` containing
+nest body is a typed `TccqValueBlock` containing
 `TccqAssignment` and `TccqConditional` statements over `TccqWriteTarget`
 destinations. Both source families consume that block, preserving that exactly
 one arm is evaluated.
@@ -325,9 +325,9 @@ Control flow is entering as structured IR. A pure scalar `if` with an explicit
 scalar logical, and its backend interface preserves that type as C `bool`,
 Fortran `logical(c_bool)`, or TinyCC `bool`; wrappers reject a missing condition
 instead of mapping it to a Boolean. The current loop-nest planner accepts the
-branch as a result and lowers it into a `TccqBlock`. Pure branches may nest in
-result arms because both source emitters recursively assign through the same
-typed target. A branch used directly as another branch's condition or below a
+branch as a result and lowers it into a `TccqValueBlock`. Pure branches may
+nest in result arms because both source emitters recursively assign through the
+same typed target. A branch used directly as another branch's condition or below a
 pure elementwise operation first writes a block-owned target, and its consumer
 reads that target through an ordinary typed access. `TccqWriteTarget` retains
 the full semantic value type and separately records the scalar storage type
@@ -335,7 +335,9 @@ written in one loop iteration. `TccqBackendFunctionInterface` assigns stable
 names to those locals; C compound blocks and Fortran `block` constructs declare
 them at the owning statement block. Each block effect is the conservative union
 of its statement effects, including control normalized below a pure operation.
-`TccqBlock` explicitly names the write target produced on every terminal path.
+`TccqBlock` owns lexical scope, ordered statements, and their exact effect
+without claiming a result. `TccqValueBlock` is its stricter value-producing
+subtype and explicitly names the write target produced on every terminal path.
 A reducer or contraction whose operand contains control reads that block-local
 target and combines it before the lexical block closes. A scalar branch-local
 reduction or contraction is an intermediate `TccqLoopNest` carrying an ordered
