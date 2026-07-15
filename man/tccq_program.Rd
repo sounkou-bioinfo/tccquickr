@@ -7,7 +7,7 @@
 tccq_program(
   name,
   formals,
-  local_bindings = list(),
+  schedule = NULL,
   values = list(),
   regions = list(),
   result = NULL,
@@ -22,7 +22,7 @@ tccq_program(
 
 \item{formals}{Named list of formal bindings.}
 
-\item{local_bindings}{Ordered local value bindings.}
+\item{schedule}{Optional ordered program evaluation schedule.}
 
 \item{values}{List of IR values.}
 

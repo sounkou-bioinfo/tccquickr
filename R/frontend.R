@@ -85,7 +85,7 @@ tccq_analyze <- function(
   program <- tccq_program(
     name = .tccq_function_name(fn),
     formals = declarations$bindings,
-    local_bindings = if (is.null(lowering)) list() else lowering@local_bindings,
+    schedule = if (is.null(lowering)) NULL else lowering@schedule,
     values = if (is.null(lowering)) list() else lowering@values,
     regions = if (is.null(lowering)) list() else lowering@regions,
     result = if (is.null(lowering)) NULL else lowering@result,

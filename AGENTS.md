@@ -219,14 +219,26 @@ For the reset core, keep these rules explicit:
   target ternary. C uses nullable owned buffers for guarded arrays; Fortran uses
   guarded allocatable arrays. Both clean up through the same typed nest/slot
   ownership fact.
-- Every accepted top-level assignment is a `TccqLocalBinding`, not a name-to-id
-  entry in program attributes. It records the bound value type, value id, and
-  one-based executable statement position. Loop-nest planning consumes local
-  definitions in statement order before the returned expression: non-fusible
-  descendants materialize at the definition's control path, a value defined
-  before a later branch remains unguarded, and a conditional definition retains
-  only its own guards. Later uses may reuse a definition-owned materialization
-  across consumer paths; they must not reschedule it from a common use path.
+- Every accepted top-level executable form is one `TccqEvaluationStep` in a
+  contiguous `TccqProgramSchedule`; do not infer R evaluation order from value
+  ids, source text, or a collection of only the named locals. An assignment
+  step owns an optional `TccqLocalBinding` recording its value type, value id,
+  and statement position; an unbound expression step still exists in the
+  schedule. Each step records the exact `TccqLocalBinding` values read during
+  symbol resolution; never infer lexical uses from value ids because distinct
+  local names may alias one value. The schedule is the sole owner of top-level
+  order and must validate complete effects, value references, local dominance,
+  and the final result.
+- A local symbol read lowers to `TccqBindingReference`, not directly to the
+  value graph that originally defined the local. The reference retains exact
+  lexical binding identity and points to bound storage; expression and effect
+  traversal stop there. An assignment evaluation id and its binding storage id
+  may differ for aliases such as `b <- a`; do not collapse those identities.
+  Loop-nest planning consumes schedule steps in order: non-fusible descendants
+  materialize at the evaluation's control path, a value defined before a later
+  branch remains unguarded, and a conditional definition retains only its own
+  guards. Later uses may reuse a definition-owned materialization across
+  consumer paths; they must not reschedule it from a common use path.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.

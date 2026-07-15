@@ -139,7 +139,7 @@ cat(normalize_plan@value@products@attrs$source)
 #> #include <stddef.h>
 #> #include <stdlib.h>
 #> 
-#> double *tccq_c_91268277(const double *input_0001, int extent_n, int result_count_0001) {
+#> double *tccq_c_960543494(const double *input_0001, int extent_n, int result_count_0001) {
 #>   if (result_count_0001 < 0) {
 #>     return NULL;
 #>   }
@@ -216,10 +216,15 @@ incompatible paths, C uses nullable owned buffers, and Fortran uses
 guarded allocatable arrays.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
-declared dimension symbols. Locals are single-assignment
-`TccqLocalBinding` values that name the lowered value and the executable
-statement where R defines it. The loop-nest planner visits those typed
-definitions in statement order before the returned expression. A
+declared dimension symbols. Every executable top-level form is a typed
+`TccqEvaluationStep` in one contiguous `TccqProgramSchedule`, including
+expression statements whose values are not bound. Assignment steps carry
+a single-assignment `TccqLocalBinding`; the schedule, not value ids or
+source text, owns R evaluation order. Each step retains the exact local
+bindings read, because different lexical names may alias one lowered
+value. The loop-nest planner sees those reads as `TccqBindingReference`
+leaves rather than walking back into and re-evaluating their definition
+graphs. It visits schedule steps before the returned expression. A
 reduction defined before a later `if` therefore materializes once
 without that `if`’s guards; when the definition itself is conditional,
 its intermediate nests retain the definition’s selected-arm guards.

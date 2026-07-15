@@ -2598,48 +2598,54 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
-        push(sprintf(
-          "%s %s = %s;",
-          source_scalar_type(intermediate_plan$accumulator_type, "c"),
-          intermediate_plan$accumulator_name,
-          intermediate_plan$identity_text
-        ))
-        for (axis in intermediate_plan$reduce_axes) {
-          open_loop(axis)
+        if (!is.null(intermediate@reducer)) {
+          push(sprintf(
+            "%s %s = %s;",
+            source_scalar_type(intermediate_plan$accumulator_type, "c"),
+            intermediate_plan$accumulator_name,
+            intermediate_plan$identity_text
+          ))
+          for (axis in intermediate_plan$reduce_axes) {
+            open_loop(axis)
+          }
+          if (intermediate_plan$body_requires_statements) {
+            emit_statement_block(
+              intermediate_plan$body,
+              result_target = "",
+              after_statements = function() {
+                push(sprintf(
+                  "%s = %s;",
+                  intermediate_plan$accumulator_name,
+                  intermediate_plan$combine_text
+                ))
+              }
+            )
+          } else {
+            push(sprintf(
+              "%s = %s;",
+              intermediate_plan$accumulator_name,
+              intermediate_plan$combine_text
+            ))
+          }
+          for (axis in intermediate_plan$reduce_axes) {
+            close_loop(axis)
+          }
         }
-        if (intermediate_plan$body_requires_statements) {
-          emit_statement_block(
-            intermediate_plan$body,
-            result_target = "",
-            after_statements = function() {
-              push(sprintf(
-                "%s = %s;",
-                intermediate_plan$accumulator_name,
-                intermediate_plan$combine_text
-              ))
-            }
+        materialization_target <- if (materializes_buffer) {
+          sprintf(
+            "%s[%s]",
+            intermediate_plan$materialization_name,
+            intermediate_plan$output_index
           )
         } else {
-          push(sprintf(
-            "%s = %s;",
-            intermediate_plan$accumulator_name,
-            intermediate_plan$combine_text
-          ))
+          intermediate_plan$materialization_name
         }
-        for (axis in intermediate_plan$reduce_axes) {
-          close_loop(axis)
-        }
-        if (materializes_buffer) {
-          push(sprintf(
-            "%s[%s] = %s;",
-            intermediate_plan$materialization_name,
-            intermediate_plan$output_index,
-            intermediate_plan$value_text
-          ))
+        if (is.null(intermediate@reducer) && intermediate_plan$body_requires_statements) {
+          emit_statement_block(intermediate_plan$body, materialization_target)
         } else {
           push(sprintf(
             "%s = %s;",
-            intermediate_plan$materialization_name,
+            materialization_target,
             intermediate_plan$value_text
           ))
         }
@@ -2784,13 +2790,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             plan$accumulator_name
           )
         },
-        unlist(lapply(intermediate_plans, function(intermediate_plan) {
+        unlist(Map(function(intermediate, intermediate_plan) {
+          if (is.null(intermediate@reducer)) {
+            return(character())
+          }
           sprintf(
             "  %s :: %s",
             source_scalar_type(intermediate_plan$accumulator_type, "fortran"),
             intermediate_plan$accumulator_name
           )
-        })),
+        }, intermediate_nests, intermediate_plans)),
         unlist(Map(function(intermediate, intermediate_plan) {
           if (intermediate@storage@type@shape@rank == 0L) {
             return(sprintf(
@@ -2939,47 +2948,53 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
-        push(sprintf(
-          "%s = %s",
-          intermediate_plan$accumulator_name,
-          intermediate_plan$identity_text
-        ))
-        for (axis in intermediate_plan$reduce_axes) {
-          open_loop(axis)
-        }
-        if (intermediate_plan$body_requires_statements) {
-          emit_statement_block(
-            intermediate_plan$body,
-            result_target = "",
-            after_statements = function() {
-              push(sprintf(
-                "%s = %s",
-                intermediate_plan$accumulator_name,
-                intermediate_plan$combine_text
-              ))
-            }
-          )
-        } else {
+        if (!is.null(intermediate@reducer)) {
           push(sprintf(
             "%s = %s",
             intermediate_plan$accumulator_name,
-            intermediate_plan$combine_text
+            intermediate_plan$identity_text
           ))
+          for (axis in intermediate_plan$reduce_axes) {
+            open_loop(axis)
+          }
+          if (intermediate_plan$body_requires_statements) {
+            emit_statement_block(
+              intermediate_plan$body,
+              result_target = "",
+              after_statements = function() {
+                push(sprintf(
+                  "%s = %s",
+                  intermediate_plan$accumulator_name,
+                  intermediate_plan$combine_text
+                ))
+              }
+            )
+          } else {
+            push(sprintf(
+              "%s = %s",
+              intermediate_plan$accumulator_name,
+              intermediate_plan$combine_text
+            ))
+          }
+          for (axis in intermediate_plan$reduce_axes) {
+            close_loop(axis)
+          }
         }
-        for (axis in intermediate_plan$reduce_axes) {
-          close_loop(axis)
-        }
-        if (materializes_buffer) {
-          push(sprintf(
-            "%s(%s + 1) = %s",
+        materialization_target <- if (materializes_buffer) {
+          sprintf(
+            "%s(%s + 1)",
             intermediate_plan$materialization_name,
-            intermediate_plan$output_index,
-            intermediate_plan$value_text
-          ))
+            intermediate_plan$output_index
+          )
+        } else {
+          intermediate_plan$materialization_name
+        }
+        if (is.null(intermediate@reducer) && intermediate_plan$body_requires_statements) {
+          emit_statement_block(intermediate_plan$body, materialization_target)
         } else {
           push(sprintf(
             "%s = %s",
-            intermediate_plan$materialization_name,
+            materialization_target,
             intermediate_plan$value_text
           ))
         }

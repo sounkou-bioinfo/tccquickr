@@ -502,6 +502,7 @@ unhandled_values[[vector_program@value@result]] <- tccq_value(
 unhandled_program <- tccq_program(
   "unhandled_expression",
   formals = vector_program@value@formals,
+  schedule = vector_program@value@schedule,
   values = unhandled_values,
   regions = vector_program@value@regions,
   result = vector_program@value@result,
@@ -585,7 +586,16 @@ bound_c_source_plan <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "c")
 )
 expect_true(bound_c_source_plan@success)
-expect_true(grepl("exp(sqrt(input_0001[axis_0001]))", backend_source(bound_c_source_plan), fixed = TRUE))
+expect_true(grepl(
+  "intermediate_0001[axis_0001] = sqrt(input_0001[axis_0001]);",
+  backend_source(bound_c_source_plan),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "exp(intermediate_0001[axis_0001])",
+  backend_source(bound_c_source_plan),
+  fixed = TRUE
+))
 
 bound_fortran_source_plan <- tccq_plan_backend(
   bound_program@value,
@@ -593,7 +603,16 @@ bound_fortran_source_plan <- tccq_plan_backend(
   tccq_backend_context(mode = "source", target = "fortran")
 )
 expect_true(bound_fortran_source_plan@success)
-expect_true(grepl("exp(sqrt(input_0001(axis_0001 + 1)))", backend_source(bound_fortran_source_plan), fixed = TRUE))
+expect_true(grepl(
+  "intermediate_0001(axis_0001 + 1) = sqrt(input_0001(axis_0001 + 1))",
+  backend_source(bound_fortran_source_plan),
+  fixed = TRUE
+))
+expect_true(grepl(
+  "exp(intermediate_0001(axis_0001 + 1))",
+  backend_source(bound_fortran_source_plan),
+  fixed = TRUE
+))
 
 if (rtinycc_jit_available) {
   jit_plan <- tccq_plan_backend(
@@ -1203,8 +1222,12 @@ expect_true(conditional_scalar_nests@success)
 expect_true(conditional_composition_nests@success)
 expect_true(shared_conditional_nests@success)
 expect_true(shared_conditional_subtrees_nests@success)
-expect_equal(length(shared_conditional_nests@value[[1L]]@body@locals), 1L)
-expect_equal(length(shared_conditional_nests@value[[1L]]@body@statements), 2L)
+expect_equal(length(shared_conditional_nests@value[[1L]]@body@locals), 0L)
+expect_equal(length(shared_conditional_nests@value[[1L]]@body@statements), 1L)
+expect_true(S7::S7_inherits(
+  shared_conditional_nests@value[[1L]]@body@statements[[1L]],
+  TccqConditional
+))
 expect_equal(
   sum(vapply(
     shared_conditional_subtrees_nests@value[[1L]]@body@statements,
@@ -1410,7 +1433,7 @@ shared_guarded_buffer_nests <- tccq_program_loop_nests(
 )
 expect_true(shared_guarded_buffer_nests@success)
 expect_equal(length(shared_guarded_buffer_nests@value), 2L)
-shared_guarded_binding <- shared_guarded_buffer_program@local_bindings$totals
+shared_guarded_binding <- shared_guarded_buffer_program@schedule@steps[[1L]]@binding
 expect_true(S7::S7_inherits(shared_guarded_binding, TccqLocalBinding))
 expect_equal(
   shared_guarded_buffer_nests@value[[1L]]@storage@value_id,
@@ -1437,12 +1460,12 @@ definition_guarded_buffer_program <- tccq_analyze(
   definition_guarded_buffer,
   strict = TRUE
 )@value
-definition_guarded_binding <- definition_guarded_buffer_program@local_bindings$totals
+definition_guarded_binding <- definition_guarded_buffer_program@schedule@steps[[1L]]@binding
 definition_guarded_buffer_nests <- tccq_program_loop_nests(
   definition_guarded_buffer_program
 )
 expect_true(definition_guarded_buffer_nests@success)
-expect_equal(length(definition_guarded_buffer_nests@value), 3L)
+expect_equal(length(definition_guarded_buffer_nests@value), 4L)
 expect_equal(
   vapply(
     definition_guarded_buffer_nests@value[1:2],
@@ -1464,6 +1487,15 @@ expect_true(all(vapply(
   function(nest) identical(nest@guards[[1L]]@branch@id, definition_guarded_binding@value_id),
   logical(1)
 )))
+expect_equal(
+  definition_guarded_buffer_nests@value[[3L]]@storage@value_id,
+  definition_guarded_binding@value_id
+)
+expect_equal(length(definition_guarded_buffer_nests@value[[3L]]@guards), 0L)
+expect_true(S7::S7_inherits(
+  definition_guarded_buffer_nests@value[[3L]]@body,
+  TccqBlock
+))
 definition_guarded_buffer_c <- tccq_plan_backend(
   definition_guarded_buffer_program,
   tccq_c_backend()
@@ -1491,7 +1523,7 @@ expect_true(unused_definition_nests@success)
 expect_equal(length(unused_definition_nests@value), 2L)
 expect_equal(
   unused_definition_nests@value[[1L]]@storage@value_id,
-  unused_definition_program@local_bindings$discarded@value_id
+  unused_definition_program@schedule@steps[[1L]]@binding@value_id
 )
 expect_true(tccq_plan_backend(
   unused_definition_program,
@@ -1501,6 +1533,74 @@ expect_true(tccq_plan_backend(
   unused_definition_program,
   tccq_fortran_backend()
 )@success)
+
+standalone_reduction <- function(x) {
+  declare(type(x = double(n, p)))
+  colSums(x)
+  x
+}
+standalone_reduction_analysis <- tccq_analyze(
+  standalone_reduction,
+  strict = TRUE
+)
+expect_true(standalone_reduction_analysis@success)
+standalone_reduction_program <- standalone_reduction_analysis@value
+expect_equal(length(standalone_reduction_program@schedule@steps), 2L)
+expect_null(standalone_reduction_program@schedule@steps[[1L]]@binding)
+standalone_reduction_nests <- tccq_program_loop_nests(standalone_reduction_program)
+expect_true(standalone_reduction_nests@success)
+expect_equal(length(standalone_reduction_nests@value), 2L)
+expect_equal(
+  standalone_reduction_nests@value[[1L]]@storage@value_id,
+  standalone_reduction_program@schedule@steps[[1L]]@value_id
+)
+expect_true(tccq_plan_backend(
+  standalone_reduction_program,
+  tccq_c_backend()
+)@success)
+expect_true(tccq_plan_backend(
+  standalone_reduction_program,
+  tccq_fortran_backend()
+)@success)
+
+alias_probe <- function(x) {
+  declare(type(x = double(n)))
+  first <- x
+  second <- first
+  second + 1
+}
+alias_analysis <- tccq_analyze(alias_probe, strict = TRUE)
+alias_program <- alias_analysis@value
+alias_schedule <- alias_program@schedule
+expect_equal(length(alias_schedule@steps), 3L)
+expect_equal(
+  vapply(
+    alias_schedule@steps[1:2],
+    function(step) step@binding@name,
+    character(1)
+  ),
+  c("first", "second")
+)
+expect_equal(
+  vapply(
+    alias_schedule@steps[1:2],
+    function(step) step@binding@value_id,
+    character(1)
+  ),
+  rep("formal_0001", 2L)
+)
+expect_true(S7::S7_inherits(
+  alias_program@values[[alias_schedule@steps[[2L]]@value_id]],
+  TccqBindingReference
+))
+expect_identical(
+  alias_schedule@steps[[3L]]@uses[[1L]],
+  alias_schedule@steps[[2L]]@binding
+)
+expect_true(tccq_plan_backend(alias_program, tccq_c_backend())@success)
+expect_true(tccq_plan_backend(alias_program, tccq_fortran_backend())@success)
+alias_input <- c(2, -3, 5)
+alias_expected <- alias_input + 1
 
 branch_reduction_c <- tccq_plan_backend(branch_reduction_program, tccq_c_backend())
 branch_reduction_fortran <- tccq_plan_backend(
@@ -1770,6 +1870,23 @@ if (rtinycc_jit_available) {
     backend_callable(unused_definition_jit)(conditional_matrix),
     conditional_matrix
   )
+  standalone_reduction_jit <- tccq_plan_backend(
+    standalone_reduction_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(standalone_reduction_jit@success)
+  expect_equal(
+    backend_callable(standalone_reduction_jit)(conditional_matrix),
+    conditional_matrix
+  )
+  alias_jit <- tccq_plan_backend(
+    alias_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(alias_jit@success)
+  expect_equal(backend_callable(alias_jit)(alias_input), alias_expected)
 
   nested_branch_jit <- tccq_plan_backend(
     nested_branch_program,
@@ -1949,6 +2066,23 @@ if (can_build_shared_library("c")) {
     backend_callable(unused_definition_c_shared)(conditional_matrix),
     conditional_matrix
   )
+  standalone_reduction_c_shared <- tccq_plan_backend(
+    standalone_reduction_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(standalone_reduction_c_shared@success)
+  expect_equal(
+    backend_callable(standalone_reduction_c_shared)(conditional_matrix),
+    conditional_matrix
+  )
+  alias_c_shared <- tccq_plan_backend(
+    alias_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(alias_c_shared@success)
+  expect_equal(backend_callable(alias_c_shared)(alias_input), alias_expected)
 
   branch_condition_c_shared <- tccq_plan_backend(
     branch_condition_program,
@@ -2118,6 +2252,23 @@ if (can_build_shared_library("fortran")) {
     backend_callable(unused_definition_fortran_shared)(conditional_matrix),
     conditional_matrix
   )
+  standalone_reduction_fortran_shared <- tccq_plan_backend(
+    standalone_reduction_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(standalone_reduction_fortran_shared@success)
+  expect_equal(
+    backend_callable(standalone_reduction_fortran_shared)(conditional_matrix),
+    conditional_matrix
+  )
+  alias_fortran_shared <- tccq_plan_backend(
+    alias_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(alias_fortran_shared@success)
+  expect_equal(backend_callable(alias_fortran_shared)(alias_input), alias_expected)
 
   nested_branch_fortran_shared <- tccq_plan_backend(
     nested_branch_program,
@@ -2397,7 +2548,11 @@ expect_equal(
   vapply(normalize_groups, function(group) group@kind, character(1)),
   c("map_reduce", "map")
 )
-expect_equal(normalize_groups[[1L]]@outputs, normalize_groups[[2L]]@values[[1L]]@inputs[[2L]])
+normalize_sum_reference <- normalize_program@value@values[[
+  normalize_groups[[2L]]@contract@result_value@inputs[[2L]]
+]]
+expect_true(S7::S7_inherits(normalize_sum_reference, TccqBindingReference))
+expect_equal(normalize_groups[[1L]]@outputs, normalize_sum_reference@binding@value_id)
 
 normalize_nests <- tccq_program_loop_nests(normalize_program@value)
 expect_true(normalize_nests@success)

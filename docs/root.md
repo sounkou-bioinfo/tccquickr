@@ -35,15 +35,16 @@ terminal path, so reductions and contractions can consume conditional elements
 inside the reducer scope. A reduction or contraction selected inside a
 branch arm becomes an intermediate loop nest with an ordered typed guard path;
 nested paths preserve outer-to-inner arm selection in every source backend.
-The same path scopes materialized storage. A top-level assignment is a typed
-`TccqLocalBinding` definition carrying its executable statement position, so
-the planner schedules its non-fusible descendants before analyzing later uses.
-A reduction defined before a branch is unguarded even when both arms consume
-it; a conditional definition retains only its own guards. C represents guarded
-arrays as nullable owned buffers, while Fortran uses guarded allocatable arrays.
-Both allocate only in the selected definition path and clean up safely after
-the final consumer. A shared materialization without a typed definition remains
-a refusal when its uses imply incompatible paths.
+The same path scopes materialized storage. `TccqProgramSchedule` records every
+top-level evaluation in contiguous statement order, including unbound
+expression statements, and assignment steps own their typed `TccqLocalBinding`.
+The planner schedules each step's non-fusible descendants before analyzing
+later uses. A reduction defined before a branch is unguarded even when both arms
+consume it; a conditional definition retains only its own guards. C represents
+guarded arrays as nullable owned buffers, while Fortran uses guarded allocatable
+arrays. Both allocate only in the selected definition path and clean up safely
+after the final consumer. A shared materialization without a typed definition
+remains a refusal when its uses imply incompatible paths.
 
 The remaining north-star pressure is loop and evaluator structure. Viterbi and
 smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement

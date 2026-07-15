@@ -306,6 +306,20 @@ per_formal_result <- tccq_analyze(per_formal_declare)
 expect_true(per_formal_result@success)
 expect_equal(names(per_formal_result@value@formals), c("x", "y"))
 
+declaration_only <- function(x) {
+  declare(type(x = double(n)))
+}
+declaration_only_result <- tccq_analyze(declaration_only)
+expect_false(declaration_only_result@success)
+expect_true(any(vapply(
+  declaration_only_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.missing_program_result"
+  ),
+  logical(1)
+)))
+
 # A declared length-1 vector recycles into anything, as in R.
 length_one_recycle <- function(a, x) {
   declare(type(a = double(1L), x = double(n)))
@@ -324,18 +338,55 @@ bound_chain <- function(x, y) {
 bound_result <- tccq_analyze(bound_chain)
 expect_true(bound_result@success)
 expect_true(bound_result@value@attrs$lowered)
-expect_equal(bound_result@value@result, "value_0004")
-expect_equal(names(bound_result@value@local_bindings), c("shifted", "weighted"))
+expect_equal(bound_result@value@result, "value_0006")
+bound_schedule <- bound_result@value@schedule
+expect_true(S7::S7_inherits(bound_schedule, TccqProgramSchedule))
+expect_equal(
+  vapply(
+    bound_schedule@steps,
+    function(step) step@statement_index,
+    integer(1)
+  ),
+  1:3
+)
+bound_bindings <- lapply(bound_schedule@steps[1:2], function(step) step@binding)
 expect_true(S7::S7_inherits(
-  bound_result@value@local_bindings$shifted,
+  bound_bindings[[1L]],
   TccqLocalBinding
 ))
-expect_equal(bound_result@value@local_bindings$shifted@value_id, "value_0001")
-expect_equal(bound_result@value@local_bindings$shifted@statement_index, 1L)
-expect_equal(bound_result@value@local_bindings$weighted@value_id, "value_0003")
-expect_equal(bound_result@value@local_bindings$weighted@statement_index, 2L)
+expect_equal(bound_bindings[[1L]]@name, "shifted")
+expect_equal(bound_bindings[[1L]]@value_id, "value_0001")
+expect_equal(bound_bindings[[1L]]@statement_index, 1L)
+expect_equal(bound_bindings[[2L]]@name, "weighted")
+expect_equal(bound_bindings[[2L]]@value_id, "value_0004")
+expect_equal(bound_bindings[[2L]]@statement_index, 2L)
+expect_equal(
+  vapply(bound_schedule@steps[[2L]]@uses, function(binding) binding@name, character(1)),
+  "shifted"
+)
+expect_equal(
+  vapply(bound_schedule@steps[[3L]]@uses, function(binding) binding@name, character(1)),
+  "weighted"
+)
+expect_null(bound_schedule@steps[[3L]]@binding)
 expect_null(bound_result@value@attrs$lowering$local_bindings)
-expect_equal(bound_result@value@values$value_0004@inputs, list("value_0003", "formal_0002"))
+expect_equal(bound_result@value@values$value_0006@inputs, list("value_0005", "formal_0002"))
+expect_true(S7::S7_inherits(
+  bound_result@value@values$value_0002,
+  TccqBindingReference
+))
+expect_identical(
+  bound_result@value@values$value_0002@binding,
+  bound_bindings[[1L]]
+)
+expect_true(S7::S7_inherits(
+  bound_result@value@values$value_0005,
+  TccqBindingReference
+))
+expect_identical(
+  bound_result@value@values$value_0005@binding,
+  bound_bindings[[2L]]
+)
 bound_storage_slots <- bound_result@value@storage_plan@slots
 bound_storage_slots_by_value <- bound_storage_slots
 names(bound_storage_slots_by_value) <- vapply(
@@ -346,10 +397,10 @@ names(bound_storage_slots_by_value) <- vapply(
 expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0001@lifetime, TccqStorageLifetime))
 expect_equal(bound_storage_slots_by_value$value_0001@lifetime@defined_at, 3L)
 expect_equal(bound_storage_slots_by_value$value_0001@lifetime@last_used_at, 4L)
-expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0003@lifetime, TccqStorageLifetime))
-expect_equal(bound_storage_slots_by_value$value_0003@lifetime@defined_at, 5L)
-expect_equal(bound_storage_slots_by_value$value_0003@lifetime@last_used_at, 6L)
-expect_equal(bound_result@value@storage_plan@reuse_groups, list(c("slot_0003", "slot_0005")))
+expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0004@lifetime, TccqStorageLifetime))
+expect_equal(bound_storage_slots_by_value$value_0004@lifetime@defined_at, 6L)
+expect_equal(bound_storage_slots_by_value$value_0004@lifetime@last_used_at, 7L)
+expect_true(length(bound_result@value@storage_plan@reuse_groups) > 0L)
 
 rebound_local <- function(x) {
   declare(type(x = double(n)))

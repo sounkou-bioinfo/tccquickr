@@ -58,28 +58,45 @@ local_binding <- tccq_local_binding(
   value@type,
   statement_index = 1L
 )
+local_step <- tccq_evaluation_step(
+  value@id,
+  statement_index = 1L,
+  effect = value@effect,
+  binding = local_binding
+)
+local_schedule <- tccq_program_schedule(
+  steps = list(local_step),
+  result = value@id,
+  values = list(value)
+)
 local_program <- tccq_program(
   "local_binding_probe",
   formals = list(),
-  local_bindings = list(answer = local_binding),
+  schedule = local_schedule,
   values = list(value),
   result = value@id
 )
 
 expect_true(S7::S7_inherits(local_binding, TccqLocalBinding))
 expect_equal(local_binding@statement_index, 1L)
-expect_identical(local_program@local_bindings$answer@type, value@type)
+expect_true(S7::S7_inherits(local_step, TccqEvaluationStep))
+expect_true(S7::S7_inherits(local_schedule, TccqProgramSchedule))
+expect_identical(local_program@schedule@steps[[1L]]@binding@type, value@type)
 
 unknown_local_value <- tryCatch(
-  tccq_program(
-    "unknown_local_value",
-    formals = list(),
-    local_bindings = list(answer = tccq_local_binding(
+  tccq_program_schedule(
+    steps = list(tccq_evaluation_step(
+      "missing_value",
+      statement_index = 1L,
+      effect = value@effect,
+      binding = tccq_local_binding(
       "answer",
       "missing_value",
       value@type,
       statement_index = 1L
+      )
     )),
+    result = "missing_value",
     values = list(value)
   ),
   error = identity
@@ -87,20 +104,137 @@ unknown_local_value <- tryCatch(
 expect_true(inherits(unknown_local_value, "error"))
 
 mismatched_local_type <- tryCatch(
-  tccq_program(
-    "mismatched_local_type",
-    formals = list(),
-    local_bindings = list(answer = tccq_local_binding(
-      "answer",
+  tccq_program_schedule(
+    steps = list(tccq_evaluation_step(
       value@id,
-      tccq_type("integer"),
-      statement_index = 1L
+      statement_index = 1L,
+      effect = value@effect,
+      binding = tccq_local_binding(
+        "answer",
+        value@id,
+        tccq_type("integer"),
+        statement_index = 1L
+      )
     )),
+    result = value@id,
     values = list(value)
   ),
   error = identity
 )
 expect_true(inherits(mismatched_local_type, "error"))
+
+noncontiguous_schedule <- tryCatch(
+  tccq_program_schedule(
+    steps = list(tccq_evaluation_step(
+      value@id,
+      statement_index = 2L,
+      effect = value@effect
+    )),
+    result = value@id,
+    values = list(value)
+  ),
+  error = identity
+)
+expect_true(inherits(noncontiguous_schedule, "error"))
+
+incomplete_schedule_effect <- tryCatch(
+  tccq_program_schedule(
+    steps = list(tccq_evaluation_step(
+      value@id,
+      statement_index = 1L,
+      effect = tccq_effect(reads = TRUE)
+    )),
+    result = value@id,
+    values = list(value)
+  ),
+  error = identity
+)
+expect_true(inherits(incomplete_schedule_effect, "error"))
+
+later_value <- tccq_value(
+  "later_value",
+  "literal",
+  type = value@type,
+  effect = tccq_effect()
+)
+later_binding <- tccq_local_binding(
+  "later",
+  later_value@id,
+  later_value@type,
+  statement_index = 2L
+)
+later_read <- tccq_binding_reference("later_read", later_binding)
+early_consumer <- tccq_value(
+  "early_consumer",
+  "+",
+  inputs = list(later_read@id, later_read@id),
+  type = value@type,
+  effect = tccq_effect(reads = TRUE)
+)
+use_before_definition <- tryCatch(
+  tccq_program_schedule(
+    steps = list(
+      tccq_evaluation_step(
+        early_consumer@id,
+        statement_index = 1L,
+        effect = early_consumer@effect,
+        uses = list(later_binding)
+      ),
+      tccq_evaluation_step(
+        later_value@id,
+        statement_index = 2L,
+        effect = later_value@effect,
+        binding = later_binding
+      )
+    ),
+    result = later_value@id,
+    values = list(early_consumer, later_read, later_value)
+  ),
+  error = identity
+)
+expect_true(inherits(use_before_definition, "error"))
+
+first_alias <- tccq_local_binding(
+  "first_alias",
+  value@id,
+  value@type,
+  statement_index = 1L
+)
+second_alias <- tccq_local_binding(
+  "second_alias",
+  value@id,
+  value@type,
+  statement_index = 2L
+)
+first_alias_read <- tccq_binding_reference("first_alias_read", first_alias)
+second_alias_read <- tccq_binding_reference("second_alias_read", second_alias)
+alias_schedule <- tccq_program_schedule(
+  steps = list(
+    tccq_evaluation_step(
+      value@id,
+      statement_index = 1L,
+      effect = value@effect,
+      binding = first_alias
+    ),
+    tccq_evaluation_step(
+      first_alias_read@id,
+      statement_index = 2L,
+      effect = first_alias_read@effect,
+      binding = second_alias,
+      uses = list(first_alias)
+    ),
+    tccq_evaluation_step(
+      second_alias_read@id,
+      statement_index = 3L,
+      effect = second_alias_read@effect,
+      uses = list(second_alias)
+    )
+  ),
+  result = second_alias_read@id,
+  values = list(value, first_alias_read, second_alias_read)
+)
+expect_true(S7::S7_inherits(alias_schedule, TccqProgramSchedule))
+expect_identical(alias_schedule@steps[[3L]]@uses[[1L]], second_alias)
 
 matrix_type <- tccq_type("double", tccq_shape(c("n", "p")))
 matrix_value <- tccq_value(

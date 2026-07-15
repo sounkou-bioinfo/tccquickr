@@ -225,6 +225,19 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         attrs = list(symbol = value@attrs$symbol, storage_value_id = current_value_id)
       ))
     }
+    if (S7::S7_inherits(value, TccqBindingReference)) {
+      return(tccq_expression(
+        id = current_value_id,
+        kind = "reference",
+        value_id = current_value_id,
+        op = "local",
+        type = value@type,
+        attrs = list(
+          binding = value@binding,
+          storage_value_id = value@binding@value_id
+        )
+      ))
+    }
     if (identical(value@op, "[")) {
       slice_offsets <- integer()
       source_value <- value
@@ -944,6 +957,12 @@ tccq_program_loop_nests <- function(program) {
       "Loop-nest planning needs the typed program storage plan."
     )))
   }
+  if (!S7::S7_inherits(program@schedule, TccqProgramSchedule)) {
+    return(failed(nest_diagnostic(
+      "loop_nest.missing_program_schedule",
+      "Loop-nest planning needs the typed program evaluation schedule."
+    )))
+  }
   storage_slots <- program@storage_plan@slots
   storage_value_ids <- vapply(storage_slots, function(slot) slot@value_id, character(1))
   if (anyDuplicated(storage_value_ids)) {
@@ -996,7 +1015,62 @@ tccq_program_loop_nests <- function(program) {
   replacements <- new.env(parent = emptyenv())
   intermediate_guards <- new.env(parent = emptyenv())
   materialization_definitions <- new.env(parent = emptyenv())
+  materialize <- function(expression, guards, definition_binding = NULL) {
+    if (any(vapply(
+      guards,
+      function(guard) expression_contains(
+        guard@condition,
+        function(candidate) identical(candidate@kind, "branch")
+      ),
+      logical(1)
+    ))) {
+      tccq_abort_diagnostic(nest_diagnostic(
+        "loop_nest.statement_control_guard",
+        "A selected-arm materialization needs its control guard normalized to a scalar value.",
+        data = list(value_id = expression@value_id)
+      ))
+    }
+    intermediates[[length(intermediates) + 1L]] <<- expression
+    intermediate_guards[[expression@value_id]] <- guards
+    if (S7::S7_inherits(definition_binding, TccqLocalBinding)) {
+      materialization_definitions[[expression@value_id]] <- definition_binding
+    }
+    replacement <- tccq_expression(
+      id = expression@value_id,
+      kind = "reference",
+      value_id = expression@value_id,
+      op = "intermediate",
+      type = expression@type,
+      attrs = list(storage_value_id = expression@value_id, intermediate = TRUE)
+    )
+    replacements[[expression@value_id]] <- replacement
+    replacement
+  }
   extract <- function(expression, is_root, guards = list(), definition_binding = NULL) {
+    replacement <- replacements[[expression@value_id]]
+    materialization_definition <- materialization_definitions[[expression@value_id]]
+    definition_owns_schedule <- S7::S7_inherits(
+      materialization_definition,
+      TccqLocalBinding
+    )
+    if (!is.null(replacement) && (!is_root || definition_owns_schedule)) {
+      if (
+        !definition_owns_schedule &&
+          !identical(intermediate_guards[[expression@value_id]], guards)
+      ) {
+        tccq_abort_diagnostic(nest_diagnostic(
+          "loop_nest.incompatible_materialization_paths",
+          "One materialized value is consumed through incompatible control paths.",
+          data = list(value_id = expression@value_id)
+        ))
+      }
+      return(replacement)
+    }
+    definition_is_expression <- S7::S7_inherits(
+      definition_binding,
+      TccqLocalBinding
+    ) && identical(definition_binding@value_id, expression@value_id)
+
     if (identical(expression@kind, "branch")) {
       expression@inputs[[1L]] <- extract(
         expression@inputs[[1L]],
@@ -1026,29 +1100,20 @@ tccq_program_loop_nests <- function(program) {
         guards = c(guards, list(alternative_guard)),
         definition_binding = definition_binding
       )
+      if (!is_root && definition_is_expression) {
+        return(materialize(expression, guards, definition_binding))
+      }
       return(expression)
     }
     if (!identical(expression@kind, "operation")) {
-      return(expression)
-    }
-    replacement <- replacements[[expression@value_id]]
-    materialization_definition <- materialization_definitions[[expression@value_id]]
-    definition_owns_schedule <- S7::S7_inherits(
-      materialization_definition,
-      TccqLocalBinding
-    )
-    if (!is.null(replacement) && (!is_root || definition_owns_schedule)) {
-      if (
-        !definition_owns_schedule &&
-          !identical(intermediate_guards[[expression@value_id]], guards)
-      ) {
-        tccq_abort_diagnostic(nest_diagnostic(
-          "loop_nest.incompatible_materialization_paths",
-          "One materialized value is consumed through incompatible control paths.",
-          data = list(value_id = expression@value_id)
-        ))
+      storage_value_id <- expression@attrs$storage_value_id %||% expression@value_id
+      already_has_source_storage <- identical(expression@kind, "reference") &&
+        expression@op %in% c("formal", "dim_symbol") &&
+        identical(storage_value_id, expression@value_id)
+      if (!is_root && definition_is_expression && !already_has_source_storage) {
+        return(materialize(expression, guards, definition_binding))
       }
-      return(replacements[[expression@value_id]])
+      return(expression)
     }
     expression@inputs <- lapply(
       expression@inputs,
@@ -1060,71 +1125,45 @@ tccq_program_loop_nests <- function(program) {
     family <- expression_family(expression)
     if (
       !is_root &&
-        !is.null(family) &&
-        family %in% c("reduction", "contraction")
+        (
+          (!is.null(family) && family %in% c("reduction", "contraction")) ||
+            definition_is_expression
+        )
     ) {
-      if (any(vapply(
-        guards,
-        function(guard) expression_contains(
-          guard@condition,
-          function(candidate) identical(candidate@kind, "branch")
-        ),
-        logical(1)
-      ))) {
-        tccq_abort_diagnostic(nest_diagnostic(
-          "loop_nest.statement_control_guard",
-          "A selected-arm materialization needs its control guard normalized to a scalar value.",
-          data = list(value_id = expression@value_id)
-        ))
-      }
-      intermediates[[length(intermediates) + 1L]] <<- expression
-      intermediate_guards[[expression@value_id]] <- guards
-      if (S7::S7_inherits(definition_binding, TccqLocalBinding)) {
-        materialization_definitions[[expression@value_id]] <- definition_binding
-      }
-      replacement <- tccq_expression(
-        id = expression@value_id,
-        kind = "reference",
-        value_id = expression@value_id,
-        op = "intermediate",
-        type = expression@type,
-        attrs = list(storage_value_id = expression@value_id, intermediate = TRUE)
-      )
-      replacements[[expression@value_id]] <- replacement
-      return(replacement)
+      return(materialize(expression, guards, definition_binding))
     }
     expression
   }
 
-  if (length(program@local_bindings) > 0L) {
-    statement_positions <- vapply(
-      program@local_bindings,
-      function(binding) binding@statement_index,
-      integer(1)
+  scheduled_steps <- program@schedule@steps
+  for (step_position in seq_along(scheduled_steps)) {
+    step <- scheduled_steps[[step_position]]
+    is_final_unbound_result <- step_position == length(scheduled_steps) &&
+      is.null(step@binding)
+    if (is_final_unbound_result) {
+      next
+    }
+    step_expression_result <- tccq_expression_tree(program, step@value_id)
+    if (!step_expression_result@success) {
+      return(tccq_result(
+        success = FALSE,
+        diagnostics = step_expression_result@diagnostics
+      ))
+    }
+    step_expression <- tryCatch(
+      extract(
+        step_expression_result@value,
+        is_root = FALSE,
+        guards = list(),
+        definition_binding = step@binding
+      ),
+      tccq_error = identity
     )
-    for (binding in program@local_bindings[order(statement_positions)]) {
-      binding_expression_result <- tccq_expression_tree(program, binding@value_id)
-      if (!binding_expression_result@success) {
-        return(tccq_result(
-          success = FALSE,
-          diagnostics = binding_expression_result@diagnostics
-        ))
-      }
-      binding_expression <- tryCatch(
-        extract(
-          binding_expression_result@value,
-          is_root = FALSE,
-          guards = list(),
-          definition_binding = binding
-        ),
-        tccq_error = identity
-      )
-      if (inherits(binding_expression, "tccq_error")) {
-        return(tccq_result(
-          success = FALSE,
-          diagnostics = list(tccq_condition_diagnostic(binding_expression))
-        ))
-      }
+    if (inherits(step_expression, "tccq_error")) {
+      return(tccq_result(
+        success = FALSE,
+        diagnostics = list(tccq_condition_diagnostic(step_expression))
+      ))
     }
   }
   root <- tryCatch(extract(root, is_root = TRUE), tccq_error = identity)
@@ -1419,12 +1458,66 @@ tccq_program_loop_nests <- function(program) {
     )
   }
 
+  map_nest <- function(expression, nest_id, guards = list()) {
+    result_shape <- expression@type@shape
+    names_by_position <- vapply(seq_len(result_shape@rank), axis_name, character(1))
+    axes <- lapply(seq_len(result_shape@rank), function(position) {
+      tccq_loop_axis(
+        names_by_position[[position]],
+        result_shape@dims[[position]],
+        role = "map"
+      )
+    })
+    domain <- tccq_domain(
+      sprintf("%s.domain", nest_id),
+      result_shape,
+      axes = names_by_position
+    )
+    guards <- annotate_loop_guards(
+      guards,
+      names_by_position,
+      domain,
+      result_shape@dims
+    )
+    body <- annotate(expression, names_by_position, domain, result_shape@dims)
+    output <- if (result_shape@rank > 0L) {
+      tccq_access(
+        expression@value_id,
+        domain,
+        kind = "identity",
+        index_map = lapply(names_by_position, function(name) {
+          tccq_index_expr(name, 0L)
+        })
+      )
+    } else {
+      NULL
+    }
+    if (expression_contains(body, function(candidate) identical(candidate@kind, "branch"))) {
+      body <- normalize_statement_body(
+        body,
+        tccq_write_target(expression@value_id, expression@type, kind = "result"),
+        domain
+      )
+    }
+    tccq_loop_nest(
+      nest_id,
+      axes = axes,
+      body = body,
+      storage = storage_for(expression@value_id),
+      output = output,
+      domain = domain,
+      guards = guards
+    )
+  }
+
   intermediate_nest <- function(expression, nest_index, guards) {
     nest_id <- sprintf("loop_nest_%04d", nest_index)
     if (identical(expression_family(expression), "contraction")) {
       contraction_nest(expression, nest_id, guards)
-    } else {
+    } else if (identical(expression_family(expression), "reduction")) {
       reduction_nest(expression, nest_id, guards)
+    } else {
+      map_nest(expression, nest_id, guards)
     }
   }
 
@@ -1608,51 +1701,13 @@ tccq_program_loop_nests <- function(program) {
   }
 
   build <- function() {
-    result_value <- program@values[[program@result]]
-
     if (identical(root_family, "reduction")) {
       return(reduction_nest(root, "loop_nest_main"))
     }
     if (identical(root_family, "contraction")) {
       return(contraction_nest(root, "loop_nest_main"))
     }
-
-    result_shape <- result_value@type@shape
-    names_by_position <- vapply(seq_len(result_shape@rank), axis_name, character(1))
-    axes <- lapply(seq_len(result_shape@rank), function(position) {
-      tccq_loop_axis(names_by_position[[position]], result_shape@dims[[position]], role = "map")
-    })
-    domain <- tccq_domain(
-      "loop_nest_main.domain",
-      result_shape,
-      axes = names_by_position
-    )
-    body <- annotate(root, names_by_position, domain, result_shape@dims)
-    output <- if (result_shape@rank > 0L) {
-      tccq_access(
-        program@result,
-        domain,
-        kind = "identity",
-        index_map = lapply(names_by_position, function(name) tccq_index_expr(name, 0L))
-      )
-    } else {
-      NULL
-    }
-    if (expression_contains(body, function(expression) identical(expression@kind, "branch"))) {
-      body <- normalize_statement_body(
-        body,
-        tccq_write_target(program@result, result_value@type, kind = "result"),
-        domain
-      )
-    }
-    tccq_loop_nest(
-      "loop_nest_main",
-      axes = axes,
-      body = body,
-      storage = storage_for(program@result),
-      output = output,
-      domain = domain
-    )
+    map_nest(root, "loop_nest_main")
   }
 
   nests <- tryCatch(

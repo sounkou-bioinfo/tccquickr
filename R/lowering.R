@@ -19,7 +19,7 @@ tccq_lower_function <- function(
 ) {
   new_plan <- function(
     values = list(),
-    local_bindings = list(),
+    schedule = NULL,
     regions = list(),
     result = NULL,
     storage_plan = NULL,
@@ -28,7 +28,7 @@ tccq_lower_function <- function(
   ) {
     TccqLoweringPlan(
       values = values,
-      local_bindings = local_bindings,
+      schedule = schedule,
       regions = regions,
       result = result,
       storage_plan = storage_plan,
@@ -59,6 +59,8 @@ tccq_lower_function <- function(
     state$formal_names <- names(bindings)
     state$symbol_value_ids <- list()
     state$local_bindings <- list()
+    state$current_local_uses <- list()
+    state$schedule_steps <- list()
     state$values <- list()
     state$value_counter <- 0L
     state$statement_index <- 0L
@@ -99,10 +101,50 @@ tccq_lower_function <- function(
 
   lower_statement <- function(expr, state) {
     state$statement_index <- state$statement_index + 1L
-    if (is.call(expr) && tccq_call_name(expr) %in% c("<-", "=") && length(expr) == 3L) {
-      return(lower_assignment(expr, state))
+    state$current_local_uses <- list()
+    result <- if (
+      is.call(expr) &&
+        tccq_call_name(expr) %in% c("<-", "=") &&
+        length(expr) == 3L
+    ) {
+      lower_assignment(expr, state)
+    } else {
+      lower_expression(expr, state)
     }
-    lower_expression(expr, state)
+    if (length(result$diagnostics) > 0L) {
+      return(result)
+    }
+
+    reachable_effects <- function(value_id, visited = character()) {
+      if (value_id %in% visited) {
+        return(list())
+      }
+      value <- state$values[[value_id]]
+      if (S7::S7_inherits(value, TccqBindingReference)) {
+        return(list(value@effect))
+      }
+      c(
+        list(value@effect),
+        unlist(lapply(
+          value@inputs,
+          reachable_effects,
+          visited = c(visited, value_id)
+        ), recursive = FALSE)
+      )
+    }
+    evaluation_effect <- Reduce(
+      tccq_effect_union,
+      reachable_effects(result$value_id),
+      init = tccq_effect()
+    )
+    state$schedule_steps[[length(state$schedule_steps) + 1L]] <- tccq_evaluation_step(
+      result$value_id,
+      state$statement_index,
+      evaluation_effect,
+      binding = result$binding %||% NULL,
+      uses = unname(state$current_local_uses)
+    )
+    result
   }
 
   lower_assignment <- function(expr, state) {
@@ -161,13 +203,21 @@ tccq_lower_function <- function(
     if (length(result$diagnostics) > 0L) {
       return(result)
     }
-    state$symbol_value_ids[[binding_name]] <- result$value_id
-    state$local_bindings[[binding_name]] <- tccq_local_binding(
+    evaluated_value <- state$values[[result$value_id]]
+    bound_value_id <- if (S7::S7_inherits(evaluated_value, TccqBindingReference)) {
+      evaluated_value@binding@value_id
+    } else {
+      result$value_id
+    }
+    binding <- tccq_local_binding(
       binding_name,
-      result$value_id,
+      bound_value_id,
       result$type,
       statement_index = state$statement_index
     )
+    state$symbol_value_ids[[binding_name]] <- bound_value_id
+    state$local_bindings[[binding_name]] <- binding
+    result$binding <- binding
     result
   }
 
@@ -330,6 +380,9 @@ tccq_lower_function <- function(
       if (is.null(value)) {
         return(list())
       }
+      if (S7::S7_inherits(value, TccqBindingReference)) {
+        return(list(value@effect))
+      }
       c(
         list(value@effect),
         unlist(lapply(
@@ -369,6 +422,17 @@ tccq_lower_function <- function(
     symbol_name <- as.character(expr)
     value_id <- state$symbol_value_ids[[symbol_name]]
     if (!is.null(value_id)) {
+      local_binding <- state$local_bindings[[symbol_name]]
+      if (S7::S7_inherits(local_binding, TccqLocalBinding)) {
+        state$current_local_uses[[symbol_name]] <- local_binding
+        reference_id <- next_value_id(state)
+        add_value(state, tccq_binding_reference(reference_id, local_binding))
+        return(list(
+          value_id = reference_id,
+          type = local_binding@type,
+          diagnostics = list()
+        ))
+      }
       value <- state$values[[value_id]]
       return(list(value_id = value_id, type = value@type, diagnostics = list()))
     }
@@ -997,14 +1061,26 @@ tccq_lower_function <- function(
     "elementwise"
   }
 
-  plan_storage <- function(values, result_id) {
+  plan_storage <- function(values, result_id, schedule_steps) {
     lowered_values <- unname(values)
     lifetimes <- storage_lifetimes(lowered_values, result_id)
+    binding_steps <- Filter(
+      function(step) S7::S7_inherits(step@binding, TccqLocalBinding),
+      schedule_steps
+    )
+    scheduled_binding_value_ids <- unique(vapply(
+      binding_steps,
+      function(step) step@binding@value_id,
+      character(1)
+    ))
     slots <- Map(function(value, slot_index) {
       role <- storage_role(value, result_id)
       operation_intermediate <- identical(role, "temporary") &&
         (value_is_reduction(value) || value_is_contraction(value))
-      materialized <- role %in% c("input", "output") || operation_intermediate
+      scheduled_binding_value <- value@id %in% scheduled_binding_value_ids
+      materialized <- role %in% c("input", "output") ||
+        operation_intermediate ||
+        scheduled_binding_value
       reusable <- identical(role, "temporary") && !isTRUE(materialized)
       lifetime <- lifetimes[[value@id]]
       tccq_storage_slot(
@@ -1157,7 +1233,12 @@ tccq_lower_function <- function(
 
   expressions <- executable_expressions(body(fn))
   if (length(expressions) == 0L) {
-    return(new_plan())
+    return(new_plan(diagnostics = list(tccq_diagnostic(
+      "lowering.missing_program_result",
+      "A declared program must contain at least one executable expression.",
+      phase = "lowering",
+      path = "program.schedule"
+    ))))
   }
 
   # The kernel model replaces a call with a registry implementation: lazy
@@ -1250,18 +1331,26 @@ tccq_lower_function <- function(
     if (length(result$diagnostics) > 0L) {
       return(new_plan(
         values = state$values,
-        local_bindings = state$local_bindings,
         diagnostics = result$diagnostics,
         attrs = list()
       ))
     }
   }
 
-  storage_plan <- plan_storage(state$values, result$value_id)
+  storage_plan <- plan_storage(
+    state$values,
+    result$value_id,
+    state$schedule_steps
+  )
   regions <- plan_regions(state$values, result$value_id)
+  schedule <- tccq_program_schedule(
+    state$schedule_steps,
+    result$value_id,
+    state$values
+  )
   new_plan(
     values = state$values,
-    local_bindings = state$local_bindings,
+    schedule = schedule,
     regions = regions,
     result = result$value_id,
     storage_plan = storage_plan,

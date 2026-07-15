@@ -15,7 +15,7 @@ values, typed `NA`, `NaN`, `Inf`, and `-Inf` their own representation.
 attributes. `TccqBranch` inherits from `TccqValue` and adds the condition,
 consequent, alternative, and originating `TccqCallSemantics` needed to preserve
 R's lazy `if` evaluation. `TccqProgram` collects formals, values, regions,
-result, diagnostics, and ordered `TccqLocalBinding` definitions.
+result, diagnostics, and one ordered `TccqProgramSchedule`.
 
 Physical layout is currently a fixed convention, not a value: every array is a
 dense, contiguous, column-major R buffer, and the shared loop-nest emitter
@@ -187,18 +187,34 @@ than infer operation behavior from names, ranks, or emitted source. This is
 not a general legality pass and it is not the place where new language
 coverage should sprawl.
 
-Top-level local assignment is modeled as a typed single-assignment definition.
-In `a <- expr`, `TccqLocalBinding` records the name, lowered value id, value type,
-and one-based executable statement position. The position is a scheduling fact,
-not printer metadata: the loop-nest planner visits local definitions in source
-order before it plans the returned expression. Non-fusible descendants such as
-reductions and contractions are therefore materialized at the definition's
-control path. A value defined before a later branch is computed once without
-that branch's guards, while a conditional definition retains its own selected
-arm guards when later consumers reuse it. Rebinding a local name, rebinding a
-formal, or mutating through a formal such as `x[i] <- value` produces a classed
-lowering diagnostic. That remains intentionally strict until mutation barriers,
-aliasing, materialization, and view semantics are represented in the middle-end.
+Top-level execution is modeled by `TccqProgramSchedule`, whose contiguous
+`TccqEvaluationStep` values account for every executable form after declarations
+are removed. Each step names its lowered value and complete reachable effect;
+an assignment step additionally owns a `TccqLocalBinding` with the local name,
+value type, value id, and the same one-based statement position. This is the
+single source of top-level evaluation order, including unbound expression
+statements. Steps also record the exact local bindings read during symbol
+resolution. This distinction is required because two lexical names may alias
+one lowered value, so value identity cannot prove local dominance. The schedule
+constructor validates value references, binding types, definition-before-use
+dominance, complete effects, and the final result before loop-nest planning.
+
+Each local read is a `TccqBindingReference` leaf. It retains the exact
+`TccqLocalBinding` and points to the bound storage value, but expression and
+effect traversal stop at the reference. Reading `s` therefore does not imply
+re-evaluating the graph that defined `s`. The evaluated expression id of an
+assignment may differ from the storage value id it binds: in `b <- a`, the step
+evaluates a reference to `a` while `b` aliases the resulting value.
+
+The loop-nest planner consumes schedule steps in order before it plans the
+returned expression. Non-fusible descendants such as reductions and
+contractions are therefore materialized at the evaluation's control path. A
+value defined before a later branch is computed once without that branch's
+guards, while a conditional definition retains its own selected-arm guards
+when later consumers reuse it. Rebinding a local name, rebinding a formal, or
+mutating through a formal such as `x[i] <- value` produces a classed lowering
+diagnostic. That remains intentionally strict until mutation barriers, aliasing,
+materialization, and view semantics are represented in the middle-end.
 
 The important constraint is that lowering failure is not frontend failure. A
 registered opaque operation can be a valid analyzed operation even when the
@@ -307,6 +323,12 @@ branching when it is vectorized; it is a select over a domain with recycling and
 missing-value rules. `switch` is a dispatch boundary until the selector type
 and case set are known. `break` and `next` are structured exits, not hidden
 `goto` strings.
+
+`TccqProgramSchedule` is deliberately linear at this stage. It establishes the
+ordered evaluation and dominance boundary needed before adding nested schedule
+blocks. A loop enters only with emitter behavior and typed header, body,
+backedge, carried definitions, and exits; recurrence does not become another
+mode hidden inside `TccqLoopNest` first.
 
 ## Regions and bridges
 

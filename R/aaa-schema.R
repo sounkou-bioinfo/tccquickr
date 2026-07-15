@@ -553,6 +553,129 @@ TccqLocalBinding <- S7::new_class(
   }
 )
 
+#' Scheduled R evaluation
+#'
+#' One step records one executable top-level form after declarations have been
+#' removed. Assignment steps carry the local binding they define; expression
+#' statements carry no binding. The effect summarizes the complete value graph
+#' evaluated by the step.
+#'
+#' @param value_id Lowered value evaluated by this step.
+#' @param statement_index One-based executable statement position.
+#' @param binding Optional local binding defined by the evaluation.
+#' @param uses Local bindings read by the evaluation.
+#' @param effect Effect of evaluating the complete step.
+#' @export
+TccqEvaluationStep <- S7::new_class(
+  "TccqEvaluationStep",
+  package = "tccquickr",
+  properties = list(
+    value_id = S7::class_character,
+    statement_index = S7::class_integer,
+    binding = S7::new_union(NULL, TccqLocalBinding),
+    uses = S7::class_list,
+    effect = TccqEffect
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@value_id) != 1L || is.na(self@value_id) || !nzchar(self@value_id)) {
+      problems <- c(problems, "@value_id must be a single non-empty string")
+    }
+    if (
+      length(self@statement_index) != 1L ||
+        is.na(self@statement_index) ||
+        self@statement_index < 1L
+    ) {
+      problems <- c(problems, "@statement_index must be one positive integer")
+    }
+    if (!is.null(self@binding)) {
+      if (!identical(self@binding@statement_index, self@statement_index)) {
+        problems <- c(problems, "@binding and step must have the same statement position")
+      }
+    }
+    uses_are_bindings <- vapply(
+      self@uses,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqLocalBinding
+    )
+    if (!all(uses_are_bindings)) {
+      problems <- c(problems, "@uses must contain only <TccqLocalBinding> values")
+    }
+    if (all(uses_are_bindings)) {
+      use_names <- vapply(self@uses, function(binding) binding@name, character(1))
+      if (anyDuplicated(use_names)) {
+        problems <- c(problems, "@uses must identify each local binding once")
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Ordered program evaluation schedule
+#'
+#' The schedule is the semantic owner of top-level R evaluation order. Its
+#' steps are contiguous after declarations are removed, and its final step
+#' produces the program result. Loop-nest planning consumes this value rather
+#' than reconstructing statement order from value ids or source text.
+#'
+#' @param steps Ordered `TccqEvaluationStep` values.
+#' @param result Result value id produced by the final step.
+#' @export
+TccqProgramSchedule <- S7::new_class(
+  "TccqProgramSchedule",
+  package = "tccquickr",
+  properties = list(
+    steps = S7::class_list,
+    result = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    steps_are_typed <- vapply(
+      self@steps,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqEvaluationStep
+    )
+    if (!all(steps_are_typed)) {
+      problems <- c(problems, "@steps must contain only <TccqEvaluationStep> values")
+    }
+    if (length(self@result) != 1L || is.na(self@result) || !nzchar(self@result)) {
+      problems <- c(problems, "@result must be a single non-empty value id")
+    }
+    if (all(steps_are_typed)) {
+      if (length(self@steps) == 0L) {
+        problems <- c(problems, "@steps must contain the result evaluation")
+      } else {
+        statement_indices <- vapply(
+          self@steps,
+          function(step) step@statement_index,
+          integer(1)
+        )
+        if (!identical(statement_indices, seq_along(self@steps))) {
+          problems <- c(problems, "@steps must have contiguous statement positions in order")
+        }
+        if (!identical(self@steps[[length(self@steps)]]@value_id, self@result)) {
+          problems <- c(problems, "the final step must produce @result")
+        }
+        bindings <- Filter(
+          function(step) S7::S7_inherits(step@binding, TccqLocalBinding),
+          self@steps
+        )
+        binding_names <- vapply(
+          bindings,
+          function(step) step@binding@name,
+          character(1)
+        )
+        if (anyDuplicated(binding_names)) {
+          problems <- c(problems, "scheduled local bindings must have unique names")
+        }
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' IR value
 #'
 #' @param id Stable value id.
@@ -580,6 +703,45 @@ TccqValue <- S7::new_class(
     }
     if (length(self@op) != 1L || is.na(self@op) || !nzchar(self@op)) {
       problems <- c(problems, "@op must be a single non-empty string")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Local binding reference
+#'
+#' A binding reference is a lexical read of an already evaluated local. It
+#' retains the exact binding identity while pointing at the binding's storage
+#' value. Expression and effect traversal stop at this node; reading a local
+#' must not re-evaluate the graph that defined it.
+#'
+#' @inheritParams TccqValue
+#' @param binding Local binding being read.
+#' @export
+TccqBindingReference <- S7::new_class(
+  "TccqBindingReference",
+  package = "tccquickr",
+  parent = TccqValue,
+  properties = list(binding = TccqLocalBinding),
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@op, "binding_reference")) {
+      problems <- c(problems, "binding references must use the `binding_reference` operation")
+    }
+    if (!identical(self@inputs, list(self@binding@value_id))) {
+      problems <- c(problems, "@inputs must identify the bound storage value")
+    }
+    if (!identical(self@type, self@binding@type)) {
+      problems <- c(problems, "@type must match the referenced binding")
+    }
+    if (
+      !isTRUE(self@effect@reads) ||
+        isTRUE(self@effect@writes) ||
+        isTRUE(self@effect@allocates) ||
+        isTRUE(self@effect@boundary) ||
+        isTRUE(self@effect@may_error)
+    ) {
+      problems <- c(problems, "binding references must be read-only effects")
     }
     if (length(problems) > 0L) problems
   }
@@ -993,7 +1155,7 @@ TccqStoragePlan <- S7::new_class(
 #' semantics from source text.
 #'
 #' @param values List of lowered IR values.
-#' @param local_bindings Ordered local value bindings.
+#' @param schedule Optional ordered program evaluation schedule.
 #' @param regions List of executable code regions.
 #' @param result Result value id, or `NULL` when no expression was lowered.
 #' @param storage_plan Optional middle-end storage plan.
@@ -1005,7 +1167,7 @@ TccqLoweringPlan <- S7::new_class(
   package = "tccquickr",
   properties = list(
     values = S7::class_list,
-    local_bindings = S7::class_list,
+    schedule = S7::new_union(NULL, TccqProgramSchedule),
     regions = S7::class_list,
     result = S7::class_any,
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
@@ -1015,12 +1177,6 @@ TccqLoweringPlan <- S7::new_class(
   validator = function(self) {
     problems <- character()
     values_are_tccq_values <- vapply(self@values, S7::S7_inherits, logical(1), class = TccqValue)
-    bindings_are_tccq_local_bindings <- vapply(
-      self@local_bindings,
-      S7::S7_inherits,
-      logical(1),
-      class = TccqLocalBinding
-    )
     regions_are_tccq_regions <- vapply(self@regions, S7::S7_inherits, logical(1), class = TccqRegion)
     diagnostics_are_tccq_diagnostics <- vapply(
       self@diagnostics,
@@ -1030,50 +1186,6 @@ TccqLoweringPlan <- S7::new_class(
     )
     if (!all(values_are_tccq_values)) {
       problems <- c(problems, "@values must contain only <TccqValue> values")
-    }
-    if (!all(bindings_are_tccq_local_bindings)) {
-      problems <- c(problems, "@local_bindings must contain only <TccqLocalBinding> values")
-    }
-    if (all(bindings_are_tccq_local_bindings) && all(values_are_tccq_values)) {
-      value_ids <- vapply(self@values, function(value) value@id, character(1))
-      binding_names <- vapply(self@local_bindings, function(binding) binding@name, character(1))
-      binding_value_ids <- vapply(
-        self@local_bindings,
-        function(binding) binding@value_id,
-        character(1)
-      )
-      statement_indices <- vapply(
-        self@local_bindings,
-        function(binding) binding@statement_index,
-        integer(1)
-      )
-      if (anyDuplicated(binding_names)) {
-        problems <- c(problems, "@local_bindings must have unique names")
-      }
-      if (anyDuplicated(statement_indices)) {
-        problems <- c(problems, "@local_bindings must have unique statement positions")
-      }
-      if (!identical(statement_indices, sort(statement_indices))) {
-        problems <- c(problems, "@local_bindings must be ordered by statement position")
-      }
-      if (length(setdiff(binding_value_ids, value_ids)) > 0L) {
-        problems <- c(problems, "@local_bindings must reference values in @values")
-      }
-      referenced_positions <- match(binding_value_ids, value_ids)
-      known_references <- !is.na(referenced_positions)
-      binding_types_match <- vapply(
-        seq_along(self@local_bindings)[known_references],
-        function(position) {
-          identical(
-            self@local_bindings[[position]]@type,
-            self@values[[referenced_positions[[position]]]]@type
-          )
-        },
-        logical(1)
-      )
-      if (!all(binding_types_match)) {
-        problems <- c(problems, "@local_bindings types must match their referenced values")
-      }
     }
     if (!all(regions_are_tccq_regions)) {
       problems <- c(problems, "@regions must contain only <TccqRegion> values")
@@ -1086,6 +1198,9 @@ TccqLoweringPlan <- S7::new_class(
     if (!all(diagnostics_are_tccq_diagnostics)) {
       problems <- c(problems, "@diagnostics must contain only <TccqDiagnostic> values")
     }
+    if (!is.null(self@schedule) && !identical(self@schedule@result, self@result)) {
+      problems <- c(problems, "@schedule and @result must identify the same value")
+    }
     if (length(problems) > 0L) problems
   }
 )
@@ -1094,7 +1209,7 @@ TccqLoweringPlan <- S7::new_class(
 #'
 #' @param name Program name.
 #' @param formals Named list of formal bindings.
-#' @param local_bindings Ordered local value bindings.
+#' @param schedule Optional ordered program evaluation schedule.
 #' @param values List of IR values.
 #' @param regions List of executable code regions.
 #' @param result Result value id or object.
@@ -1109,7 +1224,7 @@ TccqProgram <- S7::new_class(
   properties = list(
     name = S7::class_character,
     formals = S7::class_list,
-    local_bindings = S7::class_list,
+    schedule = S7::new_union(NULL, TccqProgramSchedule),
     values = S7::class_list,
     regions = S7::class_list,
     result = S7::class_any,
@@ -1124,12 +1239,6 @@ TccqProgram <- S7::new_class(
       problems <- c(problems, "@name must be a single non-empty string")
     }
     formals_are_tccq_bindings <- vapply(self@formals, S7::S7_inherits, logical(1), class = TccqBinding)
-    locals_are_tccq_local_bindings <- vapply(
-      self@local_bindings,
-      S7::S7_inherits,
-      logical(1),
-      class = TccqLocalBinding
-    )
     values_are_tccq_values <- vapply(self@values, S7::S7_inherits, logical(1), class = TccqValue)
     regions_are_tccq_regions <- vapply(self@regions, S7::S7_inherits, logical(1), class = TccqRegion)
     diagnostics_are_tccq_diagnostics <- vapply(
@@ -1141,50 +1250,6 @@ TccqProgram <- S7::new_class(
     if (!all(formals_are_tccq_bindings)) {
       problems <- c(problems, "@formals must contain only <TccqBinding> values")
     }
-    if (!all(locals_are_tccq_local_bindings)) {
-      problems <- c(problems, "@local_bindings must contain only <TccqLocalBinding> values")
-    }
-    if (all(locals_are_tccq_local_bindings) && all(values_are_tccq_values)) {
-      value_ids <- vapply(self@values, function(value) value@id, character(1))
-      local_names <- vapply(self@local_bindings, function(binding) binding@name, character(1))
-      local_value_ids <- vapply(
-        self@local_bindings,
-        function(binding) binding@value_id,
-        character(1)
-      )
-      statement_indices <- vapply(
-        self@local_bindings,
-        function(binding) binding@statement_index,
-        integer(1)
-      )
-      if (anyDuplicated(local_names)) {
-        problems <- c(problems, "@local_bindings must have unique names")
-      }
-      if (anyDuplicated(statement_indices)) {
-        problems <- c(problems, "@local_bindings must have unique statement positions")
-      }
-      if (!identical(statement_indices, sort(statement_indices))) {
-        problems <- c(problems, "@local_bindings must be ordered by statement position")
-      }
-      if (length(setdiff(local_value_ids, value_ids)) > 0L) {
-        problems <- c(problems, "@local_bindings must reference values in @values")
-      }
-      referenced_positions <- match(local_value_ids, value_ids)
-      known_references <- !is.na(referenced_positions)
-      local_types_match <- vapply(
-        seq_along(self@local_bindings)[known_references],
-        function(position) {
-          identical(
-            self@local_bindings[[position]]@type,
-            self@values[[referenced_positions[[position]]]]@type
-          )
-        },
-        logical(1)
-      )
-      if (!all(local_types_match)) {
-        problems <- c(problems, "@local_bindings types must match their referenced values")
-      }
-    }
     if (!all(values_are_tccq_values)) {
       problems <- c(problems, "@values must contain only <TccqValue> values")
     }
@@ -1193,6 +1258,9 @@ TccqProgram <- S7::new_class(
     }
     if (!all(diagnostics_are_tccq_diagnostics)) {
       problems <- c(problems, "@diagnostics must contain only <TccqDiagnostic> values")
+    }
+    if (!is.null(self@schedule) && !identical(self@schedule@result, self@result)) {
+      problems <- c(problems, "@schedule and @result must identify the same value")
     }
     if (length(problems) > 0L) problems
   }
@@ -1575,6 +1643,220 @@ tccq_local_binding <- function(
   )
 }
 
+#' Construct a scheduled R evaluation
+#'
+#' @inheritParams TccqEvaluationStep
+#' @export
+tccq_evaluation_step <- function(
+  value_id,
+  statement_index,
+  effect,
+  binding = NULL,
+  uses = list()
+) {
+  .tccq_check_character_scalar(value_id, "value_id")
+  statement_index <- .tccq_check_positive_integer(statement_index, "statement_index")
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
+  .tccq_check_optional_s7(binding, TccqLocalBinding, "TccqLocalBinding", "binding")
+  .tccq_check_list_of(uses, TccqLocalBinding, "TccqLocalBinding", "uses")
+  TccqEvaluationStep(
+    value_id = value_id,
+    statement_index = statement_index,
+    binding = binding,
+    uses = uses,
+    effect = effect
+  )
+}
+
+#' Construct an ordered program evaluation schedule
+#'
+#' `values` is the lowered value graph used to verify references, binding
+#' types, dominance, and complete step effects. It is checked at this boundary
+#' but is not duplicated inside the schedule.
+#'
+#' @inheritParams TccqProgramSchedule
+#' @param values Lowered values referenced by the schedule.
+#' @export
+tccq_program_schedule <- function(steps, result, values) {
+  .tccq_check_list_of(
+    steps,
+    TccqEvaluationStep,
+    "TccqEvaluationStep",
+    "steps"
+  )
+  .tccq_check_character_scalar(result, "result")
+  .tccq_check_list_of(values, TccqValue, "TccqValue", "values")
+
+  value_ids <- vapply(values, function(value) value@id, character(1))
+  if (anyDuplicated(value_ids)) {
+    tccq_abort(
+      "schema.duplicate_schedule_value",
+      "`values` must have unique value ids when constructing a schedule.",
+      phase = "schema",
+      path = "program_schedule.values"
+    )
+  }
+  values_by_id <- values
+  names(values_by_id) <- value_ids
+
+  reachable_value_ids <- function(value_id, visited = character()) {
+    if (value_id %in% visited) {
+      return(character())
+    }
+    value <- values_by_id[[value_id]]
+    if (is.null(value)) {
+      tccq_abort(
+        "schema.unknown_schedule_value",
+        "A scheduled evaluation references a value outside the lowered graph.",
+        phase = "schema",
+        path = "program_schedule.values",
+        data = list(value_id = value_id)
+      )
+    }
+    if (S7::S7_inherits(value, TccqBindingReference)) {
+      return(value_id)
+    }
+    input_ids <- vapply(value@inputs, as.character, character(1))
+    c(
+      value_id,
+      unlist(lapply(
+        input_ids,
+        reachable_value_ids,
+        visited = c(visited, value_id)
+      ), use.names = FALSE)
+    )
+  }
+
+  binding_steps <- Filter(
+    function(step) S7::S7_inherits(step@binding, TccqLocalBinding),
+    steps
+  )
+  scheduled_bindings <- lapply(binding_steps, function(step) step@binding)
+  names(scheduled_bindings) <- vapply(
+    binding_steps,
+    function(step) step@binding@name,
+    character(1)
+  )
+
+  for (step in steps) {
+    reachable_ids <- unique(reachable_value_ids(step@value_id))
+    reference_bindings <- lapply(
+      Filter(
+        function(value_id) S7::S7_inherits(
+          values_by_id[[value_id]],
+          TccqBindingReference
+        ),
+        reachable_ids
+      ),
+      function(value_id) values_by_id[[value_id]]@binding
+    )
+    reference_bindings <- reference_bindings[!duplicated(vapply(
+      reference_bindings,
+      function(binding) binding@name,
+      character(1)
+    ))]
+    reference_names <- vapply(
+      reference_bindings,
+      function(binding) binding@name,
+      character(1)
+    )
+    recorded_names <- vapply(
+      step@uses,
+      function(binding) binding@name,
+      character(1)
+    )
+    use_sets_match <- setequal(reference_names, recorded_names) && all(vapply(
+      reference_names,
+      function(binding_name) {
+        identical(
+          reference_bindings[[match(binding_name, reference_names)]],
+          step@uses[[match(binding_name, recorded_names)]]
+        )
+      },
+      logical(1)
+    ))
+    if (!use_sets_match) {
+      tccq_abort(
+        "schema.schedule_binding_uses_mismatch",
+        "A schedule step must record exactly the local binding references in its value graph.",
+        phase = "schema",
+        path = "program_schedule.uses",
+        data = list(statement_index = step@statement_index, value_id = step@value_id)
+      )
+    }
+    reachable_effect <- Reduce(
+      tccq_effect_union,
+      lapply(reachable_ids, function(value_id) values_by_id[[value_id]]@effect),
+      init = tccq_effect()
+    )
+    if (!identical(step@effect, reachable_effect)) {
+      tccq_abort(
+        "schema.incomplete_schedule_effect",
+        "A schedule step effect must summarize its complete reachable value graph.",
+        phase = "schema",
+        path = "program_schedule.effect",
+        data = list(statement_index = step@statement_index, value_id = step@value_id)
+      )
+    }
+    for (used_binding in step@uses) {
+      scheduled_binding <- scheduled_bindings[[used_binding@name]]
+      if (is.null(scheduled_binding) || !identical(scheduled_binding, used_binding)) {
+        tccq_abort(
+          "schema.unknown_schedule_binding",
+          "A schedule step must use the exact local binding defined by this schedule.",
+          phase = "schema",
+          path = "program_schedule.dominance",
+          data = list(
+            statement_index = step@statement_index,
+            binding = used_binding@name
+          )
+        )
+      }
+      if (used_binding@statement_index >= step@statement_index) {
+        tccq_abort(
+          "schema.schedule_use_before_definition",
+          "Every local binding used by a schedule step must already be defined.",
+          phase = "schema",
+          path = "program_schedule.dominance",
+          data = list(
+            statement_index = step@statement_index,
+            binding = used_binding@name
+          )
+        )
+      }
+    }
+    if (
+      S7::S7_inherits(step@binding, TccqLocalBinding) &&
+        is.null(values_by_id[[step@binding@value_id]])
+    ) {
+      tccq_abort(
+        "schema.unknown_schedule_binding_value",
+        "A scheduled local binding must reference a value in the lowered graph.",
+        phase = "schema",
+        path = "program_schedule.binding",
+        data = list(binding = step@binding@name, value_id = step@binding@value_id)
+      )
+    }
+    if (
+      S7::S7_inherits(step@binding, TccqLocalBinding) &&
+        (
+          !identical(step@binding@type, values_by_id[[step@value_id]]@type) ||
+            !identical(step@binding@type, values_by_id[[step@binding@value_id]]@type)
+        )
+    ) {
+      tccq_abort(
+        "schema.schedule_binding_type_mismatch",
+        "A scheduled local binding must have the type of its lowered value.",
+        phase = "schema",
+        path = "program_schedule.binding",
+        data = list(binding = step@binding@name, value_id = step@value_id)
+      )
+    }
+  }
+
+  TccqProgramSchedule(steps = steps, result = result)
+}
+
 #' Construct an IR value
 #'
 #' @param id Stable value id.
@@ -1610,6 +1892,25 @@ tccq_value <- function(
     type = type,
     effect = effect,
     attrs = attrs
+  )
+}
+
+#' Construct a local binding reference
+#'
+#' @param id Stable reference value id.
+#' @param binding Local binding being read.
+#' @export
+tccq_binding_reference <- function(id, binding) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(binding, TccqLocalBinding, "TccqLocalBinding", "binding")
+  TccqBindingReference(
+    id = id,
+    op = "binding_reference",
+    inputs = list(binding@value_id),
+    type = binding@type,
+    effect = tccq_effect(reads = TRUE),
+    attrs = list(),
+    binding = binding
   )
 }
 
@@ -1983,7 +2284,7 @@ tccq_storage_plan <- function(slots = list(), reuse_groups = list(), attrs = lis
 #'
 #' @param name Program name.
 #' @param formals Named list of formal bindings.
-#' @param local_bindings Ordered local value bindings.
+#' @param schedule Optional ordered program evaluation schedule.
 #' @param values List of IR values.
 #' @param regions List of executable code regions.
 #' @param result Result value id or object.
@@ -1995,7 +2296,7 @@ tccq_storage_plan <- function(slots = list(), reuse_groups = list(), attrs = lis
 tccq_program <- function(
   name,
   formals,
-  local_bindings = list(),
+  schedule = NULL,
   values = list(),
   regions = list(),
   result = NULL,
@@ -2006,13 +2307,16 @@ tccq_program <- function(
 ) {
   .tccq_check_character_scalar(name, "name")
   .tccq_check_list_of(formals, TccqBinding, "TccqBinding", "formals")
-  .tccq_check_list_of(
-    local_bindings,
-    TccqLocalBinding,
-    "TccqLocalBinding",
-    "local_bindings"
-  )
   .tccq_check_list_of(values, TccqValue, "TccqValue", "values")
+  .tccq_check_optional_s7(
+    schedule,
+    TccqProgramSchedule,
+    "TccqProgramSchedule",
+    "schedule"
+  )
+  if (!is.null(schedule)) {
+    schedule <- tccq_program_schedule(schedule@steps, schedule@result, values)
+  }
   .tccq_check_list_of(regions, TccqRegion, "TccqRegion", "regions")
   .tccq_check_list_of(diagnostics, TccqDiagnostic, "TccqDiagnostic", "diagnostics")
   .tccq_check_optional_s7(call_index, TccqCallIndex, "TccqCallIndex", "call_index")
@@ -2021,7 +2325,7 @@ tccq_program <- function(
   TccqProgram(
     name = name,
     formals = formals,
-    local_bindings = local_bindings,
+    schedule = schedule,
     values = values,
     regions = regions,
     result = result,
