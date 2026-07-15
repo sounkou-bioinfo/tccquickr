@@ -23,7 +23,8 @@ TccqLoopNest(
 
 \item{axes}{Ordered \code{TccqLoopAxis} values, outermost first.}
 
-\item{body}{Body expression with access-carrying references.}
+\item{body}{Body expression or typed statement block with access-carrying
+references.}
 
 \item{result_type}{Result type of the loop nest.}
 
@@ -39,9 +40,10 @@ TccqLoopNest(
 \code{TccqLoopNest} is the single backend-neutral iteration plan consumed by
 source printers, in the spirit of the SAC with-loop. One loop nest carries
 ordered typed axes (\code{map} axes produce output positions, \code{reduce} axes fold
-into an accumulator), a body expression whose references carry typed affine
-accesses, an optional reducer with its identity, and an output access.
-Elementwise maps, full and per-axis reductions, contractions, and stencils
-are all instances of this one value; printers must not reintroduce
-per-family loop shapes.
+into an accumulator), a value expression or typed statement block whose
+references carry typed affine accesses, an optional reducer with its
+identity, and an output access. Elementwise maps, full and per-axis
+reductions, contractions, stencils, and control-valued results are all
+instances of this one value; printers must not reintroduce per-family loop
+shapes or backend-local control trees.
 }

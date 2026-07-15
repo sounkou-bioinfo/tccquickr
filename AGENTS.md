@@ -194,12 +194,16 @@ For the reset core, keep these rules explicit:
   originating `TccqCallSemantics`, and therefore preserves that R `if` forces
   the condition and exactly one arm. The current accepted form has a scalar
   logical condition, an explicit `else`, identical pure arm types, and is the
-  result expression of one loop nest. A missing condition remains a possible
+  result of one loop nest. A missing condition remains a possible
   runtime error; native call boundaries must reject it rather than coerce it.
-  Pure branches may nest in either result arm and source emitters recurse over
-  the same typed value. A branch used as another branch's condition and
-  branch-local reductions must deepen temporary/region planning rather than
-  evaluate control eagerly or use a target ternary shortcut.
+  Pure branches may nest in either result arm or directly as another branch's
+  condition. Loop-nest lowering turns value-producing control into
+  `TccqBlock`, `TccqAssignment`, and `TccqConditional` values over typed
+  `TccqWriteTarget` destinations. A computed condition is written to a typed
+  scalar local before the consuming conditional. Branch-local reductions and
+  control nested inside an ordinary operation must deepen scheduling or
+  expression normalization rather than evaluate control eagerly or use a
+  target ternary shortcut.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.
@@ -263,24 +267,26 @@ For the reset core, keep these rules explicit:
   `buffer -> SEXP`, or R call-evaluation boundaries inside emitted strings.
 - Backend planning must also make generated callable shape explicit through
   `TccqBackendFunctionInterface`, including ordered parameter `TccqType` values
-  and the result `TccqType`. Do not make C, Rtinycc, Fortran, or later source
-  printers independently infer scalar/map/reduction/axis-reduction shape,
-  generated parameter mapping, semantic types, ABI, result placement,
-  generated result names, iteration domain, per-axis input extent parameters,
-  total input element-count parameter, per-axis result extent parameters,
-  result-count parameter, index variable, or reduction accumulator names.
+  and the result `TccqType`, plus generated names and types for neutral scalar
+  locals. Do not make C, Rtinycc, Fortran, or later source printers independently
+  infer scalar/map/reduction/axis-reduction shape, generated parameter or local
+  mapping, semantic types, ABI, result placement, generated result names,
+  iteration domain, per-axis input extent parameters, total input element-count
+  parameter, per-axis result extent parameters, result-count parameter, index
+  variable, or reduction accumulator names.
 - Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
   the SAC-style with-loop, planned as an ordered sequence (intermediate nests
   first, result nest last). Each nest carries ordered `TccqLoopAxis` values
   (`map` produces output positions, `reduce` folds into an accumulator), a
-  body whose references carry typed `TccqAccess`/`TccqIndexExpr` affine access
-  maps, an optional reducer with identity, and an output access; intermediate
-  nests name the scalar their accumulator materializes. Scalar programs, maps,
-  full and per-axis reductions, `%*%` contractions, interior stencils, and
-  scalar-intermediate compositions are sequences of this one value. Do not
-  reintroduce per-family printer cases, linear element-count ABIs, or
-  string-built index arithmetic; new iteration behavior must extend the loop
-  nest, its typed accesses, and the nest sequence.
+  value-expression or typed-statement-block body whose references carry typed
+  `TccqAccess`/`TccqIndexExpr` affine access maps, an optional reducer with
+  identity, and an output access; intermediate nests name the scalar their
+  accumulator materializes. Scalar programs, maps, full and per-axis
+  reductions, `%*%` contractions, interior stencils, control-valued results,
+  and scalar-intermediate compositions are sequences of this one value. Do not
+  reintroduce per-family printer cases, linear element-count ABIs, string-built
+  index arithmetic, or backend-local control trees; new iteration behavior must
+  extend the loop nest, its typed accesses and statements, and the nest sequence.
 - The generated ABI passes one `int` extent parameter per symbolic dimension
   plus a result element-count parameter for non-scalar results. Boundary
   wrappers and JIT callables bind each extent symbol from the first argument
@@ -329,9 +335,10 @@ For the reset core, keep these rules explicit:
   `TccqStorageLifetime`, storage compatibility, aliasing, materialization,
   layout, and memory space. Do not group temporaries by role alone or hide
   reuse assumptions in source printers.
-- Source printers consume `TccqExpression` trees built from lowered programs.
-  Do not make C, Fortran, TinyCC, CUDA, or graph printers rediscover expression
-  semantics by walking raw values and switching on operation strings.
+- Source printers consume `TccqExpression` trees and `TccqBlock` statement
+  bodies built from lowered programs. Do not make C, Fortran, TinyCC, CUDA, or
+  graph printers rediscover expression or control semantics by walking raw
+  values and switching on operation strings.
 - Operation-specific target spelling belongs to typed implementations through
   `tccq_op_render()` and `TccqOpRenderContext`, not backend-local `if`/`switch`
   ladders over operation names.

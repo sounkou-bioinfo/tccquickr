@@ -17,16 +17,18 @@ that are not yet modeled rather than from target-specific source shortcuts.
 The first control value is now real rather than a syntax exception. A pure R
 `if` becomes `TccqBranch`, retains its special-form forcing semantics, joins
 identically typed arms, and reaches C, TinyCC, and Fortran as a conditional
-statement over a typed logical ABI parameter. The current loop-nest planner
-accepts that branch as its result expression and recursively emits pure branches
-nested in either result arm. Branch-valued conditions and branch-local
-reductions stop with structured loop-nest diagnostics until typed temporary and
-branch-local scheduling exist.
+statement over a typed logical ABI parameter. The loop-nest planner converts
+value-producing control into a neutral `TccqBlock` of typed assignments and
+conditionals while retaining neutral expressions inside those statements. Pure
+branches may occur in either result arm or directly as another branch's
+condition; the latter is assigned to an interface-owned typed scalar local
+before the outer branch. Branch-local reductions and control nested inside an
+ordinary operation stop with structured diagnostics until branch-local
+scheduling and expression normalization exist.
 
-The remaining north-star pressure is statement-valued control and evaluator
-structure. Viterbi and smaller probes around `switch`, loops, `repeat`,
-`break`, `next`, replacement calls, dispatch, promises, side effects, and
-interruption should fail with structured diagnostics until the compiler has
-typed facts for those concepts. The goal is not to accept more R by fallback;
-it is to make each new accepted program deepen the shared representation
-consumed by every backend.
+The remaining north-star pressure is loop and evaluator structure. Viterbi and
+smaller probes around `switch`, loops, `repeat`, `break`, `next`, replacement
+calls, dispatch, promises, side effects, and interruption should fail with
+structured diagnostics until the compiler has typed facts for those concepts.
+The goal is not to accept more R by fallback; it is to make each new accepted
+program deepen the shared representation consumed by every backend.

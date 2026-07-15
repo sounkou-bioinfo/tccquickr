@@ -125,6 +125,100 @@ expect_true(S7::S7_inherits(branch_value, TccqValue))
 expect_equal(branch_expression@kind, "branch")
 expect_equal(branch_expression@branch@semantics@forcing_policy, "special")
 
+result_target <- tccq_write_target("value_0003", finite@type, kind = "result")
+consequent_assignment <- tccq_assignment(
+  "statement_consequent",
+  result_target,
+  reference_expression
+)
+alternative_assignment <- tccq_assignment(
+  "statement_alternative",
+  result_target,
+  literal_expression
+)
+conditional_statement <- tccq_conditional(
+  "statement_if",
+  condition_expression,
+  tccq_block("block_consequent", statements = list(consequent_assignment)),
+  tccq_block("block_alternative", statements = list(alternative_assignment)),
+  branch_value
+)
+statement_block <- tccq_block(
+  "block_if",
+  statements = list(conditional_statement),
+  effect = branch_value@effect
+)
+
+expect_true(S7::S7_inherits(result_target, TccqWriteTarget))
+expect_true(S7::S7_inherits(consequent_assignment, TccqStatement))
+expect_true(S7::S7_inherits(consequent_assignment, TccqAssignment))
+expect_true(S7::S7_inherits(conditional_statement, TccqConditional))
+expect_true(S7::S7_inherits(statement_block, TccqBlock))
+
+statement_nest <- tccq_loop_nest(
+  "loop_nest_statement",
+  axes = list(),
+  body = statement_block,
+  result_type = finite@type
+)
+statement_products <- tccq_backend_products(
+  body = statement_block,
+  loop_nest = statement_nest,
+  loop_nests = list(statement_nest)
+)
+statement_interface <- tccq_backend_function_interface(
+  symbol = "statement_kernel",
+  source_language = "c",
+  kind = "scalar",
+  local_names = "local_0001",
+  local_value_ids = "formal_flag",
+  local_types = list(logical_scalar),
+  result_value_id = "value_0003",
+  result_type = finite@type,
+  result_name = "result_0001"
+)
+
+expect_true(S7::S7_inherits(statement_products@body, TccqBlock))
+expect_equal(statement_interface@local_types[[1L]]@base, "logical")
+
+bad_local_target <- tryCatch(
+  tccq_write_target("matrix_local", matrix_type, kind = "local"),
+  error = identity
+)
+expect_true(inherits(bad_local_target, "error"))
+
+bad_statement_products <- tryCatch(
+  tccq_backend_products(body = reference_expression, loop_nest = statement_nest),
+  error = identity
+)
+expect_true(inherits(bad_statement_products, "error"))
+
+bad_statement_interface <- tryCatch(
+  tccq_backend_function_interface(
+    symbol = "bad_statement_kernel",
+    source_language = "c",
+    kind = "scalar",
+    local_names = "local_0001",
+    local_value_ids = character(),
+    local_types = list(logical_scalar),
+    result_value_id = "value_0003",
+    result_type = finite@type,
+    result_name = "result_0001"
+  ),
+  error = identity
+)
+expect_true(inherits(bad_statement_interface, "error"))
+
+bad_assignment <- tryCatch(
+  tccq_assignment(
+    "statement_bad_type",
+    tccq_write_target("logical_local", logical_scalar),
+    literal_expression
+  ),
+  error = identity
+)
+expect_true(inherits(bad_assignment, "error"))
+
 bad_expression <- tryCatch(
   tccq_expression(
     "bad_expression",

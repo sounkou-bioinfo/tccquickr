@@ -191,11 +191,15 @@ axis facts rather than target-source conventions.
 retains the special forcing facts from `TccqCallSemantics`; C and
 Fortran emit conditional statements, so the unselected arm is not
 evaluated, and native call boundaries reject a missing condition as R
-does. The current loop-nest planner accepts a branch as the result
-expression and permits pure branches to nest in either result arm. A
-branch used as another branch’s condition and reductions or contractions
-inside an arm stop with loop-nest diagnostics until typed temporaries
-and branch-local nests exist.
+does. Loop-nest lowering represents control as a typed `TccqBlock`
+containing `TccqConditional` and `TccqAssignment` values; arithmetic in
+each assignment remains a neutral `TccqExpression`. Pure branches may
+nest in result arms or directly as another branch’s condition. The
+latter materializes a typed scalar local before the outer conditional,
+and the shared function interface assigns its generated name and type.
+Reductions or contractions inside an arm, and control embedded inside an
+ordinary operation, still stop with loop-nest diagnostics until
+branch-local scheduling and general expression normalization exist.
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. Locals are single-assignment bindings.
@@ -293,6 +297,10 @@ probes <- list(
     declare(type(x = double(n), primary = logical(), secondary = logical()))
     if (primary) if (secondary) x else -x else x
   },
+  computed_condition_map = function(x, primary, secondary) {
+    declare(type(x = double(n), primary = logical(), secondary = logical()))
+    if (if (primary) secondary else primary) x else -x
+  },
   control_flow_probe = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
     out <- 0
@@ -381,24 +389,26 @@ knitr::kable(data.frame(
 | raw_buffer_roundtrip   | `backend.unsupported_type`                  |
 | conditional_map        | compiles through C, Fortran, and TinyCC JIT |
 | nested_conditional_map | compiles through C, Fortran, and TinyCC JIT |
+| computed_condition_map | compiles through C, Fortran, and TinyCC JIT |
 | control_flow_probe     | `frontend.unimplemented_call`               |
 | apply_reduce_probe     | `frontend.unimplemented_call`               |
 | logistic_gradient      | compiles through C, Fortran, and TinyCC JIT |
 | viterbi_decode         | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
-same typed IR — statement-valued control and recurrences for Viterbi,
-general indexing and access regions, `raw`/`buffer` bridges, and
-apply-family folds. Failures must stay specific enough that the next
-typed concept to add is obvious.
+same typed IR — loop regions and recurrences for Viterbi, general
+indexing and access regions, `raw`/`buffer` bridges, and apply-family
+folds. Failures must stay specific enough that the next typed concept to
+add is obvious.
 
 ## Design
 
 The compiler core is typed all the way down: S7 schemas for values,
 shapes, effects, regions, and plans; `s7contract` interfaces between
-phases; classed diagnostics instead of error strings; and one
-`TccqLoopNest` iteration abstraction consumed by every source backend.
-The full phase-by-phase story — call semantics, operation registries,
-lowering, loop nests, bridges, backend planning, fusion — lives in
+phases; classed diagnostics instead of error strings; neutral expression
+and statement values; and one `TccqLoopNest` iteration abstraction
+consumed by every source backend. The full phase-by-phase story — call
+semantics, operation registries, lowering, loop nests, bridges, backend
+planning, fusion — lives in
 [docs/architecture.md](docs/architecture.md), with the root direction in
 [docs/root.md](docs/root.md) and repo rules in [AGENTS.md](AGENTS.md).

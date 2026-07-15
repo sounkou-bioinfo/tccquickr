@@ -384,21 +384,255 @@ tccq_expression_tree <- function(program, value_id = program@result) {
   tccq_result(success = TRUE, value = expression)
 }
 
+TCCQ_WRITE_TARGET_KINDS <- c("local", "result")
+
+#' Neutral write target
+#'
+#' A write target names a typed value destination without spelling it in C,
+#' Fortran, or another target language. Result targets are resolved through a
+#' loop nest's output plan; scalar local targets are mapped to generated names
+#' by [TccqBackendFunctionInterface].
+#'
+#' @param value_id Stable value id written by the target.
+#' @param type Semantic value type.
+#' @param kind Target kind: `local` or `result`.
+#' @export
+TccqWriteTarget <- S7::new_class(
+  "TccqWriteTarget",
+  package = "tccquickr",
+  properties = list(
+    value_id = S7::class_character,
+    type = TccqType,
+    kind = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@value_id) != 1L || is.na(self@value_id) || !nzchar(self@value_id)) {
+      problems <- c(problems, "@value_id must be a single non-empty string")
+    }
+    if (length(self@kind) != 1L || is.na(self@kind) || !self@kind %in% TCCQ_WRITE_TARGET_KINDS) {
+      problems <- c(problems, "@kind must be one supported write-target kind")
+    }
+    if (identical(self@kind, "local") && self@type@shape@rank != 0L) {
+      problems <- c(problems, "local write targets currently require scalar types")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Neutral statement
+#'
+#' Base class for typed statements consumed by source backends. Concrete
+#' statement classes own their operands and control structure.
+#'
+#' @param id Stable statement id.
+#' @param effect Effect summary of evaluating the statement.
+#' @export
+TccqStatement <- S7::new_class(
+  "TccqStatement",
+  package = "tccquickr",
+  properties = list(
+    id = S7::class_character,
+    effect = TccqEffect
+  ),
+  validator = function(self) {
+    if (length(self@id) != 1L || is.na(self@id) || !nzchar(self@id)) {
+      "@id must be a single non-empty string"
+    }
+  }
+)
+
+#' Neutral statement block
+#'
+#' A block owns ordered local declarations and ordered typed statements. Its
+#' nesting is semantic: locals and statements inside one branch arm are not
+#' evaluated from another arm.
+#'
+#' @param id Stable block id.
+#' @param locals Ordered scalar local write targets declared by the block.
+#' @param statements Ordered `TccqStatement` values.
+#' @param effect Effect summary of evaluating the block.
+#' @export
+TccqBlock <- S7::new_class(
+  "TccqBlock",
+  package = "tccquickr",
+  properties = list(
+    id = S7::class_character,
+    locals = S7::class_list,
+    statements = S7::class_list,
+    effect = TccqEffect
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@id) != 1L || is.na(self@id) || !nzchar(self@id)) {
+      problems <- c(problems, "@id must be a single non-empty string")
+    }
+    locals_are_targets <- vapply(
+      self@locals,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqWriteTarget
+    )
+    if (!all(locals_are_targets)) {
+      problems <- c(problems, "@locals must contain only <TccqWriteTarget> values")
+    }
+    if (all(locals_are_targets)) {
+      local_kinds <- vapply(self@locals, function(local) local@kind, character(1))
+      local_value_ids <- vapply(self@locals, function(local) local@value_id, character(1))
+      if (any(local_kinds != "local")) {
+        problems <- c(problems, "@locals must contain only local write targets")
+      }
+      if (anyDuplicated(local_value_ids)) {
+        problems <- c(problems, "@locals must have unique value ids")
+      }
+    }
+    statements_are_typed <- vapply(
+      self@statements,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqStatement
+    )
+    if (!all(statements_are_typed)) {
+      problems <- c(problems, "@statements must contain only <TccqStatement> values")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Neutral assignment statement
+#'
+#' @inheritParams TccqStatement
+#' @param target Typed destination.
+#' @param value Backend-neutral value expression.
+#' @export
+TccqAssignment <- S7::new_class(
+  "TccqAssignment",
+  package = "tccquickr",
+  parent = TccqStatement,
+  properties = list(
+    target = TccqWriteTarget,
+    value = TccqExpression
+  ),
+  validator = function(self) {
+    if (!identical(self@target@type, self@value@type)) {
+      "@target and @value must have identical semantic types"
+    }
+  }
+)
+
+#' Neutral conditional statement
+#'
+#' @inheritParams TccqStatement
+#' @param condition Scalar logical condition expression.
+#' @param consequent Block evaluated when the condition is true.
+#' @param alternative Block evaluated when the condition is false.
+#' @param branch Source branch payload retaining R special-form semantics.
+#' @export
+TccqConditional <- S7::new_class(
+  "TccqConditional",
+  package = "tccquickr",
+  parent = TccqStatement,
+  properties = list(
+    condition = TccqExpression,
+    consequent = TccqBlock,
+    alternative = TccqBlock,
+    branch = TccqBranch
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      !identical(self@condition@type@base, "logical") ||
+        self@condition@type@shape@rank != 0L
+    ) {
+      problems <- c(problems, "@condition must be a scalar logical expression")
+    }
+    if (!identical(self@condition@value_id, self@branch@condition)) {
+      problems <- c(problems, "@condition value id must match @branch condition")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Construct a neutral write target
+#'
+#' @inheritParams TccqWriteTarget
+#' @export
+tccq_write_target <- function(value_id, type, kind = "local") {
+  .tccq_check_character_scalar(value_id, "value_id")
+  .tccq_check_s7(type, TccqType, "TccqType", "type")
+  .tccq_check_character_scalar(kind, "kind")
+  TccqWriteTarget(value_id = value_id, type = type, kind = kind)
+}
+
+#' Construct a neutral statement block
+#'
+#' @inheritParams TccqBlock
+#' @export
+tccq_block <- function(id, locals = list(), statements = list(), effect = tccq_effect()) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_list_of(locals, TccqWriteTarget, "TccqWriteTarget", "locals")
+  .tccq_check_list_of(statements, TccqStatement, "TccqStatement", "statements")
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
+  TccqBlock(id = id, locals = locals, statements = statements, effect = effect)
+}
+
+#' Construct a neutral assignment
+#'
+#' @inheritParams TccqAssignment
+#' @export
+tccq_assignment <- function(id, target, value, effect = tccq_effect()) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(target, TccqWriteTarget, "TccqWriteTarget", "target")
+  .tccq_check_s7(value, TccqExpression, "TccqExpression", "value")
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
+  TccqAssignment(id = id, effect = effect, target = target, value = value)
+}
+
+#' Construct a neutral conditional
+#'
+#' @inheritParams TccqConditional
+#' @export
+tccq_conditional <- function(
+  id,
+  condition,
+  consequent,
+  alternative,
+  branch,
+  effect = branch@effect
+) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(condition, TccqExpression, "TccqExpression", "condition")
+  .tccq_check_s7(consequent, TccqBlock, "TccqBlock", "consequent")
+  .tccq_check_s7(alternative, TccqBlock, "TccqBlock", "alternative")
+  .tccq_check_s7(branch, TccqBranch, "TccqBranch", "branch")
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
+  TccqConditional(
+    id = id,
+    effect = effect,
+    condition = condition,
+    consequent = consequent,
+    alternative = alternative,
+    branch = branch
+  )
+}
+
 #' Loop-nest program plan
 #'
 #' `TccqLoopNest` is the single backend-neutral iteration plan consumed by
 #' source printers, in the spirit of the SAC with-loop. One loop nest carries
 #' ordered typed axes (`map` axes produce output positions, `reduce` axes fold
-#' into an accumulator), a body expression whose references carry typed affine
-#' accesses, an optional reducer with its identity, and an output access.
-#' Elementwise maps, full and per-axis reductions, contractions, and stencils
-#' are all instances of this one value; printers must not reintroduce
-#' per-family loop shapes.
+#' into an accumulator), a value expression or typed statement block whose
+#' references carry typed affine accesses, an optional reducer with its
+#' identity, and an output access. Elementwise maps, full and per-axis
+#' reductions, contractions, stencils, and control-valued results are all
+#' instances of this one value; printers must not reintroduce per-family loop
+#' shapes or backend-local control trees.
 #'
 #' @param id Stable loop-nest id.
 #' @param domain Iteration domain naming the axes.
 #' @param axes Ordered `TccqLoopAxis` values, outermost first.
-#' @param body Body expression with access-carrying references.
+#' @param body Body expression or typed statement block with access-carrying
+#'   references.
 #' @param result_type Result type of the loop nest.
 #' @param output Output access over map axes, or `NULL` for scalar results.
 #' @param reducer Reduction metadata for reduce axes, or `NULL`.
@@ -412,7 +646,7 @@ TccqLoopNest <- S7::new_class(
     id = S7::class_character,
     domain = TccqDomain,
     axes = S7::class_list,
-    body = TccqExpression,
+    body = S7::new_union(TccqExpression, TccqBlock),
     result_type = TccqType,
     output = S7::new_union(NULL, TccqAccess),
     reducer = S7::new_union(NULL, TccqReductionSpec),
@@ -471,7 +705,8 @@ TccqLoopNest <- S7::new_class(
 #'
 #' @param id Stable loop-nest id.
 #' @param axes Ordered `TccqLoopAxis` values, outermost first.
-#' @param body Body expression with access-carrying references.
+#' @param body Body expression or typed statement block with access-carrying
+#'   references.
 #' @param result_type Result type of the loop nest.
 #' @param output Output access over map axes, or `NULL` for scalar results.
 #' @param reducer Reduction metadata for reduce axes, or `NULL`.
@@ -492,7 +727,15 @@ tccq_loop_nest <- function(
 ) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_list_of(axes, TccqLoopAxis, "TccqLoopAxis", "axes")
-  .tccq_check_s7(body, TccqExpression, "TccqExpression", "body")
+  body_is_supported <- S7::S7_inherits(body, TccqExpression) || S7::S7_inherits(body, TccqBlock)
+  if (!body_is_supported) {
+    tccq_abort(
+      "schema.invalid_loop_nest_body",
+      "`body` must inherit from <TccqExpression> or <TccqBlock>.",
+      phase = "schema",
+      path = "loop_nest.body"
+    )
+  }
   .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
   .tccq_check_optional_s7(output, TccqAccess, "TccqAccess", "output")
   .tccq_check_optional_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
@@ -581,24 +824,11 @@ tccq_program_loop_nests <- function(program) {
     )))
   }
   if (identical(root@kind, "branch")) {
-    branch_condition_is_control <- expression_contains(root, function(expression) {
-      identical(expression@kind, "branch") && expression_contains(
-        expression@inputs[[1L]],
-        function(input) identical(input@kind, "branch")
-      )
-    })
     branch_materializes <- any(vapply(root@inputs, expression_contains, logical(1), predicate = function(expression) {
       operation <- expression@attrs$operation
       S7::S7_inherits(operation, TccqLoweredOperation) &&
         operation@family %in% c("reduction", "contraction")
     }))
-    if (branch_condition_is_control) {
-      return(failed(nest_diagnostic(
-        "loop_nest.branch_condition",
-        "A conditional used as another branch condition needs a typed temporary.",
-        data = list(value_id = root@value_id)
-      )))
-    }
     if (branch_materializes) {
       return(failed(nest_diagnostic(
         "loop_nest.branch_materialization",
@@ -906,6 +1136,87 @@ tccq_program_loop_nests <- function(program) {
     }
   }
 
+  block_index <- 0L
+  statement_index <- 0L
+  next_block_id <- function() {
+    block_index <<- block_index + 1L
+    sprintf("block_%04d", block_index)
+  }
+  next_statement_id <- function() {
+    statement_index <<- statement_index + 1L
+    sprintf("statement_%04d", statement_index)
+  }
+  expression_effect <- function(expression) {
+    value <- program@values[[expression@value_id]]
+    if (S7::S7_inherits(value, TccqValue)) value@effect else tccq_effect()
+  }
+
+  # Convert a value-producing conditional into explicit neutral statements.
+  # A conditional used as another condition is first assigned to a typed local
+  # in the same block. Arm blocks remain nested, preserving R's selected-arm
+  # evaluation instead of hoisting work across control boundaries.
+  statement_block <- function(expression, target, domain) {
+    if (!identical(expression@kind, "branch")) {
+      effect <- expression_effect(expression)
+      return(tccq_block(
+        next_block_id(),
+        statements = list(tccq_assignment(
+          next_statement_id(),
+          target,
+          expression,
+          effect = effect
+        )),
+        effect = effect
+      ))
+    }
+
+    condition <- expression@inputs[[1L]]
+    locals <- list()
+    statements <- list()
+    if (identical(condition@kind, "branch")) {
+      local_target <- tccq_write_target(condition@value_id, condition@type, kind = "local")
+      condition_block <- statement_block(condition, local_target, domain)
+      locals <- c(list(local_target), condition_block@locals)
+      statements <- c(statements, condition_block@statements)
+      condition <- tccq_expression(
+        condition@value_id,
+        "reference",
+        type = condition@type,
+        op = "local",
+        attrs = list(
+          storage_value_id = condition@value_id,
+          access = tccq_access(condition@value_id, domain, kind = "scalar")
+        )
+      )
+    } else if (expression_contains(
+      condition,
+      function(input) identical(input@kind, "branch")
+    )) {
+      tccq_abort_diagnostic(nest_diagnostic(
+        "loop_nest.control_operand",
+        "A conditional nested inside an ordinary condition operation needs expression normalization.",
+        data = list(value_id = condition@value_id, op = condition@op)
+      ))
+    }
+
+    consequent <- statement_block(expression@inputs[[2L]], target, domain)
+    alternative <- statement_block(expression@inputs[[3L]], target, domain)
+    conditional <- tccq_conditional(
+      next_statement_id(),
+      condition = condition,
+      consequent = consequent,
+      alternative = alternative,
+      branch = expression@branch,
+      effect = expression@branch@effect
+    )
+    tccq_block(
+      next_block_id(),
+      locals = locals,
+      statements = c(statements, list(conditional)),
+      effect = expression@branch@effect
+    )
+  }
+
   build <- function() {
     result_value <- program@values[[program@result]]
 
@@ -936,6 +1247,13 @@ tccq_program_loop_nests <- function(program) {
       )
     } else {
       NULL
+    }
+    if (identical(body@kind, "branch")) {
+      body <- statement_block(
+        body,
+        tccq_write_target(program@result, result_value@type, kind = "result"),
+        domain
+      )
     }
     tccq_loop_nest(
       "loop_nest_main",

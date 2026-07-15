@@ -21,7 +21,8 @@ tccq_loop_nest(
 
 \item{axes}{Ordered \code{TccqLoopAxis} values, outermost first.}
 
-\item{body}{Body expression with access-carrying references.}
+\item{body}{Body expression or typed statement block with access-carrying
+references.}
 
 \item{result_type}{Result type of the loop nest.}
 

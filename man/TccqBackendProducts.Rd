@@ -6,7 +6,7 @@
 \usage{
 TccqBackendProducts(
   function_interface = NULL,
-  expression = NULL,
+  body = NULL,
   loop_nest = NULL,
   loop_nests = list(),
   storage_plan = NULL,
@@ -17,7 +17,8 @@ TccqBackendProducts(
 \arguments{
 \item{function_interface}{Source-level callable interface, if source exists.}
 
-\item{expression}{Expression tree consumed by the backend, if source exists.}
+\item{body}{Expression tree or statement block consumed by the backend, if
+source exists.}
 
 \item{loop_nest}{Result loop nest consumed by the backend, if source exists.}
 
@@ -31,8 +32,8 @@ TccqBackendProducts(
 }
 \description{
 Backend products are the typed outputs owned by a backend plan: the callable
-interface, loop nest and expression tree consumed by the source printer,
-storage plan, and concrete artifacts. Runtime handles such as loaded
+interface, loop nest, expression or statement block consumed by the source
+printer, storage plan, and concrete artifacts. Runtime handles such as loaded
 libraries and compiled callables stay in \code{attrs}, but under this typed
 products value rather than directly on the backend plan.
 }

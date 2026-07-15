@@ -213,18 +213,19 @@ Source printers consume an ordered sequence of `TccqLoopNest` values built
 from the lowered program: backend-neutral with-loops in the SAC lineage,
 intermediates first, the result nest last. Each nest carries ordered
 `TccqLoopAxis` values (`map` axes produce output positions, `reduce` axes fold
-into an accumulator), a `TccqExpression` body whose references carry typed
-`TccqAccess` maps of affine `TccqIndexExpr` values, an optional reducer with
-its identity, and an output access; intermediate nests additionally name the
-scalar or temporary buffer their result materializes. Scalar programs,
-elementwise maps, full and per-axis reductions, contractions, stencils, and
-scalar- or buffer-intermediate compositions are all sequences of this one
-value, so C, Fortran, and Rtinycc share a single generic per-nest emitter
-instead of per-family printer cases; the C emitter owns buffer allocation and
-free discipline, and Fortran declares automatic arrays. A branch-valued nest
-body remains a typed `TccqExpression` carrying its `TccqBranch`; both source
-families emit a conditional assignment, preserving that exactly one arm is
-evaluated.
+into an accumulator), a value-expression or typed-statement-block body whose
+references carry typed `TccqAccess` maps of affine `TccqIndexExpr` values, an
+optional reducer with its identity, and an output access; intermediate nests
+additionally name the scalar or temporary buffer their result materializes.
+Scalar programs, elementwise maps, full and per-axis reductions, contractions,
+stencils, control-valued results, and scalar- or buffer-intermediate
+compositions are all sequences of this one value, so C, Fortran, and Rtinycc
+share a single generic per-nest emitter instead of per-family printer cases;
+the C emitter owns buffer allocation and free discipline, and Fortran declares
+automatic arrays. A branch-valued nest body is a typed `TccqBlock` containing
+`TccqAssignment` and `TccqConditional` statements over `TccqWriteTarget`
+destinations. Both source families consume that block, preserving that exactly
+one arm is evaluated.
 When a printer reaches an operation node, it asks the resolved implementation
 to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
@@ -246,10 +247,11 @@ an output argument, but that difference is already explicit in the function
 interface before either printer runs.
 
 Backend products are also explicit. `TccqBackendProducts` carries the typed
-function interface, loop nest, expression tree, storage plan, and concrete
-`TccqBackendArtifact` values. Source mode records a source artifact carrying
-the generated source. Shared-library mode writes that same source artifact plus
-a generated C `.Call` wrapper to disk, invokes `R CMD SHLIB`, records the
+function interface, loop nest, expression tree or statement block, storage
+plan, and concrete `TccqBackendArtifact` values. Source mode records a source
+artifact carrying the generated source. Shared-library mode writes that same
+source artifact plus a generated C `.Call` wrapper to disk, invokes
+`R CMD SHLIB`, records the
 resulting shared library as another artifact, and attaches a native callable
 artifact when the wrapper symbol can be loaded. Rtinycc JIT mode keeps the same
 source and function interface, then attaches a callable artifact after TinyCC
@@ -263,12 +265,14 @@ Control flow is entering as structured IR. A pure scalar `if` with an explicit
 scalar logical, and its backend interface preserves that type as C `bool`,
 Fortran `logical(c_bool)`, or TinyCC `bool`; wrappers reject a missing condition
 instead of mapping it to a Boolean. The current loop-nest planner accepts the
-branch as a result expression and emits statement-valued control. Pure branches
-may nest in result arms because both source emitters recursively assign through
-the same target. A branch used as another branch's condition stops until a
-typed temporary can be scheduled before the outer branch; branch-local
+branch as a result and lowers it into a `TccqBlock`. Pure branches may nest in
+result arms because both source emitters recursively assign through the same
+typed target. A branch used directly as another branch's condition first writes
+a typed scalar local declared by `TccqBackendFunctionInterface`; the outer
+conditional reads that local through an ordinary typed access. Branch-local
 reductions and contractions stop until their loop nests can be scheduled inside
-the selected arm.
+the selected arm, and a branch embedded in an ordinary operation stops until
+the expression normalizer can sequence it explicitly.
 
 `for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
 idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and

@@ -134,6 +134,9 @@ TccqBridgePlan <- S7::new_class(
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
 #' @param parameter_types Declared semantic types corresponding to parameters.
+#' @param local_names Generated scalar-local names.
+#' @param local_value_ids Neutral value ids corresponding to locals.
+#' @param local_types Declared semantic types corresponding to locals.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
@@ -159,6 +162,9 @@ TccqBackendFunctionInterface <- S7::new_class(
     parameter_names = S7::class_character,
     parameter_value_ids = S7::class_character,
     parameter_types = S7::class_list,
+    local_names = S7::class_character,
+    local_value_ids = S7::class_character,
+    local_types = S7::class_list,
     result_value_id = S7::class_character,
     result_type = TccqType,
     result_placement = S7::class_character,
@@ -242,6 +248,41 @@ TccqBackendFunctionInterface <- S7::new_class(
     )
     if (!all(parameter_types_are_typed)) {
       problems <- c(problems, "@parameter_types must contain only <TccqType> values")
+    }
+    if (
+      length(self@local_names) != length(self@local_value_ids) ||
+        length(self@local_names) != length(self@local_types)
+    ) {
+      problems <- c(
+        problems,
+        "@local_names, @local_value_ids, and @local_types must have the same length"
+      )
+    }
+    if (anyNA(self@local_names) || any(!nzchar(self@local_names)) || anyDuplicated(self@local_names)) {
+      problems <- c(problems, "@local_names must contain unique non-empty strings")
+    }
+    if (
+      anyNA(self@local_value_ids) ||
+        any(!nzchar(self@local_value_ids)) ||
+        anyDuplicated(self@local_value_ids)
+    ) {
+      problems <- c(problems, "@local_value_ids must contain unique non-empty value ids")
+    }
+    local_types_are_typed <- vapply(
+      self@local_types,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqType
+    )
+    if (!all(local_types_are_typed)) {
+      problems <- c(problems, "@local_types must contain only <TccqType> values")
+    }
+    if (all(local_types_are_typed) && any(vapply(
+      self@local_types,
+      function(type) type@shape@rank != 0L,
+      logical(1)
+    ))) {
+      problems <- c(problems, "@local_types currently support only scalar values")
     }
     if (length(self@extent_symbols) != length(self@extent_names)) {
       problems <- c(problems, "@extent_symbols and @extent_names must have the same length")
@@ -381,13 +422,14 @@ TccqBackendArtifact <- S7::new_class(
 #' Backend products
 #'
 #' Backend products are the typed outputs owned by a backend plan: the callable
-#' interface, loop nest and expression tree consumed by the source printer,
-#' storage plan, and concrete artifacts. Runtime handles such as loaded
+#' interface, loop nest, expression or statement block consumed by the source
+#' printer, storage plan, and concrete artifacts. Runtime handles such as loaded
 #' libraries and compiled callables stay in `attrs`, but under this typed
 #' products value rather than directly on the backend plan.
 #'
 #' @param function_interface Source-level callable interface, if source exists.
-#' @param expression Expression tree consumed by the backend, if source exists.
+#' @param body Expression tree or statement block consumed by the backend, if
+#'   source exists.
 #' @param loop_nest Result loop nest consumed by the backend, if source exists.
 #' @param loop_nests Ordered loop nests, intermediates first, result nest last.
 #' @param storage_plan Storage plan consumed by the backend, if available.
@@ -399,7 +441,7 @@ TccqBackendProducts <- S7::new_class(
   package = "tccquickr",
   properties = list(
     function_interface = S7::new_union(NULL, TccqBackendFunctionInterface),
-    expression = S7::new_union(NULL, TccqExpression),
+    body = S7::new_union(NULL, TccqExpression, TccqBlock),
     loop_nest = S7::new_union(NULL, TccqLoopNest),
     loop_nests = S7::class_list,
     storage_plan = S7::new_union(NULL, TccqStoragePlan),
@@ -416,6 +458,13 @@ TccqBackendProducts <- S7::new_class(
     )
     if (!all(nests_are_typed)) {
       problems <- c(problems, "@loop_nests must contain only <TccqLoopNest> values")
+    }
+    if (
+      !is.null(self@loop_nest) &&
+        !is.null(self@body) &&
+        !identical(self@body, self@loop_nest@body)
+    ) {
+      problems <- c(problems, "@body must match @loop_nest@body")
     }
     artifacts_are_typed <- vapply(
       self@artifacts,
@@ -862,6 +911,9 @@ tccq_bridge_plan <- function(
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
 #' @param parameter_types Declared semantic types corresponding to parameters.
+#' @param local_names Generated scalar-local names.
+#' @param local_value_ids Neutral value ids corresponding to locals.
+#' @param local_types Declared semantic types corresponding to locals.
 #' @param result_value_id Lowered result value id.
 #' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
@@ -884,6 +936,9 @@ tccq_backend_function_interface <- function(
   parameter_names = character(),
   parameter_value_ids = character(),
   parameter_types = list(),
+  local_names = character(),
+  local_value_ids = character(),
+  local_types = list(),
   result_value_id,
   result_type,
   result_placement = "return",
@@ -973,6 +1028,38 @@ tccq_backend_function_interface <- function(
       path = "backend_function.parameters"
     )
   }
+  if (!is.character(local_names) || anyNA(local_names) || any(!nzchar(local_names))) {
+    tccq_abort(
+      "schema.invalid_backend_function_locals",
+      "`local_names` must contain non-empty strings.",
+      phase = "schema",
+      path = "backend_function.local_names"
+    )
+  }
+  if (
+    !is.character(local_value_ids) ||
+      anyNA(local_value_ids) ||
+      any(!nzchar(local_value_ids))
+  ) {
+    tccq_abort(
+      "schema.invalid_backend_function_locals",
+      "`local_value_ids` must contain non-empty strings.",
+      phase = "schema",
+      path = "backend_function.local_value_ids"
+    )
+  }
+  .tccq_check_list_of(local_types, TccqType, "TccqType", "local_types")
+  if (
+    length(local_names) != length(local_value_ids) ||
+      length(local_names) != length(local_types)
+  ) {
+    tccq_abort(
+      "schema.invalid_backend_function_locals",
+      "`local_names`, `local_value_ids`, and `local_types` must have the same length.",
+      phase = "schema",
+      path = "backend_function.locals"
+    )
+  }
   .tccq_check_character_scalar(result_value_id, "result_value_id")
   .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
   .tccq_check_character_scalar(result_placement, "result_placement")
@@ -1027,6 +1114,9 @@ tccq_backend_function_interface <- function(
     parameter_names = parameter_names,
     parameter_value_ids = parameter_value_ids,
     parameter_types = parameter_types,
+    local_names = local_names,
+    local_value_ids = local_value_ids,
+    local_types = local_types,
     result_value_id = result_value_id,
     result_type = result_type,
     result_placement = result_placement,
@@ -1093,7 +1183,8 @@ tccq_backend_artifact <- function(
 #' Construct backend products
 #'
 #' @param function_interface Source-level callable interface, if source exists.
-#' @param expression Expression tree consumed by the backend, if source exists.
+#' @param body Expression tree or statement block consumed by the backend, if
+#'   source exists.
 #' @param loop_nest Result loop nest consumed by the backend, if source exists.
 #' @param loop_nests Ordered loop nests, intermediates first, result nest last.
 #' @param storage_plan Storage plan consumed by the backend, if available.
@@ -1102,7 +1193,7 @@ tccq_backend_artifact <- function(
 #' @export
 tccq_backend_products <- function(
   function_interface = NULL,
-  expression = NULL,
+  body = NULL,
   loop_nest = NULL,
   loop_nests = list(),
   storage_plan = NULL,
@@ -1115,7 +1206,17 @@ tccq_backend_products <- function(
     "TccqBackendFunctionInterface",
     "function_interface"
   )
-  .tccq_check_optional_s7(expression, TccqExpression, "TccqExpression", "expression")
+  body_is_supported <- is.null(body) ||
+    S7::S7_inherits(body, TccqExpression) ||
+    S7::S7_inherits(body, TccqBlock)
+  if (!body_is_supported) {
+    tccq_abort(
+      "schema.invalid_backend_product_body",
+      "`body` must inherit from <TccqExpression> or <TccqBlock>, or be `NULL`.",
+      phase = "schema",
+      path = "backend_products.body"
+    )
+  }
   .tccq_check_optional_s7(loop_nest, TccqLoopNest, "TccqLoopNest", "loop_nest")
   .tccq_check_list_of(loop_nests, TccqLoopNest, "TccqLoopNest", "loop_nests")
   .tccq_check_optional_s7(storage_plan, TccqStoragePlan, "TccqStoragePlan", "storage_plan")
@@ -1137,7 +1238,7 @@ tccq_backend_products <- function(
 
   TccqBackendProducts(
     function_interface = function_interface,
-    expression = expression,
+    body = body,
     loop_nest = loop_nest,
     loop_nests = loop_nests,
     storage_plan = storage_plan,
@@ -1818,9 +1919,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(backend = backend@id, value_id = expression@value_id)
           )
         }
-        parameter_name <- emit_context$parameter_by_value_id[[access@value_id]]
+        source_name <- emit_context$source_name_by_value_id[[access@value_id]]
         if (identical(access@kind, "scalar")) {
-          return(parameter_name)
+          return(source_name)
         }
         storage_type <- emit_context$formal_type_by_id[[access@value_id]]
         if (identical(access@kind, "recycle")) {
@@ -1841,18 +1942,18 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           if (identical(emit_context$language, "fortran")) {
             return(sprintf(
               "%s(mod(%s, %s) + 1)",
-              parameter_name,
+              source_name,
               consumer_linear,
               length_text
             ))
           }
-          return(sprintf("%s[(%s) %% (%s)]", parameter_name, consumer_linear, length_text))
+          return(sprintf("%s[(%s) %% (%s)]", source_name, consumer_linear, length_text))
         }
         linear <- linear_index_text(access, storage_type@shape@dims, emit_context$extent_by_symbol)
         if (identical(emit_context$language, "fortran")) {
-          return(sprintf("%s(%s + 1)", parameter_name, linear))
+          return(sprintf("%s(%s + 1)", source_name, linear))
         }
-        return(sprintf("%s[%s]", parameter_name, linear))
+        return(sprintf("%s[%s]", source_name, linear))
       }
       if (identical(expression@kind, "literal")) {
         return(literal_text(expression@literal, emit_context$language))
@@ -1887,6 +1988,29 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       result_nest <- nests[[length(nests)]]
       parameter_names <- c_identifier("input", seq_along(formals))
       parameter_value_ids <- vapply(formals, function(value) value@id, character(1))
+      local_targets <- list()
+      local_value_ids <- character()
+      collect_block_locals <- function(block) {
+        for (local_target in block@locals) {
+          if (!local_target@value_id %in% local_value_ids) {
+            local_targets[[length(local_targets) + 1L]] <<- local_target
+            local_value_ids <<- c(local_value_ids, local_target@value_id)
+          }
+        }
+        for (statement in block@statements) {
+          if (S7::S7_inherits(statement, TccqConditional)) {
+            collect_block_locals(statement@consequent)
+            collect_block_locals(statement@alternative)
+          }
+        }
+        invisible(NULL)
+      }
+      for (nest in nests) {
+        if (S7::S7_inherits(nest@body, TccqBlock)) {
+          collect_block_locals(nest@body)
+        }
+      }
+      local_names <- c_identifier("local", seq_along(local_targets))
       extents <- extent_plan(formals, nests)
       kind <- if (length(result_nest@axes) == 0L) "scalar" else "loop_nest"
       for (nest in nests) {
@@ -1905,6 +2029,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         vapply(nest@axes, function(axis) axis@name, character(1))
       }))) %||% character()
       result_rank <- result@type@shape@rank
+      result_needs_local <- S7::S7_inherits(result_nest@body, TccqBlock)
       tccq_backend_function_interface(
         symbol = symbol,
         source_language = source_language,
@@ -1913,6 +2038,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         parameter_names = parameter_names,
         parameter_value_ids = parameter_value_ids,
         parameter_types = lapply(formals, function(value) value@type),
+        local_names = local_names,
+        local_value_ids = local_value_ids,
+        local_types = lapply(local_targets, function(target) target@type),
         result_value_id = result@id,
         result_type = result@type,
         result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
@@ -1920,7 +2048,13 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           "return"
         },
-        result_name = if (identical(source_language, "fortran") || result_rank > 0L) "output" else "",
+        result_name = if (identical(source_language, "fortran") || result_rank > 0L) {
+          "output"
+        } else if (result_needs_local) {
+          "result_0001"
+        } else {
+          ""
+        },
         domain = if (identical(kind, "scalar")) NULL else result_nest@domain,
         extent_symbols = extents$symbols,
         extent_names = extents$names,
@@ -1933,17 +2067,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
     new_emit_context <- function(interface, formals, language) {
       extent_by_symbol <- as.list(stats::setNames(interface@extent_names, interface@extent_symbols))
-      parameter_by_value_id <- as.list(stats::setNames(
+      source_name_by_value_id <- as.list(stats::setNames(
         interface@parameter_names,
         interface@parameter_value_ids
       ))
+      source_name_by_value_id[interface@local_value_ids] <- as.list(interface@local_names)
       formal_type_by_id <- lapply(
         stats::setNames(formals, vapply(formals, function(value) value@id, character(1))),
         function(value) value@type
       )
+      formal_type_by_id[interface@local_value_ids] <- interface@local_types
       list(
         extent_by_symbol = extent_by_symbol,
-        parameter_by_value_id = parameter_by_value_id,
+        source_name_by_value_id = source_name_by_value_id,
         formal_type_by_id = formal_type_by_id,
         language = language
       )
@@ -2007,8 +2143,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       map_axes <- Filter(function(axis) identical(axis@role, "map"), nest@axes)
       reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
       accumulator_name <- nest@attrs$scalar_name %||% interface@accumulator_name
-      body_is_branch <- identical(nest@body@kind, "branch")
-      body_text <- if (body_is_branch) "" else expression_text(nest@body, emit_context)
+      body_requires_statements <- S7::S7_inherits(nest@body, TccqBlock)
+      body_text <- if (body_requires_statements) "" else expression_text(nest@body, emit_context)
       value_text <- body_text
       identity_text <- ""
       combine_text <- ""
@@ -2067,14 +2203,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         combine_text = combine_text,
         output_index = output_index,
         body = nest@body,
-        body_is_branch = body_is_branch
+        body_requires_statements = body_requires_statements
       )
     }
 
     register_intermediates <- function(emit_context, intermediate_nests) {
       for (intermediate in intermediate_nests) {
         id <- intermediate@attrs$result_value_id
-        emit_context$parameter_by_value_id[[id]] <-
+        emit_context$source_name_by_value_id[[id]] <-
           intermediate@attrs$buffer_name %||% intermediate@attrs$scalar_name
         emit_context$formal_type_by_id[[id]] <- intermediate@result_type
       }
@@ -2096,7 +2232,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             data = list(backend = backend@id, symbol = value@attrs$symbol)
           )
         }
-        emit_context$parameter_by_value_id[[value@id]] <- if (
+        emit_context$source_name_by_value_id[[value@id]] <- if (
           identical(emit_context$language, "fortran")
         ) {
           sprintf("real(%s, c_double)", extent_name)
@@ -2173,25 +2309,58 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth - 1L
         push("}")
       }
-      emit_branch_assignment <- function(target, branch) {
-        condition_text <- expression_text(branch@inputs[[1L]], emit_context)
-        push(sprintf("if (%s) {", condition_text))
-        depth <<- depth + 1L
-        if (identical(branch@inputs[[2L]]@kind, "branch")) {
-          emit_branch_assignment(target, branch@inputs[[2L]])
-        } else {
-          push(sprintf("%s = %s;", target, expression_text(branch@inputs[[2L]], emit_context)))
+      emit_statement <- NULL
+      emit_statement_block <- function(block, result_target) {
+        for (statement in block@statements) {
+          emit_statement(statement, result_target)
         }
-        depth <<- depth - 1L
-        push("} else {")
-        depth <<- depth + 1L
-        if (identical(branch@inputs[[3L]]@kind, "branch")) {
-          emit_branch_assignment(target, branch@inputs[[3L]])
-        } else {
-          push(sprintf("%s = %s;", target, expression_text(branch@inputs[[3L]], emit_context)))
+        invisible(NULL)
+      }
+      emit_statement <- function(statement, result_target) {
+        if (S7::S7_inherits(statement, TccqAssignment)) {
+          target <- if (identical(statement@target@kind, "local")) {
+            emit_context$source_name_by_value_id[[statement@target@value_id]]
+          } else {
+            result_target
+          }
+          if (is.null(target) || !nzchar(target)) {
+            tccq_abort(
+              "backend.unbound_write_target",
+              "A typed write target has no generated source destination.",
+              phase = "backend",
+              path = sprintf("backend.%s.target", backend@id),
+              data = list(backend = backend@id, value_id = statement@target@value_id)
+            )
+          }
+          push(sprintf("%s = %s;", target, expression_text(statement@value, emit_context)))
+          return(invisible(NULL))
         }
-        depth <<- depth - 1L
-        push("}")
+        if (S7::S7_inherits(statement, TccqConditional)) {
+          push(sprintf("if (%s) {", expression_text(statement@condition, emit_context)))
+          depth <<- depth + 1L
+          emit_statement_block(statement@consequent, result_target)
+          depth <<- depth - 1L
+          push("} else {")
+          depth <<- depth + 1L
+          emit_statement_block(statement@alternative, result_target)
+          depth <<- depth - 1L
+          push("}")
+          return(invisible(NULL))
+        }
+        tccq_abort(
+          "backend.unsupported_statement",
+          "The source backend cannot emit this neutral statement class.",
+          phase = "backend",
+          path = sprintf("backend.%s.statement", backend@id),
+          data = list(backend = backend@id, statement = statement)
+        )
+      }
+      for (local_position in seq_along(interface@local_names)) {
+        push(sprintf(
+          "%s %s;",
+          source_scalar_type(interface@local_types[[local_position]], "c"),
+          interface@local_names[[local_position]]
+        ))
       }
       if (returns_buffer) {
         push(sprintf("if (%s < 0) {", interface@result_count_name))
@@ -2282,8 +2451,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (returns_buffer) {
         output_target <- sprintf("%s[%s]", interface@result_name, plan$output_index)
-        if (plan$body_is_branch) {
-          emit_branch_assignment(output_target, plan$body)
+        if (plan$body_requires_statements) {
+          emit_statement_block(plan$body, output_target)
         } else {
           push(sprintf("%s = %s;", output_target, plan$value_text))
         }
@@ -2296,11 +2465,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (returns_buffer) {
         push(sprintf("return %s;", interface@result_name))
-      } else if (plan$body_is_branch) {
-        branch_result_name <- sprintf("branch_%s", plan$body@value_id)
-        push(sprintf("%s %s;", source_scalar_type(result@type, "c"), branch_result_name))
-        emit_branch_assignment(branch_result_name, plan$body)
-        push(sprintf("return %s;", branch_result_name))
+      } else if (plan$body_requires_statements) {
+        push(sprintf("%s %s;", source_scalar_type(result@type, "c"), interface@result_name))
+        emit_statement_block(plan$body, interface@result_name)
+        push(sprintf("return %s;", interface@result_name))
       } else {
         push(sprintf("return %s;", plan$value_text))
       }
@@ -2396,6 +2564,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             buffer_size_text(intermediate, emit_context)
           )
         })),
+        unlist(Map(function(type, local_name) {
+          sprintf("  %s :: %s", source_scalar_type(type, "fortran"), local_name)
+        }, interface@local_types, interface@local_names), use.names = FALSE),
         if (length(interface@index_names) > 0L) {
           sprintf("  integer(c_int) :: %s", paste(interface@index_names, collapse = ", "))
         }
@@ -2413,25 +2584,51 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth - 1L
         push("end do")
       }
-      emit_branch_assignment <- function(target, branch) {
-        condition_text <- expression_text(branch@inputs[[1L]], emit_context)
-        push(sprintf("if (%s) then", condition_text))
-        depth <<- depth + 1L
-        if (identical(branch@inputs[[2L]]@kind, "branch")) {
-          emit_branch_assignment(target, branch@inputs[[2L]])
-        } else {
-          push(sprintf("%s = %s", target, expression_text(branch@inputs[[2L]], emit_context)))
+      emit_statement <- NULL
+      emit_statement_block <- function(block, result_target) {
+        for (statement in block@statements) {
+          emit_statement(statement, result_target)
         }
-        depth <<- depth - 1L
-        push("else")
-        depth <<- depth + 1L
-        if (identical(branch@inputs[[3L]]@kind, "branch")) {
-          emit_branch_assignment(target, branch@inputs[[3L]])
-        } else {
-          push(sprintf("%s = %s", target, expression_text(branch@inputs[[3L]], emit_context)))
+        invisible(NULL)
+      }
+      emit_statement <- function(statement, result_target) {
+        if (S7::S7_inherits(statement, TccqAssignment)) {
+          target <- if (identical(statement@target@kind, "local")) {
+            emit_context$source_name_by_value_id[[statement@target@value_id]]
+          } else {
+            result_target
+          }
+          if (is.null(target) || !nzchar(target)) {
+            tccq_abort(
+              "backend.unbound_write_target",
+              "A typed write target has no generated source destination.",
+              phase = "backend",
+              path = sprintf("backend.%s.target", backend@id),
+              data = list(backend = backend@id, value_id = statement@target@value_id)
+            )
+          }
+          push(sprintf("%s = %s", target, expression_text(statement@value, emit_context)))
+          return(invisible(NULL))
         }
-        depth <<- depth - 1L
-        push("end if")
+        if (S7::S7_inherits(statement, TccqConditional)) {
+          push(sprintf("if (%s) then", expression_text(statement@condition, emit_context)))
+          depth <<- depth + 1L
+          emit_statement_block(statement@consequent, result_target)
+          depth <<- depth - 1L
+          push("else")
+          depth <<- depth + 1L
+          emit_statement_block(statement@alternative, result_target)
+          depth <<- depth - 1L
+          push("end if")
+          return(invisible(NULL))
+        }
+        tccq_abort(
+          "backend.unsupported_statement",
+          "The source backend cannot emit this neutral statement class.",
+          phase = "backend",
+          path = sprintf("backend.%s.statement", backend@id),
+          data = list(backend = backend@id, statement = statement)
+        )
       }
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
@@ -2488,8 +2685,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (returns_buffer) {
         output_target <- sprintf("%s(%s + 1)", interface@result_name, plan$output_index)
-        if (plan$body_is_branch) {
-          emit_branch_assignment(output_target, plan$body)
+        if (plan$body_requires_statements) {
+          emit_statement_block(plan$body, output_target)
         } else {
           push(sprintf("%s = %s", output_target, plan$value_text))
         }
@@ -2498,8 +2695,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         close_loop(axis)
       }
       if (!returns_buffer) {
-        if (plan$body_is_branch) {
-          emit_branch_assignment(interface@result_name, plan$body)
+        if (plan$body_requires_statements) {
+          emit_statement_block(plan$body, interface@result_name)
         } else {
           push(sprintf("%s = %s", interface@result_name, plan$value_text))
         }
@@ -3256,7 +3453,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       bridges = bridges,
       products = tccq_backend_products(
         function_interface = function_interface,
-        expression = nest@body,
+        body = nest@body,
         loop_nest = nest,
         loop_nests = nests,
         storage_plan = program@storage_plan,
