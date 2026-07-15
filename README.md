@@ -4,9 +4,9 @@
 `tccquickr` compiles a declared subset of R into typed IR and then into
 C, Fortran, and TinyCC-JIT kernels. Programs enter through
 `declare(type(...))`, become S7 value graphs with symbolic shapes and
-effects, and lower into one backend-neutral loop nest — a SAC-style
-with-loop — before any target syntax exists. Unsupported R is a classed
-diagnostic, never an implicit fallback.
+effects, and lower into one or more backend-neutral loop nests —
+SAC-style with-loops — before any target syntax exists. Unsupported R is
+a classed diagnostic, never an implicit fallback.
 
 Every chunk in this README executes when the document is knit, so the
 claims below are checked against the installed package, not maintained
@@ -49,6 +49,7 @@ c_plan <- tccq_plan_backend(
 )
 cat(c_plan@value@products@attrs$source)
 #> #include <math.h>
+#> #include <stdbool.h>
 #> #include <stddef.h>
 #> #include <stdlib.h>
 #> 
@@ -131,6 +132,7 @@ normalize_plan <- tccq_plan_backend(
 )
 cat(normalize_plan@value@products@attrs$source)
 #> #include <math.h>
+#> #include <stdbool.h>
 #> #include <stddef.h>
 #> #include <stdlib.h>
 #> 
@@ -167,38 +169,48 @@ all.equal(normalize_kernel(v), v / sum(v))
 
 ## The declared subset today
 
-- **Types**: `double` formals of any rank with symbolic or constant
-  dimensions. Other declared base types analyze but do not reach the
-  source backends yet.
-- **Elementwise**: `+`, `-`, `*`, `/`, `^`, `sqrt`, `exp` with scalar
-  broadcast over any rank; registries can add rendered operations
-  without touching the printers.
-- **Reductions**: `sum` and `mean` over full rank-N domains; `colSums`,
-  `rowSums`, `colMeans`, and `rowMeans` as per-axis reductions; custom
-  reducers via `TccqReductionSpec`, including an optional finalizer
-  applied to the folded accumulator (`mean` divides by the reduced
-  count).
-- **Contractions**: `%*%`, `crossprod`, and `tcrossprod` with a typed
-  contracted-dimension rule (`TccqContractionSpec` carries which operand
-  dimensions contract, so transposition is an axis-order fact, never a
-  materialized transpose).
-- **Slices**: rank-1 `x[a:b]` with bounds affine in declared dimension
-  symbols.
-- **Bindings**: single-assignment locals.
-- **Composition**: non-root reductions and contractions become
-  intermediate nests — named scalars for rank-0 results, materialized
-  temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
-  `(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` all compile as
-  ordered nest sequences, and a value consumed twice materializes once.
-- **Dimensions as values**: a declared dimension symbol is a scalar in
-  the body — `colSums(x) / n` is `colMeans`, `sum(x * x) / (n - 1)` is a
-  variance-style estimator — reading the extent parameter the generated
-  ABI already passes.
-- **Recycling**: rank-mixed elementwise operands follow R’s rule with
-  GNU-R as the oracle — a shorter operand recycles over the host’s
-  column-major element order through a typed modulo-linear access,
-  accepted only when its dimensions provably divide the host’s;
-  non-conformable arrays are refused exactly as R refuses them.
+**Types.** `double` formals may have any rank with symbolic or constant
+dimensions. Scalar `logical` formals are also carried through the
+generated ABI as C `bool`, Fortran `logical(c_bool)`, and TinyCC `bool`;
+other declared base types analyze but do not reach the source backends
+yet.
+
+**Elementwise operations.** `+`, `-`, `*`, `/`, `^`, `sqrt`, and `exp`
+use scalar broadcast over any rank. Registries can add rendered
+operations without touching the printers.
+
+**Reductions and contractions.** `sum` and `mean` fold full rank-N
+domains; `colSums`, `rowSums`, `colMeans`, and `rowMeans` fold selected
+axes. Custom reducers use `TccqReductionSpec`, including an optional
+accumulator finalizer. `%*%`, `crossprod`, and `tcrossprod` use a typed
+`TccqContractionSpec`, so contracted dimensions and transposition remain
+axis facts rather than target-source conventions.
+
+**Branches.** A pure `if` with a scalar logical condition, an explicit
+`else`, and identical arm types lowers to `TccqBranch`. The branch
+retains the special forcing facts from `TccqCallSemantics`; C and
+Fortran emit conditional statements, so the unselected arm is not
+evaluated, and native call boundaries reject a missing condition as R
+does. The current loop-nest planner accepts a branch as the result
+expression. Nested branches and reductions or contractions inside an arm
+stop with loop-nest diagnostics until statement-valued regions and
+branch-local nests exist.
+
+**Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
+declared dimension symbols. Locals are single-assignment bindings.
+
+**Composition.** Non-root reductions and contractions become
+intermediate nests — named scalars for rank-0 results and materialized
+temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
+`(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` compile as ordered
+nest sequences. A value consumed twice materializes once.
+
+**Dimensions and recycling.** A declared dimension symbol is a scalar in
+the body: `colSums(x) / n` reads the extent parameter already carried by
+the ABI. Rank-mixed operands follow R’s recycling rule with GNU-R as the
+oracle. A shorter operand recycles over column-major order through a
+typed modulo-linear access only when divisibility is provable;
+non-conformable arrays are refused as R refuses them.
 
 Compilation succeeds when at least one backend produces a working plan;
 a backend that cannot lower a program reports typed feasibility
@@ -271,6 +283,10 @@ probes <- list(
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
     bytes
+  },
+  conditional_map = function(x, flag) {
+    declare(type(x = double(n), flag = logical()))
+    if (flag) x else -x
   },
   control_flow_probe = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
@@ -358,13 +374,14 @@ knitr::kable(data.frame(
 | column_means_chain    | compiles through C, Fortran, and TinyCC JIT |
 | logistic_forward_pass | compiles through C, Fortran, and TinyCC JIT |
 | raw_buffer_roundtrip  | `backend.unsupported_type`                  |
+| conditional_map       | compiles through C, Fortran, and TinyCC JIT |
 | control_flow_probe    | `frontend.unimplemented_call`               |
 | apply_reduce_probe    | `frontend.unimplemented_call`               |
 | logistic_gradient     | compiles through C, Fortran, and TinyCC JIT |
 | viterbi_decode        | `frontend.unimplemented_call`               |
 
 The failing rows are the roadmap: every one must move deeper through the
-same typed IR — structured control flow and recurrences for Viterbi,
+same typed IR — statement-valued control and recurrences for Viterbi,
 general indexing and access regions, `raw`/`buffer` bridges, and
 apply-family folds. Failures must stay specific enough that the next
 typed concept to add is obvious.

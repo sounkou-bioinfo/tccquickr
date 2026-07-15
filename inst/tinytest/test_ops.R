@@ -232,8 +232,22 @@ bad_lowered_sum <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_lowered_sum, "tccq_error"))
+plus_value <- tccq_value(
+  "value_plus",
+  "+",
+  type = tccq_type("double"),
+  attrs = list(operation = lowered_plus)
+)
+sum_value <- tccq_value(
+  "value_sum",
+  "sum",
+  inputs = list("value_plus"),
+  type = tccq_type("double"),
+  attrs = list(operation = lowered_sum)
+)
 map_contract <- tccq_fusion_contract(
   "map",
+  result_value = plus_value,
   operations = list(value_plus = lowered_plus)
 )
 expect_true(S7::S7_inherits(map_contract, TccqFusionContract))
@@ -245,20 +259,24 @@ expect_true(S7::S7_inherits(map_contract@operation_signatures$value_plus, TccqOp
 expect_true(S7::S7_inherits(map_contract@domain_policies$value_plus, TccqDomainPolicy))
 map_reduce_contract <- tccq_fusion_contract(
   "map_reduce",
-  operations = list(value_plus = lowered_plus, value_sum = lowered_sum),
-  result_operation = lowered_sum
+  result_value = sum_value,
+  operations = list(value_plus = lowered_plus, value_sum = lowered_sum)
 )
 expect_true(S7::S7_inherits(map_reduce_contract, TccqFusionContract))
 expect_equal(map_reduce_contract@fusion_kind, "map_reduce")
 expect_equal(map_reduce_contract@storage_strategy, "fused-map-reduce")
 expect_equal(map_reduce_contract@result_operation@reduction@name, "sum")
 bad_contract_names <- tryCatch(
-  tccq_fusion_contract("map", operations = list(lowered_plus)),
+  tccq_fusion_contract("map", result_value = plus_value, operations = list(lowered_plus)),
   error = identity
 )
 expect_true(inherits(bad_contract_names, "tccq_error"))
 bad_map_contract <- tryCatch(
-  tccq_fusion_contract("map", operations = list(value_sum = lowered_sum)),
+  tccq_fusion_contract(
+    "map",
+    result_value = sum_value,
+    operations = list(value_sum = lowered_sum)
+  ),
   error = identity
 )
 expect_true(inherits(bad_map_contract, "error"))

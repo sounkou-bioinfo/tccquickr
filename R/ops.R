@@ -567,13 +567,16 @@ TccqLoweredOperation <- S7::new_class(
 #'
 #' `TccqFusionContract` is the typed payload attached to a fusion group after
 #' region planning. It keeps the lowered operation payloads, signatures, domain
-#' policies, result operation, and storage strategy together so fusion legality
-#' and later optimization passes do not inspect loose group attributes.
+#' policies, typed result value, optional result operation, and storage strategy
+#' together so fusion legality and later optimization passes do not inspect
+#' loose group attributes. Control values such as `TccqBranch` are valid fusion
+#' results even when the group contains no lowered operations.
 #'
 #' @param fusion_kind Fusion kind owned by the contract.
 #' @param storage_strategy Storage strategy requested by the fusion plan.
 #' @param operations Named lowered operations by value id.
-#' @param result_operation Lowered operation that produces the fusion output.
+#' @param result_value Typed value produced by the fusion group.
+#' @param result_operation Optional lowered operation carried by `result_value`.
 #' @param operation_signatures Named operation signatures by value id.
 #' @param domain_policies Named domain policies by value id.
 #' @param attrs Structured metadata.
@@ -585,7 +588,8 @@ TccqFusionContract <- S7::new_class(
     fusion_kind = S7::class_character,
     storage_strategy = S7::class_character,
     operations = S7::class_list,
-    result_operation = TccqLoweredOperation,
+    result_value = TccqValue,
+    result_operation = S7::new_union(NULL, TccqLoweredOperation),
     operation_signatures = S7::class_list,
     domain_policies = S7::class_list,
     attrs = S7::class_list
@@ -623,10 +627,13 @@ TccqFusionContract <- S7::new_class(
     operation_ids <- names(self@operations)
     signature_ids <- names(self@operation_signatures)
     domain_policy_ids <- names(self@domain_policies)
-    if (length(self@operations) == 0L || !all(operations_are_lowered)) {
-      problems <- c(problems, "@operations must contain named <TccqLoweredOperation> values")
+    if (!all(operations_are_lowered)) {
+      problems <- c(problems, "@operations must contain only <TccqLoweredOperation> values")
     }
-    if (is.null(operation_ids) || anyNA(operation_ids) || any(!nzchar(operation_ids)) || anyDuplicated(operation_ids)) {
+    if (
+      length(self@operations) > 0L &&
+        (is.null(operation_ids) || anyNA(operation_ids) || any(!nzchar(operation_ids)) || anyDuplicated(operation_ids))
+    ) {
       problems <- c(problems, "@operations must be named by unique non-empty value ids")
     }
     if (!all(signatures_are_typed)) {
@@ -641,6 +648,20 @@ TccqFusionContract <- S7::new_class(
     if (!identical(domain_policy_ids, operation_ids)) {
       problems <- c(problems, "@domain_policies must align with @operations by value id")
     }
+    result_value_operation <- self@result_value@attrs$operation
+    if (!is.null(result_value_operation) && !S7::S7_inherits(result_value_operation, TccqLoweredOperation)) {
+      problems <- c(problems, "@result_value operation metadata must be a <TccqLoweredOperation>")
+    }
+    if (!identical(result_value_operation, self@result_operation)) {
+      problems <- c(problems, "@result_operation must match the operation carried by @result_value")
+    }
+    if (
+      !is.null(self@result_operation) &&
+        (!self@result_value@id %in% operation_ids ||
+          !identical(self@operations[[self@result_value@id]], self@result_operation))
+    ) {
+      problems <- c(problems, "@result_operation must be indexed by the result value id in @operations")
+    }
     if (identical(self@fusion_kind, "map") && any(vapply(
       self@operations,
       function(operation) identical(operation@family, "reduction"),
@@ -651,12 +672,15 @@ TccqFusionContract <- S7::new_class(
     fusion_needs_reduction_result <- length(self@fusion_kind) == 1L &&
       !is.na(self@fusion_kind) &&
       self@fusion_kind %in% c("map_reduce", "axis_reduce")
-    if (fusion_needs_reduction_result && !identical(self@result_operation@family, "reduction")) {
+    if (
+      fusion_needs_reduction_result &&
+        (is.null(self@result_operation) || !identical(self@result_operation@family, "reduction"))
+    ) {
       problems <- c(problems, "reduction fusion contracts need a reduction result operation")
     }
     if (
       identical(self@fusion_kind, "contract") &&
-        !identical(self@result_operation@family, "contraction")
+        (is.null(self@result_operation) || !identical(self@result_operation@family, "contraction"))
     ) {
       problems <- c(problems, "contract fusion contracts need a contraction result operation")
     }
@@ -2213,17 +2237,17 @@ tccq_lowered_operation <- function(
 #' Construct a fusion operation contract
 #'
 #' @param fusion_kind Fusion kind owned by the contract.
-#' @param operations Named lowered operations by value id.
-#' @param result_operation Optional lowered result operation. Defaults to the
-#'   final operation in `operations`.
+#' @param result_value Typed value produced by the fusion group.
+#' @param operations Named lowered operations by value id. Control-only groups
+#'   may use an empty list.
 #' @param storage_strategy Optional storage strategy. Defaults from
 #'   `fusion_kind`.
 #' @param attrs Structured metadata.
 #' @export
 tccq_fusion_contract <- function(
   fusion_kind,
-  operations,
-  result_operation = NULL,
+  result_value,
+  operations = list(),
   storage_strategy = NULL,
   attrs = list()
 ) {
@@ -2241,13 +2265,14 @@ tccq_fusion_contract <- function(
     operations <- list(operations)
   }
   .tccq_check_list_of(operations, TccqLoweredOperation, "TccqLoweredOperation", "operations")
+  .tccq_check_s7(result_value, TccqValue, "TccqValue", "result_value")
   operation_ids <- names(operations)
   if (
-    length(operations) == 0L ||
-      is.null(operation_ids) ||
-      anyNA(operation_ids) ||
-      any(!nzchar(operation_ids)) ||
-      anyDuplicated(operation_ids)
+    length(operations) > 0L &&
+      (is.null(operation_ids) ||
+        anyNA(operation_ids) ||
+        any(!nzchar(operation_ids)) ||
+        anyDuplicated(operation_ids))
   ) {
     tccq_abort(
       "schema.invalid_fusion_contract_operations",
@@ -2257,10 +2282,13 @@ tccq_fusion_contract <- function(
       data = list(operation_ids = operation_ids)
     )
   }
-  if (is.null(result_operation)) {
-    result_operation <- operations[[length(operations)]]
-  }
-  .tccq_check_s7(result_operation, TccqLoweredOperation, "TccqLoweredOperation", "result_operation")
+  result_operation <- result_value@attrs$operation
+  .tccq_check_optional_s7(
+    result_operation,
+    TccqLoweredOperation,
+    "TccqLoweredOperation",
+    "result_value@attrs$operation"
+  )
   if (is.null(storage_strategy)) {
     storage_strategy <- switch(
       fusion_kind,
@@ -2290,6 +2318,7 @@ tccq_fusion_contract <- function(
     fusion_kind = fusion_kind,
     storage_strategy = storage_strategy,
     operations = operations,
+    result_value = result_value,
     result_operation = result_operation,
     operation_signatures = operation_signatures,
     domain_policies = domain_policies,

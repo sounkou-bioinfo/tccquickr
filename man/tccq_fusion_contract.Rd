@@ -6,8 +6,8 @@
 \usage{
 tccq_fusion_contract(
   fusion_kind,
-  operations,
-  result_operation = NULL,
+  result_value,
+  operations = list(),
   storage_strategy = NULL,
   attrs = list()
 )
@@ -15,10 +15,10 @@ tccq_fusion_contract(
 \arguments{
 \item{fusion_kind}{Fusion kind owned by the contract.}
 
-\item{operations}{Named lowered operations by value id.}
+\item{result_value}{Typed value produced by the fusion group.}
 
-\item{result_operation}{Optional lowered result operation. Defaults to the
-final operation in \code{operations}.}
+\item{operations}{Named lowered operations by value id. Control-only groups
+may use an empty list.}
 
 \item{storage_strategy}{Optional storage strategy. Defaults from
 \code{fusion_kind}.}

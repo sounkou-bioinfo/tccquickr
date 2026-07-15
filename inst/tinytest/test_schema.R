@@ -91,10 +91,39 @@ operation_expression <- tccq_expression(
   inputs = list(reference_expression, literal_expression),
   resolved_op = resolved_add
 )
+logical_scalar <- tccq_type("logical")
+branch_value <- tccq_branch(
+  "value_0003",
+  condition = "formal_flag",
+  consequent = "formal_0001",
+  alternative = "value_0001",
+  type = finite@type,
+  semantics = tccq_call_semantics(tccq_call(
+    "if",
+    expr = quote(if (flag) x else 1.5)
+  ))
+)
+condition_expression <- tccq_expression(
+  "formal_flag",
+  "reference",
+  type = logical_scalar,
+  op = "formal"
+)
+branch_expression <- tccq_expression(
+  "value_0003",
+  "branch",
+  type = finite@type,
+  inputs = list(condition_expression, reference_expression, literal_expression),
+  branch = branch_value
+)
 
 expect_true(S7::S7_inherits(reference_expression, TccqExpression))
 expect_true(S7::S7_inherits(operation_expression@resolved_op, TccqResolvedOp))
 expect_equal(operation_expression@inputs[[2L]]@literal@value, 1.5)
+expect_true(S7::S7_inherits(branch_value, TccqBranch))
+expect_true(S7::S7_inherits(branch_value, TccqValue))
+expect_equal(branch_expression@kind, "branch")
+expect_equal(branch_expression@branch@semantics@forcing_policy, "special")
 
 bad_expression <- tryCatch(
   tccq_expression(

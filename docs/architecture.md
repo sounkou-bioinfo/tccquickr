@@ -12,8 +12,10 @@ a base type with a `TccqShape`; the shape carries rank and symbolic dimensions,
 so rank 2 is a matrix and rank N is an array. `TccqLiteral` gives finite
 values, typed `NA`, `NaN`, `Inf`, and `-Inf` their own representation.
 `TccqValue` is the IR value: it names an operation, inputs, type, effects, and
-attributes. `TccqProgram` collects formals, values, regions, result, and
-diagnostics.
+attributes. `TccqBranch` inherits from `TccqValue` and adds the condition,
+consequent, alternative, and originating `TccqCallSemantics` needed to preserve
+R's lazy `if` evaluation. `TccqProgram` collects formals, values, regions,
+result, and diagnostics.
 
 Physical layout is currently a fixed convention, not a value: every array is a
 dense, contiguous, column-major R buffer, and the shared loop-nest emitter
@@ -219,14 +221,18 @@ elementwise maps, full and per-axis reductions, contractions, stencils, and
 scalar- or buffer-intermediate compositions are all sequences of this one
 value, so C, Fortran, and Rtinycc share a single generic per-nest emitter
 instead of per-family printer cases; the C emitter owns buffer allocation and
-free discipline, and Fortran declares automatic arrays.
+free discipline, and Fortran declares automatic arrays. A branch-valued nest
+body remains a typed `TccqExpression` carrying its `TccqBranch`; both source
+families emit a conditional assignment, preserving that exactly one arm is
+evaluated.
 When a printer reaches an operation node, it asks the resolved implementation
 to render through `tccq_op_render()` for a `TccqOpRenderContext`.
 
 The generated callable boundary is a second explicit plan value:
 `TccqBackendFunctionInterface`. It records the source symbol, scalar or
 loop-nest shape, ABI, parameter names, lowered parameter value ids, result
-value id, result placement, the loop-nest iteration domain, one extent
+value id, parameter and result `TccqType` values, result placement, the
+loop-nest iteration domain, one extent
 parameter per symbolic dimension (`n` becomes `int extent_n`, deduplicated
 across arguments), per-axis loop index names, typed result dimensions, the
 result element-count parameter, and the reduction accumulator name. C,
@@ -252,12 +258,21 @@ interface, typed storage plan, and typed product set.
 
 ## Control flow
 
-Control flow has to become structured IR. `for`, `while`, `repeat`, `break`,
-`next`, `switch`, scalar conditionals, vectorized `ifelse`, and idiomatic R
-surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and `Filter` are
-not just more function names to whitelist. They describe regions, exits,
-dominance, carried loop state, effect ordering, reducer legality, allocation,
-and possible boundary regions.
+Control flow is entering as structured IR. A pure scalar `if` with an explicit
+`else` and identically typed arms becomes `TccqBranch`. The condition must be a
+scalar logical, and its backend interface preserves that type as C `bool`,
+Fortran `logical(c_bool)`, or TinyCC `bool`; wrappers reject a missing condition
+instead of mapping it to a Boolean. The current loop-nest planner accepts the
+branch as a result expression and emits statement-valued control; nested
+branches and branch-local reductions or contractions stop with classed loop-nest
+diagnostics because evaluating either arm ahead of the condition would violate
+R.
+
+`for`, `while`, `repeat`, `break`, `next`, `switch`, vectorized `ifelse`, and
+idiomatic R surfaces such as `Map`, `lapply`, `vapply`, `apply`, `Reduce`, and
+`Filter` are not just more function names to whitelist. They describe regions,
+exits, dominance, carried loop state, effect ordering, reducer legality,
+allocation, and possible boundary regions.
 
 The intended representation is a small set of typed control nodes over the same
 value/effect/domain model. A `for` loop over `1:n`, a `Reduce("+", x)`, and a
@@ -276,10 +291,10 @@ orchestration. A `kernel` region is an R-API-free scalar or array kernel. A
 `parallel` region is an R-API-free parallel kernel. A `device` region is
 device-side code using device memory.
 
-R C API evaluation is the equivalent of Numba object mode: it should always be
-available as an explicit boundary implementation, but it is a boundary. It
-touches the R API and therefore cannot silently appear inside pure, parallel, or
-device regions.
+R C API evaluation is one possible backend implementation family, not the
+semantic meaning of an opaque call and not a universal escape mode. When
+selected it is a boundary that touches the R API, so it cannot silently appear
+inside pure, parallel, or device regions.
 
 Bridges are a typed backend-plan layer. They represent transitions such as
 `SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> C buffer`, `C buffer -> SEXP`,
@@ -325,17 +340,21 @@ and not a backend shortcut. `TccqDomain` names the iteration space,
 `TccqAccess` describes how a value maps onto that domain, and
 `TccqFusionGroup` represents a candidate fused group over a domain, values,
 outputs, accesses, target, region kind, and effects. `TccqFusionContract`
-records the lowered operation payloads, operation signatures, domain policies,
-result operation, and storage strategy for that group.
+records the typed result value, lowered operation payloads, operation
+signatures, domain policies, optional operation carried by the result, and
+storage strategy for that group. This distinction matters for control values:
+a `TccqBranch` remains the result without being misrepresented as whichever
+ordinary operation happened to occur in one arm.
 
 Simple `f(g(x))` fusion is just one case: a pure single-use producer and pure
 consumer over the same domain with compatible implementations and domain
 policies. Map-reduce, stencil, tile, and device fusion are extensions of the
 same domain/access/region model.
 
-Fusion stops at explicit barriers: R C API/object-mode calls, unknown effects,
-mutation, incompatible layouts, unmodeled missing-value semantics, illegal
-region effects, or domain mismatches without an explicit broadcast/recycle rule.
+Fusion stops at explicit barriers: R call-evaluation boundaries, unknown
+effects, mutation, incompatible layouts, unmodeled missing-value semantics,
+illegal region effects, or domain mismatches without an explicit
+broadcast/recycle rule.
 
 ## Diagnostics
 
@@ -343,4 +362,3 @@ Failure is a value. Phases return `TccqResult` values and attach
 `TccqDiagnostic` objects. Conditions carry diagnostics as payloads. The goal is
 not to make programs we cannot explain appear to compile; it is to make every
 failure specific enough that the next typed concept to add is obvious.
-

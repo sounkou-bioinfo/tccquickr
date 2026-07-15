@@ -17,7 +17,8 @@ tccq_backend_context(
 
 \item{target}{Requested target language or runtime, or \code{any}.}
 
-\item{allow_boundary}{Whether explicit boundary/object-mode plans are allowed.}
+\item{allow_boundary}{Whether explicit R call-evaluation boundary plans are
+allowed.}
 
 \item{required_capabilities}{Capabilities that candidate backends must expose.}
 

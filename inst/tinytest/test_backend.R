@@ -368,7 +368,7 @@ matrix_c_source_plan <- tccq_plan_backend(
 expect_true(matrix_c_source_plan@success)
 matrix_c_interface <- backend_interface(matrix_c_source_plan)
 expect_equal(matrix_c_interface@kind, "loop_nest")
-expect_equal(matrix_c_interface@attrs$result_type@shape@rank, 2L)
+expect_equal(matrix_c_interface@result_type@shape@rank, 2L)
 expect_true(S7::S7_inherits(matrix_c_interface@domain, TccqDomain))
 expect_equal(matrix_c_interface@domain@shape@rank, 2L)
 expect_equal(matrix_c_interface@extent_symbols, c("n", "p"))
@@ -389,7 +389,7 @@ matrix_fortran_source_plan <- tccq_plan_backend(
 expect_true(matrix_fortran_source_plan@success)
 matrix_fortran_interface <- backend_interface(matrix_fortran_source_plan)
 expect_equal(matrix_fortran_interface@kind, "loop_nest")
-expect_equal(matrix_fortran_interface@attrs$result_type@shape@rank, 2L)
+expect_equal(matrix_fortran_interface@result_type@shape@rank, 2L)
 expect_true(S7::S7_inherits(matrix_fortran_interface@domain, TccqDomain))
 expect_equal(matrix_fortran_interface@domain@shape@rank, 2L)
 expect_equal(matrix_fortran_interface@extent_names, c("extent_n", "extent_p"))
@@ -724,7 +724,7 @@ matrix_reduction_c_source_plan <- tccq_plan_backend(
 expect_true(matrix_reduction_c_source_plan@success)
 matrix_reduction_c_interface <- backend_interface(matrix_reduction_c_source_plan)
 expect_equal(matrix_reduction_c_interface@kind, "loop_nest")
-expect_equal(matrix_reduction_c_interface@attrs$result_type@shape@rank, 0L)
+expect_equal(matrix_reduction_c_interface@result_type@shape@rank, 0L)
 expect_true(S7::S7_inherits(matrix_reduction_c_interface@domain, TccqDomain))
 expect_equal(matrix_reduction_c_interface@domain@shape@rank, 2L)
 expect_equal(matrix_reduction_c_interface@extent_names, c("extent_n", "extent_p"))
@@ -737,7 +737,7 @@ matrix_reduction_fortran_source_plan <- tccq_plan_backend(
 expect_true(matrix_reduction_fortran_source_plan@success)
 matrix_reduction_fortran_interface <- backend_interface(matrix_reduction_fortran_source_plan)
 expect_equal(matrix_reduction_fortran_interface@kind, "loop_nest")
-expect_equal(matrix_reduction_fortran_interface@attrs$result_type@shape@rank, 0L)
+expect_equal(matrix_reduction_fortran_interface@result_type@shape@rank, 0L)
 expect_true(S7::S7_inherits(matrix_reduction_fortran_interface@domain, TccqDomain))
 expect_equal(matrix_reduction_fortran_interface@domain@shape@rank, 2L)
 expect_equal(matrix_reduction_fortran_interface@extent_names, c("extent_n", "extent_p"))
@@ -965,6 +965,163 @@ if (rtinycc_jit_available) {
     backend_callable(custom_reduction_jit_plan)(x),
     sum(exp(x))
   )
+}
+
+# R's `if` remains a lazy branch in neutral IR. Both source families emit a
+# statement-valued conditional, while the callable ABI carries the logical
+# condition as a typed scalar rather than pretending every input is double.
+branch_map <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  if (flag) x else -x
+}
+branch_program <- tccq_analyze(branch_map, strict = TRUE)@value
+branch_expression <- tccq_expression_tree(branch_program)
+branch_nests <- tccq_program_loop_nests(branch_program)
+
+expect_true(branch_expression@success)
+expect_equal(branch_expression@value@kind, "branch")
+expect_true(S7::S7_inherits(branch_expression@value@branch, TccqBranch))
+expect_true(branch_nests@success)
+expect_equal(branch_nests@value[[1L]]@body@kind, "branch")
+
+branch_c_plan <- tccq_plan_backend(
+  branch_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+branch_fortran_plan <- tccq_plan_backend(
+  branch_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+
+expect_true(branch_c_plan@success)
+expect_true(branch_fortran_plan@success)
+branch_c_interface <- backend_interface(branch_c_plan)
+branch_fortran_interface <- backend_interface(branch_fortran_plan)
+expect_equal(
+  vapply(branch_c_interface@parameter_types, function(type) type@base, character(1)),
+  c("double", "logical")
+)
+expect_equal(branch_c_interface@result_type@base, "double")
+expect_equal(branch_fortran_interface@parameter_types[[2L]]@base, "logical")
+expect_true(grepl("bool input_0002", backend_source(branch_c_plan), fixed = TRUE))
+expect_true(grepl("if (input_0002) {", backend_source(branch_c_plan), fixed = TRUE))
+expect_true(grepl("logical(c_bool), value :: input_0002", backend_source(branch_fortran_plan), fixed = TRUE))
+expect_true(grepl("if (input_0002) then", backend_source(branch_fortran_plan), fixed = TRUE))
+
+logical_branch <- function(flag) {
+  declare(type(flag = logical()))
+  if (flag) TRUE else FALSE
+}
+logical_branch_program <- tccq_analyze(logical_branch, strict = TRUE)@value
+logical_branch_c <- tccq_plan_backend(
+  logical_branch_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+logical_branch_fortran <- tccq_plan_backend(
+  logical_branch_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(logical_branch_c@success)
+expect_true(logical_branch_fortran@success)
+expect_equal(backend_interface(logical_branch_c)@result_type@base, "logical")
+expect_true(grepl("bool tccq_", backend_source(logical_branch_c), fixed = TRUE))
+expect_true(grepl("logical(c_bool) :: output", backend_source(logical_branch_fortran), fixed = TRUE))
+
+nonfinite_branch <- function(flag) {
+  declare(type(flag = logical(), returns = double()))
+  if (flag) NaN else Inf
+}
+nonfinite_branch_program <- tccq_analyze(nonfinite_branch, strict = TRUE)@value
+for (backend in list(tccq_c_backend(), tccq_fortran_backend())) {
+  nonfinite_plan <- tccq_plan_backend(nonfinite_branch_program, backend)
+  expect_false(nonfinite_plan@success)
+  expect_true(any(vapply(
+    nonfinite_plan@diagnostics,
+    function(diagnostic) identical(diagnostic@code, "backend.unsupported_literal_kind"),
+    logical(1)
+  )))
+}
+
+nested_branch <- function(x, flag, other) {
+  declare(type(x = double(n), flag = logical(), other = logical()))
+  if (flag) if (other) x else -x else x
+}
+nested_branch_program <- tccq_analyze(nested_branch, strict = TRUE)@value
+nested_branch_nests <- tccq_program_loop_nests(nested_branch_program)
+expect_false(nested_branch_nests@success)
+expect_true(any(vapply(
+  nested_branch_nests@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "loop_nest.nested_branch"),
+  logical(1)
+)))
+
+branch_reduction <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  if (flag) sum(x) else 0
+}
+branch_reduction_program <- tccq_analyze(branch_reduction, strict = TRUE)@value
+branch_reduction_groups <- branch_reduction_program@regions[[1L]]@fusion_groups
+branch_reduction_contract <- branch_reduction_groups[[length(branch_reduction_groups)]]@contract
+expect_true(S7::S7_inherits(branch_reduction_contract@result_value, TccqBranch))
+expect_equal(length(branch_reduction_contract@operations), 0L)
+expect_null(branch_reduction_contract@result_operation)
+branch_reduction_nests <- tccq_program_loop_nests(branch_reduction_program)
+expect_false(branch_reduction_nests@success)
+expect_true(any(vapply(
+  branch_reduction_nests@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "loop_nest.branch_materialization"),
+  logical(1)
+)))
+
+branch_x <- c(1, -2, 3.5)
+if (rtinycc_jit_available) {
+  branch_jit_plan <- tccq_plan_backend(
+    branch_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(branch_jit_plan@success)
+  expect_equal(backend_callable(branch_jit_plan)(branch_x, TRUE), branch_x)
+  expect_equal(backend_callable(branch_jit_plan)(branch_x, FALSE), -branch_x)
+  missing_condition <- tryCatch(
+    backend_callable(branch_jit_plan)(branch_x, NA),
+    error = identity
+  )
+  expect_true(inherits(missing_condition, "tccq_error"))
+  expect_equal(tccq_condition_diagnostic(missing_condition)@code, "runtime.invalid_logical_condition")
+
+  logical_branch_jit <- tccq_plan_backend(
+    logical_branch_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(logical_branch_jit@success)
+  expect_identical(backend_callable(logical_branch_jit)(TRUE), TRUE)
+  expect_identical(backend_callable(logical_branch_jit)(FALSE), FALSE)
+}
+
+if (can_build_shared_library("fortran")) {
+  branch_fortran_shared <- tccq_plan_backend(
+    branch_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(branch_fortran_shared@success)
+  expect_equal(backend_callable(branch_fortran_shared)(branch_x, TRUE), branch_x)
+  expect_equal(backend_callable(branch_fortran_shared)(branch_x, FALSE), -branch_x)
+
+  logical_branch_fortran_shared <- tccq_plan_backend(
+    logical_branch_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(logical_branch_fortran_shared@success)
+  expect_identical(backend_callable(logical_branch_fortran_shared)(TRUE), TRUE)
+  expect_identical(backend_callable(logical_branch_fortran_shared)(FALSE), FALSE)
 }
 
 matrix_vector <- function(x, w) {

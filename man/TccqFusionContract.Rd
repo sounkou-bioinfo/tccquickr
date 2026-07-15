@@ -8,7 +8,8 @@ TccqFusionContract(
   fusion_kind = character(0),
   storage_strategy = character(0),
   operations = list(),
-  result_operation = TccqLoweredOperation(),
+  result_value = TccqValue(),
+  result_operation = NULL,
   operation_signatures = list(),
   domain_policies = list(),
   attrs = list()
@@ -21,7 +22,9 @@ TccqFusionContract(
 
 \item{operations}{Named lowered operations by value id.}
 
-\item{result_operation}{Lowered operation that produces the fusion output.}
+\item{result_value}{Typed value produced by the fusion group.}
+
+\item{result_operation}{Optional lowered operation carried by \code{result_value}.}
 
 \item{operation_signatures}{Named operation signatures by value id.}
 
@@ -32,6 +35,8 @@ TccqFusionContract(
 \description{
 \code{TccqFusionContract} is the typed payload attached to a fusion group after
 region planning. It keeps the lowered operation payloads, signatures, domain
-policies, result operation, and storage strategy together so fusion legality
-and later optimization passes do not inspect loose group attributes.
+policies, typed result value, optional result operation, and storage strategy
+together so fusion legality and later optimization passes do not inspect
+loose group attributes. Control values such as \code{TccqBranch} are valid fusion
+results even when the group contains no lowered operations.
 }

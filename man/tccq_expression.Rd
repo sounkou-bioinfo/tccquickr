@@ -13,6 +13,7 @@ tccq_expression(
   inputs = list(),
   literal = NULL,
   resolved_op = NULL,
+  branch = NULL,
   attrs = list()
 )
 }
@@ -32,6 +33,8 @@ tccq_expression(
 \item{literal}{Literal payload for literal expressions.}
 
 \item{resolved_op}{Selected implementation for operation expressions.}
+
+\item{branch}{Typed conditional payload for branch expressions.}
 
 \item{attrs}{Structured metadata.}
 }

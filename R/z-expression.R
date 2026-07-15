@@ -1,4 +1,4 @@
-TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation")
+TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation", "branch")
 
 #' Backend-neutral expression tree
 #'
@@ -16,6 +16,7 @@ TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation")
 #' @param literal Literal payload for literal expressions.
 #' @param resolved_op Selected operation implementation for operation
 #'   expressions.
+#' @param branch Typed conditional payload for branch expressions.
 #' @param attrs Structured metadata.
 #' @export
 TccqExpression <- S7::new_class(
@@ -30,6 +31,7 @@ TccqExpression <- S7::new_class(
     type = TccqType,
     literal = S7::new_union(NULL, TccqLiteral),
     resolved_op = S7::new_union(NULL, TccqResolvedOp),
+    branch = S7::new_union(NULL, TccqBranch),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -57,7 +59,8 @@ TccqExpression <- S7::new_class(
     }
     reference_has_payload <- length(self@inputs) > 0L ||
       !is.null(self@literal) ||
-      !is.null(self@resolved_op)
+      !is.null(self@resolved_op) ||
+      !is.null(self@branch)
     if (identical(self@kind, "reference") && reference_has_payload) {
       problems <- c(
         problems,
@@ -66,7 +69,8 @@ TccqExpression <- S7::new_class(
     }
     literal_has_invalid_payload <- length(self@inputs) > 0L ||
       is.null(self@literal) ||
-      !is.null(self@resolved_op)
+      !is.null(self@resolved_op) ||
+      !is.null(self@branch)
     if (identical(self@kind, "literal") && literal_has_invalid_payload) {
       problems <- c(
         problems,
@@ -75,12 +79,30 @@ TccqExpression <- S7::new_class(
     }
     operation_has_invalid_payload <- length(self@inputs) == 0L ||
       !is.null(self@literal) ||
-      is.null(self@resolved_op)
+      is.null(self@resolved_op) ||
+      !is.null(self@branch)
     if (identical(self@kind, "operation") && operation_has_invalid_payload) {
       problems <- c(
         problems,
         "operation expressions must have inputs, a resolved operation, and no literal"
       )
+    }
+    branch_has_invalid_payload <- length(self@inputs) != 3L ||
+      !is.null(self@literal) ||
+      !is.null(self@resolved_op) ||
+      is.null(self@branch)
+    if (identical(self@kind, "branch") && branch_has_invalid_payload) {
+      problems <- c(
+        problems,
+        "branch expressions must have three inputs, a branch payload, and no literal or resolved operation"
+      )
+    }
+    if (
+      !is.null(self@branch) &&
+        all(inputs_are_expressions) &&
+        !identical(self@branch@inputs, lapply(self@inputs, function(input) input@value_id))
+    ) {
+      problems <- c(problems, "@branch incoming ids must match @inputs")
     }
     if (!is.null(self@literal) && !identical(self@literal@type@base, self@type@base)) {
       problems <- c(problems, "@literal type base must match @type base")
@@ -99,6 +121,7 @@ TccqExpression <- S7::new_class(
 #' @param inputs Child expressions.
 #' @param literal Literal payload for literal expressions.
 #' @param resolved_op Selected implementation for operation expressions.
+#' @param branch Typed conditional payload for branch expressions.
 #' @param attrs Structured metadata.
 #' @export
 tccq_expression <- function(
@@ -110,6 +133,7 @@ tccq_expression <- function(
   inputs = list(),
   literal = NULL,
   resolved_op = NULL,
+  branch = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -120,6 +144,7 @@ tccq_expression <- function(
   .tccq_check_list_of(inputs, TccqExpression, "TccqExpression", "inputs")
   .tccq_check_optional_s7(literal, TccqLiteral, "TccqLiteral", "literal")
   .tccq_check_optional_s7(resolved_op, TccqResolvedOp, "TccqResolvedOp", "resolved_op")
+  .tccq_check_optional_s7(branch, TccqBranch, "TccqBranch", "branch")
   .tccq_check_list(attrs, "attrs")
 
   TccqExpression(
@@ -131,6 +156,7 @@ tccq_expression <- function(
     type = type,
     literal = literal,
     resolved_op = resolved_op,
+    branch = branch,
     attrs = attrs
   )
 }
@@ -260,6 +286,26 @@ tccq_expression_tree <- function(program, value_id = program@result) {
         op = value@op,
         type = value@type,
         literal = literal
+      ))
+    }
+    if (S7::S7_inherits(value, TccqBranch)) {
+      input_expressions <- lapply(
+        value@inputs,
+        build_expression,
+        value_stack = c(value_stack, current_value_id)
+      )
+      if (any(vapply(input_expressions, is.null, logical(1)))) {
+        return(NULL)
+      }
+      return(tccq_expression(
+        id = current_value_id,
+        kind = "branch",
+        value_id = current_value_id,
+        op = value@op,
+        inputs = input_expressions,
+        type = value@type,
+        branch = value,
+        attrs = list(effect = value@effect)
       ))
     }
 
@@ -516,6 +562,49 @@ tccq_program_loop_nests <- function(program) {
   }
   root <- expression_result@value
 
+  expression_contains <- function(expression, predicate) {
+    isTRUE(predicate(expression)) || any(vapply(
+      expression@inputs,
+      expression_contains,
+      logical(1),
+      predicate = predicate
+    ))
+  }
+  if (!identical(root@kind, "branch") && expression_contains(
+    root,
+    function(expression) identical(expression@kind, "branch")
+  )) {
+    return(failed(nest_diagnostic(
+      "loop_nest.nested_branch",
+      "A conditional currently has to be the result expression of its loop nest.",
+      data = list(result_value_id = root@value_id)
+    )))
+  }
+  if (identical(root@kind, "branch")) {
+    nested_branch <- any(vapply(root@inputs, expression_contains, logical(1), predicate = function(expression) {
+      identical(expression@kind, "branch")
+    }))
+    branch_materializes <- any(vapply(root@inputs, expression_contains, logical(1), predicate = function(expression) {
+      operation <- expression@attrs$operation
+      S7::S7_inherits(operation, TccqLoweredOperation) &&
+        operation@family %in% c("reduction", "contraction")
+    }))
+    if (nested_branch) {
+      return(failed(nest_diagnostic(
+        "loop_nest.nested_branch",
+        "Nested conditionals need statement-valued expression planning before source emission.",
+        data = list(value_id = root@value_id)
+      )))
+    }
+    if (branch_materializes) {
+      return(failed(nest_diagnostic(
+        "loop_nest.branch_materialization",
+        "Reductions and contractions inside a conditional arm need branch-local loop nests.",
+        data = list(value_id = root@value_id)
+      )))
+    }
+  }
+
   axis_name <- function(position) sprintf("axis_%04d", position)
 
   expression_family <- function(expression) {
@@ -532,6 +621,10 @@ tccq_program_loop_nests <- function(program) {
   intermediates <- list()
   replacements <- new.env(parent = emptyenv())
   extract <- function(expression, is_root) {
+    if (identical(expression@kind, "branch")) {
+      expression@inputs <- lapply(expression@inputs, extract, is_root = FALSE)
+      return(expression)
+    }
     if (!identical(expression@kind, "operation")) {
       return(expression)
     }
@@ -628,6 +721,16 @@ tccq_program_loop_nests <- function(program) {
         }
       }
       expression@attrs$access <- access
+      return(expression)
+    }
+    if (identical(expression@kind, "branch")) {
+      expression@inputs <- lapply(
+        expression@inputs,
+        annotate,
+        axis_names = axis_names,
+        domain = domain,
+        iteration_dims = iteration_dims
+      )
       return(expression)
     }
     family <- expression_family(expression)

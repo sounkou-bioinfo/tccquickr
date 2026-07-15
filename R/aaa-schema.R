@@ -550,6 +550,52 @@ TccqValue <- S7::new_class(
   }
 )
 
+#' Lazy conditional IR value
+#'
+#' `TccqBranch` is the value-level representation of R's `if` special form.
+#' Its three incoming value ids are analyzed eagerly by the compiler, but the
+#' recorded special-form semantics require generated code to evaluate exactly
+#' one result arm at runtime.
+#'
+#' @inheritParams TccqValue
+#' @param condition Scalar logical condition value id.
+#' @param consequent Value id produced when the condition is true.
+#' @param alternative Value id produced when the condition is false.
+#' @param semantics Evaluator facts for the originating `if` call.
+#' @export
+TccqBranch <- S7::new_class(
+  "TccqBranch",
+  package = "tccquickr",
+  parent = TccqValue,
+  properties = list(
+    condition = S7::class_character,
+    consequent = S7::class_character,
+    alternative = S7::class_character,
+    semantics = TccqCallSemantics
+  ),
+  validator = function(self) {
+    problems <- character()
+    incoming_ids <- c(self@condition, self@consequent, self@alternative)
+    if (length(incoming_ids) != 3L || anyNA(incoming_ids) || any(!nzchar(incoming_ids))) {
+      problems <- c(problems, "branch incoming value ids must be non-empty strings")
+    }
+    if (!identical(self@op, "if")) {
+      problems <- c(problems, "branch values must use the `if` operation")
+    }
+    if (!identical(self@inputs, as.list(incoming_ids))) {
+      problems <- c(problems, "@inputs must match condition, consequent, and alternative ids")
+    }
+    if (
+      !identical(self@semantics@call@name, "if") ||
+        !isTRUE(self@semantics@control) ||
+        !identical(self@semantics@forcing_policy, "special")
+    ) {
+      problems <- c(problems, "@semantics must describe the R `if` special form")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Domain access mapping
 #'
 #' Access describes how a value is read or written over a domain. It is the
@@ -675,6 +721,14 @@ TccqFusionGroup <- S7::new_class(
         !identical(self@contract@fusion_kind, self@kind)
     ) {
       problems <- c(problems, "@contract fusion kind must match @kind")
+    }
+    if (
+      !is.null(self@contract) &&
+        S7::S7_inherits(self@contract, TccqFusionContract) &&
+        (!self@contract@result_value@id %in% self@outputs ||
+          !self@contract@result_value@id %in% vapply(self@values, function(value) value@id, character(1)))
+    ) {
+      problems <- c(problems, "@contract result value must be an output value of the fusion group")
     }
     if (length(problems) > 0L) problems
   }
@@ -1370,6 +1424,50 @@ tccq_value <- function(
   )
 }
 
+#' Construct a lazy conditional IR value
+#'
+#' @param id Stable value id.
+#' @param condition Scalar logical condition value id.
+#' @param consequent Value id selected when the condition is true.
+#' @param alternative Value id selected when the condition is false.
+#' @param type Joined branch result type.
+#' @param semantics Evaluator facts for the originating `if` call.
+#' @param effect Conservative effect summary across the condition and both arms.
+#' @param attrs Structured branch metadata.
+#' @export
+tccq_branch <- function(
+  id,
+  condition,
+  consequent,
+  alternative,
+  type,
+  semantics,
+  effect = tccq_effect(),
+  attrs = list()
+) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_character_scalar(condition, "condition")
+  .tccq_check_character_scalar(consequent, "consequent")
+  .tccq_check_character_scalar(alternative, "alternative")
+  .tccq_check_s7(type, TccqType, "TccqType", "type")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  .tccq_check_s7(effect, TccqEffect, "TccqEffect", "effect")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqBranch(
+    id = id,
+    op = "if",
+    inputs = list(condition, consequent, alternative),
+    type = type,
+    effect = effect,
+    attrs = attrs,
+    condition = condition,
+    consequent = consequent,
+    alternative = alternative,
+    semantics = semantics
+  )
+}
+
 #' Construct a domain access mapping
 #'
 #' @param value_id Referenced value id.
@@ -1951,4 +2049,3 @@ tccq_program <- function(
   }
   .tccq_check_s7(x, class, label, arg)
 }
-

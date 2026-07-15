@@ -26,7 +26,8 @@ TCCQ_BACKEND_ARTIFACT_KINDS <- c("source", "shared_library", "jit_callable", "na
 #'
 #' @param mode Requested backend mode.
 #' @param target Requested target language or runtime, or `any`.
-#' @param allow_boundary Whether explicit boundary/object-mode plans are allowed.
+#' @param allow_boundary Whether explicit R call-evaluation boundary plans are
+#'   allowed.
 #' @param required_capabilities Capabilities that candidate backends must expose.
 #' @param attrs Structured backend-context attributes.
 #' @export
@@ -132,7 +133,9 @@ TccqBridgePlan <- S7::new_class(
 #' @param abi Callable ABI.
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
+#' @param parameter_types Declared semantic types corresponding to parameters.
 #' @param result_value_id Lowered result value id.
+#' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
 #' @param domain Loop-nest iteration domain, or `NULL`.
@@ -155,7 +158,9 @@ TccqBackendFunctionInterface <- S7::new_class(
     abi = S7::class_character,
     parameter_names = S7::class_character,
     parameter_value_ids = S7::class_character,
+    parameter_types = S7::class_list,
     result_value_id = S7::class_character,
+    result_type = TccqType,
     result_placement = S7::class_character,
     result_name = S7::class_character,
     domain = S7::new_union(NULL, TccqDomain),
@@ -220,11 +225,23 @@ TccqBackendFunctionInterface <- S7::new_class(
     if (length(self@parameter_names) != length(self@parameter_value_ids)) {
       problems <- c(problems, "@parameter_names and @parameter_value_ids must have the same length")
     }
+    if (length(self@parameter_names) != length(self@parameter_types)) {
+      problems <- c(problems, "@parameter_names and @parameter_types must have the same length")
+    }
     if (anyNA(self@parameter_names) || any(!nzchar(self@parameter_names))) {
       problems <- c(problems, "@parameter_names must contain non-empty strings")
     }
     if (anyNA(self@parameter_value_ids) || any(!nzchar(self@parameter_value_ids))) {
       problems <- c(problems, "@parameter_value_ids must contain non-empty value ids")
+    }
+    parameter_types_are_typed <- vapply(
+      self@parameter_types,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqType
+    )
+    if (!all(parameter_types_are_typed)) {
+      problems <- c(problems, "@parameter_types must contain only <TccqType> values")
     }
     if (length(self@extent_symbols) != length(self@extent_names)) {
       problems <- c(problems, "@extent_symbols and @extent_names must have the same length")
@@ -252,6 +269,9 @@ TccqBackendFunctionInterface <- S7::new_class(
     }
     if (length(self@result_dims) == 0L && nzchar(self@result_count_name)) {
       problems <- c(problems, "scalar results must not have a result-count name")
+    }
+    if (!identical(self@result_dims, self@result_type@shape@dims)) {
+      problems <- c(problems, "@result_dims must match @result_type shape dimensions")
     }
     if (identical(self@kind, "loop_nest") && (is.null(self@domain) || self@domain@shape@rank == 0L)) {
       problems <- c(problems, "loop-nest interfaces must carry a non-scalar iteration domain")
@@ -498,8 +518,8 @@ TccqBackendPlan <- S7::new_class(
 #'
 #' A plan set is the neutral result of asking several backend families to
 #' account for the same typed program. It exists to keep the core honest: C,
-#' Fortran, graph/device, and object-mode paths must report their constraints
-#' through the same contract.
+#' Fortran, and future graph, device, or R call-evaluation implementations must
+#' report their constraints through the same contract.
 #'
 #' @param program_name Program name.
 #' @param plans Backend plans.
@@ -741,7 +761,8 @@ tccq_register_backend_traits <- function() {
 #'
 #' @param mode Requested backend mode.
 #' @param target Requested target language or runtime, or `any`.
-#' @param allow_boundary Whether explicit boundary/object-mode plans are allowed.
+#' @param allow_boundary Whether explicit R call-evaluation boundary plans are
+#'   allowed.
 #' @param required_capabilities Capabilities that candidate backends must expose.
 #' @param attrs Structured backend-context attributes.
 #' @export
@@ -840,7 +861,9 @@ tccq_bridge_plan <- function(
 #' @param abi Callable ABI.
 #' @param parameter_names Generated parameter names.
 #' @param parameter_value_ids Lowered value ids corresponding to parameters.
+#' @param parameter_types Declared semantic types corresponding to parameters.
 #' @param result_value_id Lowered result value id.
+#' @param result_type Declared semantic result type.
 #' @param result_placement Whether the result is returned or passed by output argument.
 #' @param result_name Generated result/output variable name, or empty string.
 #' @param domain Loop-nest iteration domain, or `NULL`.
@@ -860,7 +883,9 @@ tccq_backend_function_interface <- function(
   abi = "",
   parameter_names = character(),
   parameter_value_ids = character(),
+  parameter_types = list(),
   result_value_id,
+  result_type,
   result_placement = "return",
   result_name = "",
   domain = NULL,
@@ -939,7 +964,17 @@ tccq_backend_function_interface <- function(
       path = "backend_function.parameters"
     )
   }
+  .tccq_check_list_of(parameter_types, TccqType, "TccqType", "parameter_types")
+  if (length(parameter_names) != length(parameter_types)) {
+    tccq_abort(
+      "schema.invalid_backend_function_parameters",
+      "`parameter_names` and `parameter_types` must have the same length.",
+      phase = "schema",
+      path = "backend_function.parameters"
+    )
+  }
   .tccq_check_character_scalar(result_value_id, "result_value_id")
+  .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
   .tccq_check_character_scalar(result_placement, "result_placement")
   if (!result_placement %in% TCCQ_BACKEND_RESULT_PLACEMENTS) {
     tccq_abort(
@@ -991,7 +1026,9 @@ tccq_backend_function_interface <- function(
     abi = abi,
     parameter_names = parameter_names,
     parameter_value_ids = parameter_value_ids,
+    parameter_types = parameter_types,
     result_value_id = result_value_id,
+    result_type = result_type,
     result_placement = result_placement,
     result_name = result_name,
     domain = domain,
@@ -1613,21 +1650,54 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           data = list(backend = backend@id, program = program@name)
         ))
       }
-      all_values <- c(list(result), formals)
-      unsupported_bases <- setdiff(
-        unique(vapply(all_values, function(value) value@type@base, character(1))),
-        "double"
-      )
-      if (length(unsupported_bases) > 0L) {
+      unsupported_literals <- Filter(function(value) {
+        literal <- value@attrs$literal
+        S7::S7_inherits(literal, TccqLiteral) && !identical(literal@kind, "finite")
+      }, program@values)
+      if (length(unsupported_literals) > 0L) {
+        return(tccq_diagnostic(
+          "backend.unsupported_literal_kind",
+          "Source backends do not yet implement non-finite R literal semantics.",
+          phase = "backend",
+          path = sprintf("backend.%s.literal", backend@id),
+          data = list(
+            literals = lapply(unsupported_literals, function(value) value@attrs$literal)
+          )
+        ))
+      }
+      unsupported_values <- Filter(function(value) {
+        type <- value@type
+        !identical(type@base, "double") &&
+          !(identical(type@base, "logical") && type@shape@rank == 0L)
+      }, c(list(result), formals))
+      if (length(unsupported_values) > 0L) {
         return(tccq_diagnostic(
           "backend.unsupported_type",
-          "This initial source printer supports only double values.",
+          "Source backends currently support double values and scalar logical values.",
           phase = "backend",
           path = sprintf("backend.%s.type", backend@id),
-          data = list(base = unsupported_bases)
+          data = list(
+            types = lapply(unsupported_values, function(value) value@type)
+          )
         ))
       }
       NULL
+    }
+
+    source_scalar_type <- function(type, language) {
+      if (identical(type@base, "double")) {
+        return(if (identical(language, "fortran")) "real(c_double)" else "double")
+      }
+      if (identical(type@base, "logical")) {
+        return(if (identical(language, "fortran")) "logical(c_bool)" else "bool")
+      }
+      tccq_abort(
+        "backend.unsupported_scalar_type",
+        "The source backend has no scalar spelling for this semantic type.",
+        phase = "backend",
+        path = sprintf("backend.%s.type", backend@id),
+        data = list(backend = backend@id, type = type, language = language)
+      )
     }
 
     sanitize_extent_symbol <- function(symbol) {
@@ -1787,6 +1857,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       if (identical(expression@kind, "literal")) {
         return(literal_text(expression@literal, emit_context$language))
       }
+      if (identical(expression@kind, "branch")) {
+        tccq_abort(
+          "backend.branch_requires_statement_context",
+          "A conditional expression must be emitted through a statement-valued assignment.",
+          phase = "backend",
+          path = sprintf("backend.%s.expression", backend@id),
+          data = list(backend = backend@id, value_id = expression@value_id)
+        )
+      }
 
       inputs <- vapply(expression@inputs, expression_text, character(1), emit_context = emit_context)
       render_result <- tccq_op_render(
@@ -1833,7 +1912,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         abi = if (identical(source_language, "fortran")) "fortran_bind_c" else "c",
         parameter_names = parameter_names,
         parameter_value_ids = parameter_value_ids,
+        parameter_types = lapply(formals, function(value) value@type),
         result_value_id = result@id,
+        result_type = result@type,
         result_placement = if (identical(source_language, "fortran") && result_rank > 0L) {
           "output_argument"
         } else {
@@ -1846,8 +1927,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         index_names = index_names,
         result_dims = result@type@shape@dims,
         result_count_name = if (result_rank > 0L) "result_count_0001" else "",
-        accumulator_name = if (!is.null(result_nest@reducer)) "accumulator_0001" else "",
-        attrs = list(result_type = result@type)
+        accumulator_name = if (!is.null(result_nest@reducer)) "accumulator_0001" else ""
       )
     }
 
@@ -1870,6 +1950,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     }
 
     literal_text <- function(literal, language) {
+      if (!identical(literal@kind, "finite")) {
+        tccq_abort(
+          "backend.unsupported_literal_kind",
+          "Source emission requires an implemented non-finite literal policy.",
+          phase = "backend",
+          path = sprintf("backend.%s.literal", backend@id),
+          data = list(backend = backend@id, literal = literal)
+        )
+      }
+      if (identical(literal@type@base, "logical")) {
+        if (identical(language, "fortran")) {
+          return(if (isTRUE(literal@value)) ".true._c_bool" else ".false._c_bool")
+        }
+        return(if (isTRUE(literal@value)) "true" else "false")
+      }
       if (identical(literal@type@base, "integer")) {
         return(sprintf("%d", as.integer(literal@value)))
       }
@@ -1912,7 +2007,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       map_axes <- Filter(function(axis) identical(axis@role, "map"), nest@axes)
       reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
       accumulator_name <- nest@attrs$scalar_name %||% interface@accumulator_name
-      body_text <- expression_text(nest@body, emit_context)
+      body_is_branch <- identical(nest@body@kind, "branch")
+      body_text <- if (body_is_branch) "" else expression_text(nest@body, emit_context)
       value_text <- body_text
       identity_text <- ""
       combine_text <- ""
@@ -1969,7 +2065,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         value_text = value_text,
         identity_text = identity_text,
         combine_text = combine_text,
-        output_index = output_index
+        output_index = output_index,
+        body = nest@body,
+        body_is_branch = body_is_branch
       )
     }
 
@@ -2036,7 +2134,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       plan <- loop_plan(interface, result_nest, emit_context)
       parameter_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
-          sprintf("double %s", parameter_name)
+          sprintf("%s %s", source_scalar_type(value@type, "c"), parameter_name)
         } else {
           sprintf("const double *%s", parameter_name)
         }
@@ -2047,13 +2145,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (nzchar(interface@result_count_name)) sprintf("int %s", interface@result_count_name)
       )
       returns_buffer <- result@type@shape@rank > 0L
+      return_type <- if (returns_buffer) "double" else source_scalar_type(result@type, "c")
       lines <- c(
         "#include <math.h>",
+        "#include <stdbool.h>",
         "#include <stddef.h>",
         if (returns_buffer) "#include <stdlib.h>",
         "",
         sprintf(
-          "double %s%s(%s) {",
+          "%s %s%s(%s) {",
+          return_type,
           if (returns_buffer) "*" else "",
           interface@symbol,
           paste(signature_declarations, collapse = ", ")
@@ -2069,6 +2170,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         depth <<- depth + 1L
       }
       close_loop <- function(axis) {
+        depth <<- depth - 1L
+        push("}")
+      }
+      emit_branch_assignment <- function(target, branch) {
+        condition_text <- expression_text(branch@inputs[[1L]], emit_context)
+        consequent_text <- expression_text(branch@inputs[[2L]], emit_context)
+        alternative_text <- expression_text(branch@inputs[[3L]], emit_context)
+        push(sprintf("if (%s) {", condition_text))
+        depth <<- depth + 1L
+        push(sprintf("%s = %s;", target, consequent_text))
+        depth <<- depth - 1L
+        push("} else {")
+        depth <<- depth + 1L
+        push(sprintf("%s = %s;", target, alternative_text))
         depth <<- depth - 1L
         push("}")
       }
@@ -2160,7 +2275,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
       }
       if (returns_buffer) {
-        push(sprintf("%s[%s] = %s;", interface@result_name, plan$output_index, plan$value_text))
+        output_target <- sprintf("%s[%s]", interface@result_name, plan$output_index)
+        if (plan$body_is_branch) {
+          emit_branch_assignment(output_target, plan$body)
+        } else {
+          push(sprintf("%s = %s;", output_target, plan$value_text))
+        }
       }
       for (axis in plan$map_axes) {
         close_loop(axis)
@@ -2170,6 +2290,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (returns_buffer) {
         push(sprintf("return %s;", interface@result_name))
+      } else if (plan$body_is_branch) {
+        branch_result_name <- sprintf("branch_%s", plan$body@value_id)
+        push(sprintf("%s %s;", source_scalar_type(result@type, "c"), branch_result_name))
+        emit_branch_assignment(branch_result_name, plan$body)
+        push(sprintf("return %s;", branch_result_name))
       } else {
         push(sprintf("return %s;", plan$value_text))
       }
@@ -2196,7 +2321,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       )
       value_declarations <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
-          sprintf("  real(c_double), value :: %s", parameter_name)
+          sprintf("  %s, value :: %s", source_scalar_type(value@type, "fortran"), parameter_name)
         } else {
           sprintf("  real(c_double), intent(in) :: %s(*)", parameter_name)
         }
@@ -2233,7 +2358,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       lines <- c(
         header,
-        "  use iso_c_binding, only: c_double, c_int",
+        "  use iso_c_binding, only: c_bool, c_double, c_int",
         "  implicit none",
         if (length(domain_parameter_names) > 0L) {
           sprintf("  integer(c_int), value :: %s", paste(domain_parameter_names, collapse = ", "))
@@ -2242,7 +2367,11 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         if (returns_buffer) {
           sprintf("  real(c_double), intent(out) :: %s(*)", interface@result_name)
         } else {
-          sprintf("  real(c_double) :: %s", interface@result_name)
+          sprintf(
+            "  %s :: %s",
+            source_scalar_type(result@type, "fortran"),
+            interface@result_name
+          )
         },
         if (!is.null(result_nest@reducer)) {
           sprintf("  real(c_double) :: %s", plan$accumulator_name)
@@ -2277,6 +2406,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       close_loop <- function(axis) {
         depth <<- depth - 1L
         push("end do")
+      }
+      emit_branch_assignment <- function(target, branch) {
+        condition_text <- expression_text(branch@inputs[[1L]], emit_context)
+        consequent_text <- expression_text(branch@inputs[[2L]], emit_context)
+        alternative_text <- expression_text(branch@inputs[[3L]], emit_context)
+        push(sprintf("if (%s) then", condition_text))
+        depth <<- depth + 1L
+        push(sprintf("%s = %s", target, consequent_text))
+        depth <<- depth - 1L
+        push("else")
+        depth <<- depth + 1L
+        push(sprintf("%s = %s", target, alternative_text))
+        depth <<- depth - 1L
+        push("end if")
       }
       for (position in seq_along(intermediate_plans)) {
         intermediate_plan <- intermediate_plans[[position]]
@@ -2332,13 +2475,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
       }
       if (returns_buffer) {
-        push(sprintf("%s(%s + 1) = %s", interface@result_name, plan$output_index, plan$value_text))
+        output_target <- sprintf("%s(%s + 1)", interface@result_name, plan$output_index)
+        if (plan$body_is_branch) {
+          emit_branch_assignment(output_target, plan$body)
+        } else {
+          push(sprintf("%s = %s", output_target, plan$value_text))
+        }
       }
       for (axis in plan$map_axes) {
         close_loop(axis)
       }
       if (!returns_buffer) {
-        push(sprintf("%s = %s", interface@result_name, plan$value_text))
+        if (plan$body_is_branch) {
+          emit_branch_assignment(interface@result_name, plan$body)
+        } else {
+          push(sprintf("%s = %s", interface@result_name, plan$value_text))
+        }
       }
       lines <- c(
         lines,
@@ -2373,7 +2525,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
       kernel_parameters <- unlist(Map(function(value, parameter_name) {
         if (value@type@shape@rank == 0L) {
-          sprintf("double %s", parameter_name)
+          sprintf("%s %s", source_scalar_type(value@type, "c"), parameter_name)
         } else {
           sprintf("const double *%s", parameter_name)
         }
@@ -2392,7 +2544,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       } else if (returns_buffer) {
         sprintf("extern double *%s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
       } else {
-        sprintf("extern double %s(%s);", symbol, paste(kernel_parameters, collapse = ", "))
+        sprintf(
+          "extern %s %s(%s);",
+          source_scalar_type(result@type, "c"),
+          symbol,
+          paste(kernel_parameters, collapse = ", ")
+        )
       }
 
       wrapper_parameters <- sprintf("SEXP %s_arg", parameter_names)
@@ -2400,6 +2557,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         "#include <R.h>",
         "#include <Rinternals.h>",
         "#include <limits.h>",
+        "#include <stdbool.h>",
         "#include <stdlib.h>",
         "#include <string.h>",
         "",
@@ -2413,6 +2571,28 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         value <- formals[[position]]
         parameter_name <- parameter_names[[position]]
         rank <- value@type@shape@rank
+        if (identical(value@type@base, "logical")) {
+          lines <- c(
+            lines,
+            sprintf(
+              "  SEXP %s_logical = PROTECT(Rf_coerceVector(%s_arg, LGLSXP));",
+              parameter_name,
+              parameter_name
+            ),
+            "  ++protect_count;",
+            sprintf("  if (XLENGTH(%s_logical) < 1) {", parameter_name),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"scalar logical arguments must have length at least one\");",
+            "  }",
+            sprintf("  int %s_logical_value = LOGICAL(%s_logical)[0];", parameter_name, parameter_name),
+            sprintf("  if (%s_logical_value == NA_LOGICAL) {", parameter_name),
+            "    UNPROTECT(protect_count);",
+            "    Rf_error(\"missing values are not allowed in scalar logical conditions\");",
+            "  }",
+            sprintf("  bool %s = %s_logical_value != 0;", parameter_name, parameter_name)
+          )
+          next
+        }
         lines <- c(
           lines,
           sprintf(
@@ -2597,11 +2777,22 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
         lines <- c(lines, "  UNPROTECT(protect_count);", "  return output_sexp;")
       } else {
+        scalar_result_type <- source_scalar_type(result@type, "c")
+        scalar_constructor <- if (identical(result@type@base, "logical")) {
+          "Rf_ScalarLogical"
+        } else {
+          "Rf_ScalarReal"
+        }
         lines <- c(
           lines,
-          sprintf("  double output_value = %s(%s);", symbol, paste(call_arguments, collapse = ", ")),
+          sprintf(
+            "  %s output_value = %s(%s);",
+            scalar_result_type,
+            symbol,
+            paste(call_arguments, collapse = ", ")
+          ),
           "  UNPROTECT(protect_count);",
-          "  return Rf_ScalarReal(output_value);"
+          sprintf("  return %s(output_value);", scalar_constructor)
         )
       }
 
@@ -2624,7 +2815,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
 
       returns_buffer <- result@type@shape@rank > 0L
       ffi_arg_types <- lapply(formals, function(value) {
-        if (value@type@shape@rank == 0L) "f64" else "numeric_array"
+        if (value@type@shape@rank > 0L) {
+          return("numeric_array")
+        }
+        if (identical(value@type@base, "logical")) "bool" else "f64"
       })
       if (length(interface@extent_names) > 0L) {
         ffi_arg_types <- c(ffi_arg_types, rep(list("i32"), length(interface@extent_names)))
@@ -2633,7 +2827,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ffi_arg_types <- c(ffi_arg_types, list("i32"))
         ffi_return <- list(type = "numeric_array", length_arg = length(ffi_arg_types), free = TRUE)
       } else {
-        ffi_return <- "f64"
+        ffi_return <- if (identical(result@type@base, "logical")) "bool" else "f64"
       }
 
       ffi <- Rtinycc::tcc_ffi()
@@ -2690,6 +2884,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           shape <- formals[[position]]@type@shape
           argument <- arguments[[position]]
           if (shape@rank == 0L) {
+            if (identical(formals[[position]]@type@base, "logical")) {
+              condition <- as.logical(argument)
+              if (length(condition) == 0L || is.na(condition[[1L]])) {
+                tccq_abort(
+                  "runtime.invalid_logical_condition",
+                  "Scalar logical arguments must contain one non-missing value.",
+                  phase = "runtime",
+                  path = "callable.arguments",
+                  data = list(argument = position)
+                )
+              }
+              arguments[[position]] <- condition[[1L]]
+            }
             next
           }
           actual_dims <- if (shape@rank == 1L) length(argument) else dim(argument)

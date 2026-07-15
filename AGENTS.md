@@ -189,6 +189,16 @@ For the reset core, keep these rules explicit:
 - `TccqCallIndex` is the current analysis handoff: stable call ids plus
   one-to-one `TccqCall` and `TccqCallSemantics` lists. `TccqProgram@call_index`
   should be consumed by later lowering passes before adding new AST walkers.
+- `TccqBranch` is the first structured control value. It inherits from
+  `TccqValue`, owns condition/consequent/alternative value ids plus the
+  originating `TccqCallSemantics`, and therefore preserves that R `if` forces
+  the condition and exactly one arm. The current accepted form has a scalar
+  logical condition, an explicit `else`, identical pure arm types, and is the
+  result expression of one loop nest. A missing condition remains a possible
+  runtime error; native call boundaries must reject it rather than coerce it.
+  Nested branches and branch-local
+  reductions must deepen statement/region planning rather than evaluate arms
+  eagerly or use a target ternary shortcut.
 - An opaque call is still an operation candidate. Do not treat opacity as an
   R call-evaluation boundary. Object-mode/R-call evaluation is one backend family,
   not the semantic meaning of unknown calls.
@@ -249,14 +259,15 @@ For the reset core, keep these rules explicit:
   `TccqBridgePlan` values. The bridge kind must match the representation, so
   scalar values use scalar bridges and vector/array values use buffer bridges.
   Do not hide `SEXP -> scalar`, `scalar -> SEXP`, `SEXP -> buffer`,
-  `buffer -> SEXP`, or object-mode boundaries inside emitted strings.
+  `buffer -> SEXP`, or R call-evaluation boundaries inside emitted strings.
 - Backend planning must also make generated callable shape explicit through
-  `TccqBackendFunctionInterface`. Do not make C, Rtinycc, Fortran, or later
-  source printers independently infer scalar/map/reduction/axis-reduction
-  shape, generated parameter mapping, ABI, result placement, generated result
-  names, iteration domain, per-axis input extent parameters, total input
-  element-count parameter, per-axis result extent parameters, result-count
-  parameter, index variable, or reduction accumulator names.
+  `TccqBackendFunctionInterface`, including ordered parameter `TccqType` values
+  and the result `TccqType`. Do not make C, Rtinycc, Fortran, or later source
+  printers independently infer scalar/map/reduction/axis-reduction shape,
+  generated parameter mapping, semantic types, ABI, result placement,
+  generated result names, iteration domain, per-axis input extent parameters,
+  total input element-count parameter, per-axis result extent parameters,
+  result-count parameter, index variable, or reduction accumulator names.
 - Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
   the SAC-style with-loop, planned as an ordered sequence (intermediate nests
   first, result nest last). Each nest carries ordered `TccqLoopAxis` values
@@ -307,9 +318,12 @@ For the reset core, keep these rules explicit:
   not sideways into compatibility glue.
 - Matrix operations, reductions, domains, views, mutation, fusion, and storage
   planning must first appear as typed IR concepts.
-- Fusion-specific operation facts belong in `TccqFusionContract`: lowered
-  operations, result operation, operation signatures, domain policies, reducer
-  facts, and storage strategy must not be scattered across fusion `attrs`.
+- Fusion-specific facts belong in `TccqFusionContract`: the typed result value,
+  lowered operations, the optional operation carried by that result, operation
+  signatures, domain policies, reducer facts, and storage strategy must not be
+  scattered across fusion `attrs`. A control-valued result such as
+  `TccqBranch` is not fabricated into a lowered operation; a control-only
+  fusion contract may have no operations.
 - Storage reuse must be derived from typed planning facts such as
   `TccqStorageLifetime`, storage compatibility, aliasing, materialization,
   layout, and memory space. Do not group temporaries by role alone or hide

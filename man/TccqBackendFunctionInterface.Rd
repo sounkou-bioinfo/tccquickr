@@ -11,7 +11,9 @@ TccqBackendFunctionInterface(
   abi = character(0),
   parameter_names = character(0),
   parameter_value_ids = character(0),
+  parameter_types = list(),
   result_value_id = character(0),
+  result_type = TccqType(),
   result_placement = character(0),
   result_name = character(0),
   domain = NULL,
@@ -37,7 +39,11 @@ TccqBackendFunctionInterface(
 
 \item{parameter_value_ids}{Lowered value ids corresponding to parameters.}
 
+\item{parameter_types}{Declared semantic types corresponding to parameters.}
+
 \item{result_value_id}{Lowered result value id.}
+
+\item{result_type}{Declared semantic result type.}
 
 \item{result_placement}{Whether the result is returned or passed by output argument.}
 

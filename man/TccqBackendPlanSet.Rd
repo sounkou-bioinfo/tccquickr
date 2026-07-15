@@ -23,6 +23,6 @@ TccqBackendPlanSet(
 \description{
 A plan set is the neutral result of asking several backend families to
 account for the same typed program. It exists to keep the core honest: C,
-Fortran, graph/device, and object-mode paths must report their constraints
-through the same contract.
+Fortran, and future graph, device, or R call-evaluation implementations must
+report their constraints through the same contract.
 }

@@ -389,16 +389,117 @@ expect_true(any(vapply(
   logical(1)
 )))
 
-control_boundary <- function(x, flag) {
+branch_program <- function(x, flag) {
   declare(type(x = double(n), flag = logical()))
   if (flag) x else -x
 }
 
-control_boundary_result <- tccq_analyze(control_boundary)
-expect_false(control_boundary_result@success)
-expect_false(control_boundary_result@value@attrs$lowered)
+branch_result <- tccq_analyze(branch_program)
+expect_true(branch_result@success)
+expect_true(branch_result@value@attrs$lowered)
+branch_value <- branch_result@value@values[[branch_result@value@result]]
+expect_true(S7::S7_inherits(branch_value, TccqBranch))
+expect_true(S7::S7_inherits(branch_value, TccqValue))
+expect_equal(branch_value@condition, "formal_0002")
+expect_equal(branch_value@consequent, "formal_0001")
+expect_equal(branch_value@inputs, list(
+  branch_value@condition,
+  branch_value@consequent,
+  branch_value@alternative
+))
+expect_equal(branch_value@type@base, "double")
+expect_equal(branch_value@type@shape@dims[[1L]]@label, "n")
+expect_equal(branch_value@semantics@call@name, "if")
+expect_equal(branch_value@semantics@forcing_policy, "special")
+branch_fusion <- branch_result@value@regions[[1L]]@fusion_groups[[1L]]
+expect_true(identical(branch_fusion@contract@result_value, branch_value))
+expect_null(branch_fusion@contract@result_operation)
+expect_true(branch_value@effect@may_error)
+
+special_literal_branch <- function(flag) {
+  declare(type(flag = logical(), returns = double()))
+  if (flag) NaN else Inf
+}
+
+special_literal_result <- tccq_analyze(special_literal_branch)
+expect_true(special_literal_result@success)
+special_literal_values <- Filter(
+  function(value) S7::S7_inherits(value@attrs$literal, TccqLiteral),
+  special_literal_result@value@values
+)
+expect_equal(
+  vapply(
+    special_literal_values,
+    function(value) value@attrs$literal@kind,
+    character(1),
+    USE.NAMES = FALSE
+  ),
+  c("nan", "pos_inf")
+)
+
+missing_condition_branch <- function(x) {
+  declare(type(x = double(), returns = double()))
+  if (NA) x else -x
+}
+
+missing_condition_result <- tccq_analyze(missing_condition_branch)
+expect_true(missing_condition_result@success)
+missing_condition_value <- missing_condition_result@value@values[[
+  missing_condition_result@value@result
+]]
+missing_condition_literal <- missing_condition_result@value@values[[
+  missing_condition_value@condition
+]]@attrs$literal
+expect_equal(missing_condition_literal@kind, "na")
+expect_equal(missing_condition_literal@type@base, "logical")
+
+branch_without_else <- function(flag) {
+  declare(type(flag = logical()))
+  if (flag) 1
+}
+
+branch_without_else_result <- tccq_analyze(branch_without_else)
+expect_false(branch_without_else_result@success)
 expect_true(any(vapply(
-  control_boundary_result@diagnostics,
+  branch_without_else_result@diagnostics,
+  function(x) identical(x@code, "lowering.branch_requires_else"),
+  logical(1)
+)))
+
+nonlogical_branch_condition <- function(x) {
+  declare(type(x = double()))
+  if (x) 1 else 2
+}
+nonlogical_branch_result <- tccq_analyze(nonlogical_branch_condition)
+expect_false(nonlogical_branch_result@success)
+expect_true(any(vapply(
+  nonlogical_branch_result@diagnostics,
+  function(x) identical(x@code, "lowering.invalid_branch_condition"),
+  logical(1)
+)))
+
+incompatible_branch_arms <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  if (flag) x else 0
+}
+incompatible_branch_result <- tccq_analyze(incompatible_branch_arms)
+expect_false(incompatible_branch_result@success)
+expect_true(any(vapply(
+  incompatible_branch_result@diagnostics,
+  function(x) identical(x@code, "lowering.incompatible_branch_types"),
+  logical(1)
+)))
+
+loop_boundary <- function(x) {
+  declare(type(x = double(n)))
+  repeat break
+  x
+}
+
+loop_boundary_result <- tccq_analyze(loop_boundary)
+expect_false(loop_boundary_result@success)
+expect_true(any(vapply(
+  loop_boundary_result@diagnostics,
   function(x) identical(x@code, "lowering.control_flow_boundary"),
   logical(1)
 )))

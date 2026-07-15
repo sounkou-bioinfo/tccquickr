@@ -59,6 +59,7 @@ tccq_lower_function <- function(
     state$local_bindings <- list()
     state$values <- list()
     state$value_counter <- 0L
+    state$consumed_call_ids <- character()
     state$dim_symbols <- unique(unlist(lapply(bindings, function(binding) {
       labels <- vapply(binding@type@shape@dims, function(dim) dim@label, character(1))
       labels[nzchar(labels)]
@@ -183,6 +184,9 @@ tccq_lower_function <- function(
     if (identical(call_name, "[")) {
       return(lower_slice(expr, state))
     }
+    if (identical(call_name, "if")) {
+      return(lower_branch(expr, state))
+    }
     if (identical(call_name, ":")) {
       return(diagnostic_value(
         "lowering.range_outside_slice",
@@ -240,6 +244,114 @@ tccq_lower_function <- function(
     )
   }
 
+  lower_branch <- function(expr, state) {
+    arguments <- as.list(expr)[-1L]
+    if (length(arguments) != 3L) {
+      return(diagnostic_value(
+        "lowering.branch_requires_else",
+        "A lowerable `if` must have both a consequent and an alternative.",
+        expr,
+        data = list(arity = length(arguments))
+      ))
+    }
+
+    semantic_matches <- Filter(
+      function(semantics) {
+        identical(semantics@call@name, "if") &&
+          identical(semantics@call@expr, expr) &&
+          !semantics@call@id %in% state$consumed_call_ids
+      },
+      call_index@semantics
+    )
+    if (length(semantic_matches) == 0L) {
+      return(diagnostic_value(
+        "lowering.missing_call_semantics",
+        "The `if` call has no matching evaluator facts in the frontend call index.",
+        expr
+      ))
+    }
+    semantics <- semantic_matches[[1L]]
+    state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
+
+    condition <- lower_expression(arguments[[1L]], state)
+    if (length(condition$diagnostics) > 0L) {
+      return(condition)
+    }
+    if (
+      !identical(condition$type@base, "logical") ||
+        condition$type@shape@rank != 0L
+    ) {
+      return(diagnostic_value(
+        "lowering.invalid_branch_condition",
+        "An `if` condition must be a declared scalar logical value.",
+        arguments[[1L]],
+        data = list(base = condition$type@base, rank = condition$type@shape@rank)
+      ))
+    }
+
+    consequent <- lower_expression(arguments[[2L]], state)
+    if (length(consequent$diagnostics) > 0L) {
+      return(consequent)
+    }
+    alternative <- lower_expression(arguments[[3L]], state)
+    if (length(alternative$diagnostics) > 0L) {
+      return(alternative)
+    }
+    branch_types_match <- identical(consequent$type@base, alternative$type@base) &&
+      identical(consequent$type@shape@rank, alternative$type@shape@rank) &&
+      identical(consequent$type@shape@dims, alternative$type@shape@dims)
+    if (!branch_types_match) {
+      return(diagnostic_value(
+        "lowering.incompatible_branch_types",
+        "The current typed branch join requires identical base types and shapes.",
+        expr,
+        data = list(
+          consequent = consequent$type,
+          alternative = alternative$type
+        )
+      ))
+    }
+
+    value_id <- next_value_id(state)
+    reachable_effects <- function(value_id, visited = character()) {
+      if (value_id %in% visited) {
+        return(list())
+      }
+      value <- state$values[[value_id]]
+      if (is.null(value)) {
+        return(list())
+      }
+      c(
+        list(value@effect),
+        unlist(lapply(
+          value@inputs,
+          reachable_effects,
+          visited = c(visited, value_id)
+        ), recursive = FALSE)
+      )
+    }
+    branch_effect <- combine_effects(c(
+      unlist(lapply(
+        c(condition$value_id, consequent$value_id, alternative$value_id),
+        reachable_effects
+      ), recursive = FALSE),
+      list(tccq_effect(may_error = TRUE))
+    ))
+    add_value(
+      state,
+      tccq_branch(
+        id = value_id,
+        condition = condition$value_id,
+        consequent = consequent$value_id,
+        alternative = alternative$value_id,
+        type = consequent$type,
+        semantics = semantics,
+        effect = branch_effect
+      )
+    )
+    list(value_id = value_id, type = consequent$type, diagnostics = list())
+  }
+
   lower_symbol <- function(expr, state) {
     symbol_name <- as.character(expr)
     value_id <- state$symbol_value_ids[[symbol_name]]
@@ -277,7 +389,17 @@ tccq_lower_function <- function(
 
   lower_literal <- function(expr, state) {
     literal <- tryCatch(
-      tccq_literal_finite(expr),
+      {
+        if (is.nan(expr)) {
+          tccq_literal_nan()
+        } else if (is.na(expr)) {
+          tccq_literal_na(typeof(expr))
+        } else if (is.numeric(expr) && is.infinite(expr)) {
+          tccq_literal_inf(sign(expr))
+        } else {
+          tccq_literal_finite(expr)
+        }
+      },
       tccq_error = function(err) err
     )
     if (inherits(literal, "tccq_error")) {
@@ -779,8 +901,8 @@ tccq_lower_function <- function(
         effect = value@effect,
         contract = tccq_fusion_contract(
           group_kind,
-          operations = stats::setNames(list(operation), value@id),
-          result_operation = operation
+          result_value = value,
+          operations = stats::setNames(list(operation), value@id)
         )
       )
     }, intermediate_operations, seq_along(intermediate_operations)))
@@ -802,8 +924,8 @@ tccq_lower_function <- function(
     }
     fusion_contract <- tccq_fusion_contract(
       fusion_kind,
-      operations = lowered_operations[setdiff(names(lowered_operations), intermediate_ids)],
-      result_operation = result_operation
+      result_value = result_value,
+      operations = lowered_operations[setdiff(names(lowered_operations), intermediate_ids)]
     )
     fusion <- tccq_fusion_group(
       "fusion_main",
@@ -1051,7 +1173,7 @@ tccq_lower_function <- function(
     if (!call@name %in% executable_call_names) {
       return(NULL)
     }
-    if (isTRUE(semantics@control)) {
+    if (isTRUE(semantics@control) && !identical(call@name, "if")) {
       return(tccq_diagnostic(
         "lowering.control_flow_boundary",
         sprintf(

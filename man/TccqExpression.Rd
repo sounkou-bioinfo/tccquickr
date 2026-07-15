@@ -13,6 +13,7 @@ TccqExpression(
   type = TccqType(),
   literal = NULL,
   resolved_op = NULL,
+  branch = NULL,
   attrs = list()
 )
 }
@@ -33,6 +34,8 @@ TccqExpression(
 
 \item{resolved_op}{Selected operation implementation for operation
 expressions.}
+
+\item{branch}{Typed conditional payload for branch expressions.}
 
 \item{attrs}{Structured metadata.}
 }
