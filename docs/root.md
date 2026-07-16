@@ -99,7 +99,17 @@ path, assignments carry write effects, and nested procedural branches are
 `TccqIf` statements over typed arm blocks. `TccqConditional` is its stricter
 value-producing subtype; the shared parent keeps printers independent of that
 distinction while exact local effects remain separate from the retained source
-branch effect. C, TinyCC, and Fortran consume the same structured program body.
+branch effect. Positional statement `switch` is `TccqSwitch`; it owns one
+scalar integer selector expression, a typed local selector target with stable
+identity, ordered typed arm blocks, and evaluator semantics. The shared function
+interface plans one local selector binding, so every backend evaluates it
+exactly once.
+Unmatched positions retain normal completion, while arm `break` and `next`
+still target the surrounding R loop. C uses ordered conditional arms rather
+than a native C `switch`, whose `break` semantics would be wrong here.
+Character selection, numeric-double coercion and warning behavior, missing
+alternatives, and value-producing `switch` are not yet accepted. C, TinyCC,
+and Fortran consume the same structured program body.
 That body is the mutually exclusive
 structured form of `TccqProgramSchedule`, preserving one owner for top-level
 order and result identity. A scalar cell can be first defined inside a loop
@@ -130,9 +140,10 @@ allocation, and only when the earlier lifetime ends before the later
 definition. Directly dependent or simultaneously live buffers remain distinct.
 
 The remaining north-star pressure is richer loop and evaluator structure.
-Viterbi and smaller probes around `switch`, richer `for` iterables, replacement
-calls, dispatch, promises, side effects, and interruption should fail with
-structured diagnostics until the compiler has typed facts for those concepts.
+Viterbi and smaller probes around value-producing and character `switch`,
+richer `for` iterables, replacement calls, dispatch, promises, side effects,
+and interruption should fail with structured diagnostics until the compiler
+has typed facts for those concepts.
 The accepted direct-vector and declared-extent unit-sequence `for` slices do
 not yet cover arbitrary scalar extents, general ranges, lists, or computed
 iterables.

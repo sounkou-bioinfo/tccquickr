@@ -418,6 +418,17 @@ procedural `TccqIf` statements whose arms are general typed blocks. A source
 stricter value-producing subtype used by expression loop nests; its retained
 source branch may have a broader effect after guarded work has been extracted,
 while the inherited statement effect remains exact for the normalized arms.
+Positional statement `switch` is `TccqSwitch`. It owns one scalar integer
+selector expression, a typed local selector target with stable identity,
+ordered typed arm blocks, and the originating call semantics. The backend
+function interface plans one local selector binding, so source backends
+evaluate it exactly once.
+An unmatched position follows the implicit normal path, while arm `break` and
+`next` still target the surrounding R loop. C consequently emits an ordered
+conditional chain instead of a native C `switch`, whose `break` would capture
+the R loop transfer. Character selection, numeric-double coercion and warning
+behavior, missing alternatives, and value-producing `switch` remain outside
+the accepted slice.
 Sequential control does not use `TccqLoopNest`, which remains the data-parallel
 iteration abstraction.
 The structured body is the mutually exclusive body form of
@@ -427,7 +438,7 @@ targets, graph-consistent expression and target types, and initialization
 dominance over normally completing paths before a backend sees the body.
 
 Arbitrary scalar extents, general ranges, list and computed `for` iterables,
-`switch`, vectorized
+character and value-producing `switch`, vectorized
 `ifelse`, and idiomatic R surfaces such as `Map`, `lapply`,
 `vapply`, `apply`, `Reduce`, and `Filter` are not just more function names to
 whitelist. They describe regions, exits, dominance, carried loop state, effect
@@ -444,8 +455,9 @@ value/effect/domain model. A `for` loop over `1:n`, a `Reduce("+", x)`, and a
 `sum(x)` can all become reduction regions when their reducer implementation,
 identity, missing-value policy, and effects are known. `ifelse` is not ordinary
 branching when it is vectorized; it is a select over a domain with recycling and
-missing-value rules. `switch` is a dispatch boundary until the selector type
-and case set are known. `break` and `next` are structured transfer statements,
+missing-value rules. General `switch` remains a dispatch boundary until the
+selector type, case set, coercion behavior, and result contract are known.
+`break` and `next` are structured transfer statements,
 not hidden `goto` strings; labeled and nonlocal transfers remain outside the
 current model.
 

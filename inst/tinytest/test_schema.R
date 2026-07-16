@@ -534,6 +534,65 @@ expect_equal(next_statement@action, "next")
 expect_identical(repeat_statement@effect, repeat_body@effect)
 expect_identical(break_statement@effect, tccq_effect())
 
+switch_selector <- tccq_expression(
+  "value_switch_selector",
+  "literal",
+  type = tccq_type("integer"),
+  literal = tccq_literal_finite(2L)
+)
+switch_statement <- tccq_switch(
+  "statement_switch",
+  switch_selector,
+  tccq_write_target(
+    "statement_switch.selector",
+    switch_selector@type,
+    switch_selector@type
+  ),
+  list(TccqBlock(
+    id = "block_switch_break",
+    locals = list(),
+    statements = list(break_statement),
+    effect = break_statement@effect
+  ), TccqBlock(
+    id = "block_switch_next",
+    locals = list(),
+    statements = list(next_statement),
+    effect = next_statement@effect
+  )),
+  tccq_call_semantics(tccq_call(
+    "switch",
+    expr = quote(switch(2L, break, next))
+  ))
+)
+switch_completion <- tccq_completion(switch_statement)
+expect_true(S7::S7_inherits(switch_statement, TccqSwitch))
+expect_equal(switch_statement@selector_target@value_id, "statement_switch.selector")
+expect_equal(switch_statement@selector_target@kind, "local")
+expect_equal(length(switch_statement@alternatives), 2L)
+expect_true(switch_completion@falls_through)
+expect_true(switch_completion@breaks)
+expect_true(switch_completion@continues)
+invalid_switch_selector <- tryCatch(
+  tccq_switch(
+    "statement_invalid_switch",
+    tccq_expression(
+      "value_double_switch_selector",
+      "literal",
+      type = tccq_type("double"),
+      literal = tccq_literal_finite(1)
+    ),
+    tccq_write_target(
+      "statement_invalid_switch.selector",
+      tccq_type("double"),
+      tccq_type("double")
+    ),
+    list(switch_statement@alternatives[[1L]]),
+    switch_statement@semantics
+  ),
+  error = identity
+)
+expect_true(inherits(invalid_switch_selector, "error"))
+
 break_block <- TccqBlock(
   id = "block_break_completion",
   locals = list(),

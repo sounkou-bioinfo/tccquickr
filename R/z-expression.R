@@ -1134,6 +1134,81 @@ TccqIf <- S7::new_class(
   }
 )
 
+#' Neutral positional switch statement
+#'
+#' A positional switch evaluates one scalar integer selector exactly once, then
+#' evaluates at most one ordered alternative. An unmatched position evaluates
+#' no alternative, matching numeric `switch()` returning `NULL` when its value
+#' is used only for control. Character selection and value-producing switches
+#' require separate representation work.
+#'
+#' @inheritParams TccqStatement
+#' @param selector Scalar integer selector expression.
+#' @param selector_target Typed local target for the evaluate-once selector.
+#' @param alternatives Ordered positional alternative blocks.
+#' @param semantics Evaluator facts for the originating `switch` special form.
+#' @export
+TccqSwitch <- S7::new_class(
+  "TccqSwitch",
+  package = "tccquickr",
+  parent = TccqStatement,
+  properties = list(
+    selector = TccqExpression,
+    selector_target = TccqWriteTarget,
+    alternatives = S7::class_list,
+    semantics = TccqCallSemantics
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      !identical(self@selector@type@base, "integer") ||
+        self@selector@type@shape@rank != 0L
+    ) {
+      problems <- c(problems, "@selector must be a scalar integer expression")
+    }
+    if (
+      !identical(self@selector_target@kind, "local") ||
+        !identical(self@selector_target@type, self@selector@type) ||
+        !identical(self@selector_target@storage_type, self@selector@type)
+    ) {
+      problems <- c(problems, "@selector_target must be a scalar local matching @selector")
+    }
+    if (identical(self@selector_target@value_id, self@selector@value_id)) {
+      problems <- c(problems, "@selector_target must be distinct from the source value")
+    }
+    alternatives_are_blocks <- vapply(
+      self@alternatives,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqBlock
+    )
+    if (length(self@alternatives) == 0L || !all(alternatives_are_blocks)) {
+      problems <- c(problems, "@alternatives must contain at least one <TccqBlock>")
+    }
+    if (
+      !identical(self@semantics@call@name, "switch") ||
+        !isTRUE(self@semantics@control) ||
+        !identical(self@semantics@forcing_policy, "special")
+    ) {
+      problems <- c(problems, "@semantics must describe the R `switch` special form")
+    }
+    if (all(alternatives_are_blocks)) {
+      expected_effect <- Reduce(
+        tccq_effect_union,
+        c(
+          list(self@selector@effect),
+          lapply(self@alternatives, function(alternative) alternative@effect)
+        ),
+        init = tccq_effect()
+      )
+      if (!identical(self@effect, expected_effect)) {
+        problems <- c(problems, "@effect must include the selector and every alternative")
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Value-producing neutral conditional
 #'
 #' This is the stricter value-producing form of `TccqIf`. Both arms must be
@@ -1613,6 +1688,40 @@ tccq_if <- function(id, condition, consequent, alternative, semantics) {
   )
 }
 
+#' Construct a neutral positional switch
+#'
+#' @inheritParams TccqSwitch
+#' @export
+tccq_switch <- function(
+  id,
+  selector,
+  selector_target,
+  alternatives,
+  semantics
+) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(selector, TccqExpression, "TccqExpression", "selector")
+  .tccq_check_s7(selector_target, TccqWriteTarget, "TccqWriteTarget", "selector_target")
+  .tccq_check_list_of(alternatives, TccqBlock, "TccqBlock", "alternatives")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  effect <- Reduce(
+    tccq_effect_union,
+    c(
+      list(selector@effect),
+      lapply(alternatives, function(alternative) alternative@effect)
+    ),
+    init = tccq_effect()
+  )
+  TccqSwitch(
+    id = id,
+    effect = effect,
+    selector = selector,
+    selector_target = selector_target,
+    alternatives = alternatives,
+    semantics = semantics
+  )
+}
+
 #' Construct a value-producing neutral conditional
 #'
 #' @inheritParams TccqConditional
@@ -1809,6 +1918,23 @@ S7::method(tccq_completion, TccqIf) <- function(control) {
     falls_through = consequent@falls_through || alternative@falls_through,
     breaks = consequent@breaks || alternative@breaks,
     continues = consequent@continues || alternative@continues
+  )
+}
+
+S7::method(tccq_completion, TccqSwitch) <- function(control) {
+  alternative_completions <- lapply(control@alternatives, tccq_completion)
+  TccqControlCompletion(
+    falls_through = TRUE,
+    breaks = any(vapply(
+      alternative_completions,
+      function(completion) completion@breaks,
+      logical(1)
+    )),
+    continues = any(vapply(
+      alternative_completions,
+      function(completion) completion@continues,
+      logical(1)
+    ))
   )
 }
 

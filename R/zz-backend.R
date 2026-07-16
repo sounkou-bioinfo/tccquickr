@@ -2188,7 +2188,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           }
         }
         for (statement in block@statements) {
-          if (S7::S7_inherits(statement, TccqIf)) {
+          if (S7::S7_inherits(statement, TccqSwitch)) {
+            selector_target <- statement@selector_target
+            if (!selector_target@value_id %in% local_value_ids) {
+              local_targets[[length(local_targets) + 1L]] <<- selector_target
+              local_value_ids <<- c(local_value_ids, selector_target@value_id)
+            }
+            for (alternative in statement@alternatives) {
+              walk_block(alternative)
+            }
+          } else if (S7::S7_inherits(statement, TccqIf)) {
             structured_body_has_condition <<- TRUE
             walk_block(statement@consequent)
             walk_block(statement@alternative)
@@ -2922,6 +2931,54 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push("}")
           return(invisible(NULL))
         }
+        if (S7::S7_inherits(statement, TccqSwitch)) {
+          selector_name <- emit_context$source_name_by_value_id[[
+            statement@selector_target@value_id
+          ]]
+          if (is.null(selector_name) || !nzchar(selector_name)) {
+            tccq_abort(
+              "backend.unbound_switch_selector",
+              "A positional switch has no generated selector storage.",
+              phase = "backend",
+              path = sprintf("backend.%s.switch", backend@id),
+              data = list(backend = backend@id, statement = statement@id)
+            )
+          }
+          push("{")
+          depth <<- depth + 1L
+          selector_type <- emit_context$storage_type_by_value_id[[
+            statement@selector_target@value_id
+          ]]
+          if (!identical(selector_type, statement@selector_target@storage_type)) {
+            tccq_abort(
+              "backend.switch_selector_type_mismatch",
+              "A positional switch selector disagrees with its backend local type.",
+              phase = "backend",
+              path = sprintf("backend.%s.switch", backend@id),
+              data = list(backend = backend@id, statement = statement@id)
+            )
+          }
+          push(sprintf(
+            "%s %s = %s;",
+            source_scalar_type(selector_type, "c"),
+            selector_name,
+            expression_text(statement@selector, emit_context)
+          ))
+          for (position in seq_along(statement@alternatives)) {
+            prefix <- if (position == 1L) "if" else "else if"
+            push(sprintf("%s (%s == %d) {", prefix, selector_name, position))
+            depth <<- depth + 1L
+            emit_statement_block(
+              statement@alternatives[[position]],
+              result_target
+            )
+            depth <<- depth - 1L
+            push("}")
+          }
+          depth <<- depth - 1L
+          push("}")
+          return(invisible(NULL))
+        }
         if (S7::S7_inherits(statement, TccqWhile)) {
           push("while (1) {")
           depth <<- depth + 1L
@@ -3573,6 +3630,63 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           depth <<- depth + 1L
           emit_statement_block(statement@alternative, result_target)
           depth <<- depth - 1L
+          push("end if")
+          depth <<- depth - 1L
+          push("end block")
+          return(invisible(NULL))
+        }
+        if (S7::S7_inherits(statement, TccqSwitch)) {
+          selector_name <- emit_context$source_name_by_value_id[[
+            statement@selector_target@value_id
+          ]]
+          if (is.null(selector_name) || !nzchar(selector_name)) {
+            tccq_abort(
+              "backend.unbound_switch_selector",
+              "A positional switch has no generated selector storage.",
+              phase = "backend",
+              path = sprintf("backend.%s.switch", backend@id),
+              data = list(backend = backend@id, statement = statement@id)
+            )
+          }
+          push("block")
+          depth <<- depth + 1L
+          selector_type <- emit_context$storage_type_by_value_id[[
+            statement@selector_target@value_id
+          ]]
+          if (!identical(selector_type, statement@selector_target@storage_type)) {
+            tccq_abort(
+              "backend.switch_selector_type_mismatch",
+              "A positional switch selector disagrees with its backend local type.",
+              phase = "backend",
+              path = sprintf("backend.%s.switch", backend@id),
+              data = list(backend = backend@id, statement = statement@id)
+            )
+          }
+          push(sprintf(
+            "%s :: %s",
+            source_scalar_type(selector_type, "fortran"),
+            selector_name
+          ))
+          push(sprintf(
+            "%s = %s",
+            selector_name,
+            expression_text(statement@selector, emit_context)
+          ))
+          for (position in seq_along(statement@alternatives)) {
+            prefix <- if (position == 1L) "if" else "else if"
+            push(sprintf(
+              "%s (%s == %d_c_int) then",
+              prefix,
+              selector_name,
+              position
+            ))
+            depth <<- depth + 1L
+            emit_statement_block(
+              statement@alternatives[[position]],
+              result_target
+            )
+            depth <<- depth - 1L
+          }
           push("end if")
           depth <<- depth - 1L
           push("end block")

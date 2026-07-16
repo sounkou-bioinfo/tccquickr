@@ -1590,6 +1590,54 @@ expect_true(grepl("break;", backend_source(repeat_c), fixed = TRUE))
 expect_true(grepl("cycle", backend_source(repeat_fortran), fixed = TRUE))
 expect_true(grepl("exit", backend_source(repeat_fortran), fixed = TRUE))
 
+positional_switch_recurrence <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    switch(index,
+      next,
+      total <- total + 20,
+      break
+    )
+    total <- total + 1
+  }
+  total
+}
+positional_switch_program <- tccq_analyze(
+  positional_switch_recurrence,
+  strict = TRUE
+)@value
+positional_switch_c <- tccq_plan_backend(
+  positional_switch_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+positional_switch_fortran <- tccq_plan_backend(
+  positional_switch_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(positional_switch_c@success)
+expect_true(positional_switch_fortran@success)
+positional_switch_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(positional_switch_c)@body@statements
+)[[1L]]
+positional_switch <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqSwitch),
+  positional_switch_loop@body@statements
+)[[1L]]
+selector_local <- Filter(
+  function(binding) identical(
+    binding@value_id,
+    positional_switch@selector_target@value_id
+  ),
+  backend_interface(positional_switch_c)@locals
+)[[1L]]
+expect_equal(selector_local@source_type@base, "integer")
+expect_true(grepl("continue;", backend_source(positional_switch_c), fixed = TRUE))
+expect_true(grepl("cycle", backend_source(positional_switch_fortran), fixed = TRUE))
+
 vector_for_sum <- function(x) {
   declare(type(x = double(n)))
   total <- 0
@@ -4140,6 +4188,64 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(repeat_fortran_shared@success)
   check_repeat_recurrence(backend_callable(repeat_fortran_shared))
+}
+
+positional_switch_inputs <- lapply(
+  c(0L, 1L, 2L, 3L, 5L),
+  function(size) as.double(seq_len(size))
+)
+positional_switch_reference <- function(x) {
+  total <- 0
+  for (index in seq_len(length(x))) {
+    switch(index,
+      next,
+      total <- total + 20,
+      break
+    )
+    total <- total + 1
+  }
+  total
+}
+positional_switch_expected <- vapply(
+  positional_switch_inputs,
+  positional_switch_reference,
+  numeric(1)
+)
+check_positional_switch <- function(callable) {
+  expect_equal(
+    vapply(positional_switch_inputs, callable, numeric(1)),
+    positional_switch_expected
+  )
+}
+
+if (rtinycc_jit_available) {
+  positional_switch_jit <- tccq_plan_backend(
+    positional_switch_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(positional_switch_jit@success)
+  check_positional_switch(backend_callable(positional_switch_jit))
+}
+
+if (can_build_shared_library("c")) {
+  positional_switch_c_shared <- tccq_plan_backend(
+    positional_switch_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(positional_switch_c_shared@success)
+  check_positional_switch(backend_callable(positional_switch_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  positional_switch_fortran_shared <- tccq_plan_backend(
+    positional_switch_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(positional_switch_fortran_shared@success)
+  check_positional_switch(backend_callable(positional_switch_fortran_shared))
 }
 
 vector_for_inputs <- list(

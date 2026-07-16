@@ -806,6 +806,81 @@ repeat_actions <- vapply(
 )
 expect_equal(sort(repeat_actions), c("break", "next"))
 
+positional_switch_recurrence <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    switch(index,
+      next,
+      total <- total + 20,
+      break
+    )
+    total <- total + 1
+  }
+  total
+}
+positional_switch_result <- tccq_analyze(
+  positional_switch_recurrence,
+  strict = TRUE
+)
+expect_true(positional_switch_result@success)
+positional_switch_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  positional_switch_result@value@schedule@body@statements
+)[[1L]]
+positional_switch <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqSwitch),
+  positional_switch_loop@body@statements
+)[[1L]]
+expect_equal(positional_switch@selector@type@base, "integer")
+expect_equal(length(positional_switch@alternatives), 3L)
+expect_true(positional_switch@effect@reads)
+expect_true(positional_switch@effect@writes)
+expect_equal(
+  vapply(
+    positional_switch@alternatives[c(1L, 3L)],
+    function(alternative) alternative@statements[[1L]]@action,
+    character(1)
+  ),
+  c("next", "break")
+)
+
+double_switch_selector <- function(x) {
+  declare(type(x = double()))
+  total <- 0
+  switch(x, total <- 1)
+  total
+}
+double_switch_result <- tccq_analyze(double_switch_selector)
+expect_false(double_switch_result@success)
+expect_true(any(vapply(
+  double_switch_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.invalid_switch_selector"
+  ),
+  logical(1)
+)))
+
+missing_switch_alternative <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    switch(index, total <- 1, , total <- 3)
+  }
+  total
+}
+missing_switch_result <- tccq_analyze(missing_switch_alternative)
+expect_false(missing_switch_result@success)
+expect_true(any(vapply(
+  missing_switch_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.switch_fallthrough_boundary"
+  ),
+  logical(1)
+)))
+
 vector_for_sum <- function(x) {
   declare(type(x = double(n)))
   total <- 0

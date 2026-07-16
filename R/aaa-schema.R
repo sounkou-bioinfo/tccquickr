@@ -2105,6 +2105,22 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
               current_cells <- alternative_cells
             }
           }
+        } else if (S7::S7_inherits(statement, TccqSwitch)) {
+          validate_expression(
+            statement@selector,
+            current_cells,
+            statement@id,
+            normal_path
+          )
+          for (alternative in statement@alternatives) {
+            validate_block(
+              alternative,
+              current_cells,
+              current_local_targets,
+              loop_depth,
+              normal_path
+            )
+          }
         } else if (S7::S7_inherits(statement, TccqLoopTransfer)) {
           if (loop_depth == 0L) {
             tccq_abort(

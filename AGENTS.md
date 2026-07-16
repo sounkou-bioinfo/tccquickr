@@ -60,9 +60,10 @@ The active architecture is the small typed core:
   render contracts.
 - `R/lowering.R`: typed lowering from the declared subset into values, regions,
   fusion groups, and storage plans.
-- `R/z-expression.R`: backend-neutral expression trees, sequential
-  `TccqIterationPlan` values, the `TccqLoopNest` with-loop plan (SAC lineage),
-  and the loop-nest planner consumed by source printers.
+- `R/z-expression.R`: backend-neutral expression and statement trees,
+  sequential control values including `TccqIterationPlan` and `TccqSwitch`,
+  the `TccqLoopNest` with-loop plan (SAC lineage), and the loop-nest planner
+  consumed by source printers.
 - `R/utils.R`: small schema validation helpers.
 - `docs/root.md`: the current root direction.
 
@@ -272,6 +273,19 @@ For the reset core, keep these rules explicit:
   may be introduced by its first assignment inside a loop, but every read must
   be dominated on all normally continuing paths; loop writes are not promoted
   after a possibly empty loop.
+  Positional statement `switch` is `TccqSwitch`: it owns one scalar integer
+  selector expression, a typed local selector target with stable identity,
+  ordered typed arm blocks, and the original `TccqCallSemantics`. The selector
+  is evaluated exactly once into a local binding planned by
+  `TccqBackendFunctionInterface`.
+  Its completion always includes normal fallthrough because an unmatched
+  positive position evaluates no arm, while arm `break` and `next` still
+  target the nearest enclosing R loop. A source backend may choose its target
+  syntax, but it must not use a native construct that captures those transfers;
+  in particular, a C `switch` would give nested R `break` the wrong target.
+  Character selection, numeric-double coercion and warning behavior, missing
+  alternatives, and value-producing `switch` remain explicit gaps rather than
+  printer conventions.
   The current slice does not cover labeled or nonlocal transfer or
   array-carried state. Numeric comparison
   implementations must preserve `NA`/`NaN` in logical results so `while` and

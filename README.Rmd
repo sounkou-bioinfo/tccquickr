@@ -272,8 +272,18 @@ The iterator is initialized on entry to the body but remains uninitialized
 after a possibly empty loop, so post-loop reads are refused until non-emptiness
 is proven. A nested procedural `if` is a `TccqIf` whose consequent and
 alternative are general typed blocks; omitting `else` produces an explicit
-empty alternative block. C, Fortran, and Rtinycc consume that same structured
-body without encoding recurrence as a `TccqLoopNest`. The body is the
+empty alternative block. Positional statement `switch` is a `TccqSwitch` with
+one scalar integer selector, a typed local selector target, and ordered typed
+alternative blocks. The selector is evaluated exactly once through a
+local binding in the shared backend function interface. Its completion retains
+normal fallthrough for an unmatched position, while an arm's `break` or `next`
+still targets the surrounding R loop. C therefore emits ordered conditional
+arms instead of a native C `switch`, which would capture `break` and change the
+program's meaning; Fortran consumes the same neutral statement. Character
+selection, numeric-double coercion and warnings, missing alternatives, and
+value-producing `switch` remain structured refusals. C, Fortran, and Rtinycc
+consume that same structured body without encoding recurrence as a
+`TccqLoopNest`. The body is the
 structured form of `TccqProgramSchedule`, so there is still one top-level owner
 of order;
 the schedule constructor validates result identity, graph references, exact
@@ -539,8 +549,8 @@ The compiler core is typed all the way down: S7 schemas for values, shapes,
 effects, regions, and plans; `s7contract` interfaces between phases; classed
 diagnostics instead of error strings; neutral expression and statement values;
 one `TccqLoopNest` abstraction for data-parallel iteration; and structured
-`TccqBlock`/`TccqIf`/`TccqLoop` values for sequential recurrence, with
-`TccqIterationPlan` owning sequential source and element selection. Every
+`TccqBlock`/`TccqIf`/`TccqSwitch`/`TccqLoop` values for sequential recurrence,
+with `TccqIterationPlan` owning sequential source and element selection. Every
 source backend consumes the same neutral handoff.
 The full phase-by-phase story —
 call semantics, operation registries, lowering, loop nests, bridges, backend

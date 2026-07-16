@@ -1756,6 +1756,81 @@ tccq_lower_function <- function(
           diagnostics = list()
         ))
       }
+      if (identical(call_name, "switch") && length(expr) >= 3L) {
+        semantics <- take_semantics(expr, "switch")
+        if (is.null(semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            "The `switch` call has no matching evaluator facts in the frontend call index.",
+            expr
+          ))
+        }
+        selector <- lower_expression(expr[[2L]], state)
+        if (length(selector$diagnostics) > 0L) {
+          return(selector)
+        }
+        if (
+          !identical(selector$type@base, "integer") ||
+            selector$type@shape@rank != 0L
+        ) {
+          return(diagnostic_value(
+            "lowering.invalid_switch_selector",
+            "The positional `switch` subset requires a scalar integer selector.",
+            expr[[2L]],
+            data = list(base = selector$type@base, rank = selector$type@shape@rank)
+          ))
+        }
+        selector_expression <- expression_for(selector$value_id)
+        if (!selector_expression@success) {
+          return(list(
+            value_id = NULL,
+            type = NULL,
+            diagnostics = selector_expression@diagnostics
+          ))
+        }
+        alternative_expressions <- as.list(expr)[-(1:2)]
+        if (any(vapply(
+          alternative_expressions,
+          identical,
+          logical(1),
+          quote(expr = )
+        ))) {
+          return(diagnostic_value(
+            "lowering.switch_fallthrough_boundary",
+            "Missing `switch` alternatives need explicit R fallthrough semantics before lowering.",
+            expr
+          ))
+        }
+        alternatives <- lapply(alternative_expressions, function(alternative_expr) {
+          lower_control_block(alternative_expr, in_loop = in_loop)
+        })
+        failed_alternative <- which(vapply(
+          alternatives,
+          function(alternative) length(alternative$diagnostics) > 0L,
+          logical(1)
+        ))
+        if (length(failed_alternative) > 0L) {
+          return(alternatives[[failed_alternative[[1L]]]])
+        }
+        statement_id <- next_statement_id()
+        return(list(
+          value_id = selector$value_id,
+          type = selector$type,
+          statement = tccq_switch(
+            statement_id,
+            selector_expression@value,
+            tccq_write_target(
+              paste0(statement_id, ".selector"),
+              selector$type,
+              selector$type,
+              kind = "local"
+            ),
+            lapply(alternatives, function(alternative) alternative$block),
+            semantics
+          ),
+          diagnostics = list()
+        ))
+      }
       if (identical(call_name, "while") && length(expr) == 3L) {
         semantics <- take_semantics(expr, "while")
         if (is.null(semantics)) {
@@ -2078,7 +2153,7 @@ tccq_lower_function <- function(
       }
       diagnostic_value(
         "lowering.unsupported_sequential_statement",
-        "Sequential blocks currently accept cell assignments, procedural `if`, `for`, `while`, `repeat`, `break`, and `next` statements.",
+        "Sequential blocks currently accept cell assignments, procedural `if`, positional integer `switch`, `for`, `while`, `repeat`, `break`, and `next` statements.",
         expr,
         data = list(call = call_name)
       )
@@ -2221,34 +2296,24 @@ tccq_lower_function <- function(
     function(call) call@name,
     character(1)
   ))
-  sequential_control_names <- c("for", "while", "repeat", TCCQ_LOOP_TRANSFER_ACTIONS)
+  sequential_control_names <- c(
+    "for", "while", "repeat", "switch", TCCQ_LOOP_TRANSFER_ACTIONS
+  )
   has_sequential_control <- any(sequential_control_names %in% executable_call_names)
-  loop_calls <- Filter(
-    function(call) call@name %in% c("for", "while", "repeat"),
+  sequential_assignments <- Filter(
+    function(call) {
+      call@name %in% c("<-", "=") &&
+        is.call(call@expr) &&
+        length(call@expr) == 3L &&
+        is.symbol(call@expr[[2L]])
+    },
     executable_calls
   )
-  loop_cell_names <- unique(unlist(lapply(loop_calls, function(call) {
-    expected_length <- switch(call@name, `for` = 4L, `while` = 3L, `repeat` = 2L)
-    if (!is.call(call@expr) || length(call@expr) != expected_length) {
-      return(character())
-    }
-    body_position <- switch(call@name, `for` = 4L, `while` = 3L, `repeat` = 2L)
-    body_calls <- tccq_collect_calls(call@expr[[body_position]])
-    assignments <- Filter(
-      function(body_call) {
-        body_call@name %in% c("<-", "=") &&
-          is.call(body_call@expr) &&
-          length(body_call@expr) == 3L &&
-          is.symbol(body_call@expr[[2L]])
-      },
-      body_calls
-    )
-    vapply(
-      assignments,
-      function(assignment) as.character(assignment@expr[[2L]]),
-      character(1)
-    )
-  }), use.names = FALSE))
+  sequential_cell_names <- unique(vapply(
+    sequential_assignments,
+    function(assignment) as.character(assignment@expr[[2L]]),
+    character(1)
+  ))
   semantics_barrier <- function(semantics) {
     call <- semantics@call
     if (!call@name %in% executable_call_names) {
@@ -2324,7 +2389,7 @@ tccq_lower_function <- function(
     sequential_result <- lower_sequential_program(
       expressions,
       state,
-      loop_cell_names
+      sequential_cell_names
     )
     if (length(sequential_result$diagnostics) > 0L) {
       return(new_plan(
