@@ -152,9 +152,11 @@ the same registry into ordinary typed values. Expansion checks the signature's
 result type and verifies that the primitive effects fit inside the body's
 declared effect contract. A body can refer only to its parameters, literals,
 and calls resolved by the registry; free symbols and special-forcing calls are
-structured refusals. The composite name is gone before expression trees,
-fusion, loop nests, or source backends see the program. Every neutral operation
-expression then owns its complete
+structured refusals. Bodies may call other neutral bodies, which expand
+transitively through the same registry. This is typed inline expansion for
+fusion, not a separately linked function mechanism: every composite name is
+gone before expression trees, fusion, loop nests, or source backends see the
+program. Every neutral operation expression then owns its complete
 `TccqLoweredOperation` and typed effect; it does not duplicate the selected
 implementation or hide pass facts in expression attributes.
 

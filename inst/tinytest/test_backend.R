@@ -559,6 +559,61 @@ expect_true(neutral_sigmoid_fortran_plan@success)
 expect_equal(backend_products(neutral_sigmoid_c_plan)@body@op, "/")
 expect_equal(backend_products(neutral_sigmoid_fortran_plan)@body@op, "/")
 
+nested_neutral_registry <- tccq_op_registry_add(
+  neutral_sigmoid_registry,
+  tccq_op_impl(
+    "neutral_shifted_sigmoid",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+    body = tccq_op_body(function(value) neutral_sigmoid(value * 2 + 1)),
+    elementwise = tccq_elementwise_spec(
+      "neutral_shifted_sigmoid",
+      1L,
+      result_type = function(input_types, result_shape) {
+        tccq_type("double", result_shape)
+      }
+    )
+  )
+)
+nested_neutral <- function(x) {
+  declare(type(x = double(n)))
+  neutral_shifted_sigmoid(x)
+}
+nested_neutral_program <- tccq_analyze(
+  nested_neutral,
+  registry = nested_neutral_registry
+)
+expect_true(nested_neutral_program@success)
+nested_neutral_ops <- vapply(
+  nested_neutral_program@value@values,
+  function(value) value@op,
+  character(1)
+)
+expect_false(any(c("neutral_shifted_sigmoid", "neutral_sigmoid") %in% nested_neutral_ops))
+expect_true(all(c("*", "+", "-", "exp", "/") %in% nested_neutral_ops))
+
+nested_neutral_nests <- tccq_program_loop_nests(nested_neutral_program@value)
+expect_true(nested_neutral_nests@success)
+expect_equal(length(nested_neutral_nests@value), 1L)
+
+nested_neutral_c_plan <- tccq_plan_backend(
+  nested_neutral_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+nested_neutral_fortran_plan <- tccq_plan_backend(
+  nested_neutral_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(nested_neutral_c_plan@success)
+expect_true(nested_neutral_fortran_plan@success)
+expect_equal(length(backend_products(nested_neutral_c_plan)@loop_nests), 1L)
+expect_equal(length(backend_products(nested_neutral_fortran_plan)@loop_nests), 1L)
+expect_equal(backend_products(nested_neutral_c_plan)@body@op, "/")
+expect_equal(backend_products(nested_neutral_fortran_plan)@body@op, "/")
+
 neutral_sigmoid_input <- c(-8, -2, 0, 2, 8)
 neutral_sigmoid_expected <- stats::plogis(neutral_sigmoid_input)
 if (rtinycc_jit_available) {
