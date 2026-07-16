@@ -8,9 +8,7 @@ tccq_indexed_value(
   id,
   source_id,
   source_type,
-  iterators,
-  selectors,
-  iterations,
+  index_proofs,
   access,
   operation,
   semantics
@@ -23,13 +21,9 @@ tccq_indexed_value(
 
 \item{source_type}{Type of the source storage.}
 
-\item{iterators}{Iterator targets populated by the enclosing virtual loops.}
+\item{index_proofs}{Per-axis affine selector and bounds proofs.}
 
-\item{selectors}{Iterator-cell references used by the R expression.}
-
-\item{iterations}{Virtual iterations proving selector bounds.}
-
-\item{access}{Zero-based source access corresponding to the iterator.}
+\item{access}{Zero-based source access corresponding to the proofs.}
 
 \item{operation}{Lowered subscript implementation payload.}
 

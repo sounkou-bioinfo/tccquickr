@@ -84,18 +84,19 @@ statements. `TccqFor` adds a scalar iteration cell and one
 `TccqExpression` with `TccqAccess` or as a virtual affine `TccqIndexExpr`.
 Virtual iteration is selected through typed operation metadata rather than a
 printer spelling. The first such implementation is `seq_len(n)` for a declared
-dimension `n`; its source is a `TccqDimensionReference`, so a scalar binding
-named `n` cannot masquerade as that extent. `TccqIterationSpec` owns its unary
-signature, extent argument, and first value. Its iterator is
+dimension or `seq_len(3L)` for a constant domain; symbolic sources use
+`TccqDimensionReference`, so a scalar binding named `n` cannot masquerade as an
+ABI extent. `TccqIterationSpec` owns its unary signature, extent argument, and
+first value. Its iterator is
 initialized inside the body but not after a potentially empty domain.
-Within exact virtual iterations, a scalar extraction with one selector per
-source axis is a `TccqIndexedValue`, not an untyped special case. It retains
-ordered iterator targets, selector cells, iteration proofs, the selected
-subscript implementation, evaluator semantics, and one typed `extract`
-access. Every source dimension must match its selector's rank-1 iteration
-domain. The access domain owns the unique iteration axes, so a diagonal read
-can map one axis onto multiple source dimensions without pretending there are
-multiple loops. `TccqArity` represents the subscript's open argument-count
+Within virtual iterations, a scalar extraction with one selector per source
+axis is a `TccqIndexedValue`, not an untyped special case. Each axis has one
+`TccqIndexProof` relating the iterator cell, domain, source extent, normalized
+selector call, and affine storage index. Exact reads use offset zero; a positive
+shift is legal only when the complete iteration range remains in bounds. The
+access domain owns the unique iteration axes, so a diagonal read can map one
+axis onto multiple source dimensions without pretending there are multiple
+loops. `TccqArity` represents the subscript's open argument-count
 contract without imposing a fake maximum rank. Assignment to a selector
 iterator invalidates that proof for the complete body, and stored-vector
 iteration never creates it. Unproven selectors, rank mismatches, and per-axis

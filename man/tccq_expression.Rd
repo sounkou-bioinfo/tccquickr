@@ -15,7 +15,8 @@ tccq_expression(
   literal = NULL,
   operation = NULL,
   branch = NULL,
-  reference = NULL
+  reference = NULL,
+  index_proofs = list()
 )
 }
 \arguments{
@@ -40,6 +41,8 @@ tccq_expression(
 \item{branch}{Typed conditional payload for branch expressions.}
 
 \item{reference}{Typed source payload for reference expressions.}
+
+\item{index_proofs}{Per-axis bounds proofs for indexed expressions.}
 }
 \description{
 Construct a backend-neutral expression

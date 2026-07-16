@@ -1781,6 +1781,64 @@ expect_identical(
   indexed_sum_fortran_assignment@value
 )
 
+shifted_indexed_sum <- function(x) {
+  declare(type(x = double(4)))
+  total <- 0
+  for (index in seq_len(3L)) {
+    total <- total + x[index + 1L]
+  }
+  total
+}
+shifted_indexed_program <- tccq_analyze(shifted_indexed_sum, strict = TRUE)@value
+shifted_indexed_c <- tccq_plan_backend(
+  shifted_indexed_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+shifted_indexed_rtinycc <- tccq_plan_backend(
+  shifted_indexed_program,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+shifted_indexed_fortran <- tccq_plan_backend(
+  shifted_indexed_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(shifted_indexed_c@success)
+expect_true(shifted_indexed_rtinycc@success)
+expect_true(shifted_indexed_fortran@success)
+expect_identical(
+  backend_products(shifted_indexed_c)@body,
+  backend_products(shifted_indexed_rtinycc)@body
+)
+expect_identical(
+  backend_products(shifted_indexed_c)@body,
+  backend_products(shifted_indexed_fortran)@body
+)
+shifted_indexed_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(shifted_indexed_c)@body@statements
+)[[1L]]
+shifted_indexed_assignment <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqAssignment),
+  shifted_indexed_loop@body@statements
+)[[1L]]
+shifted_indexed_expression <- shifted_indexed_assignment@value@inputs[[2L]]
+expect_equal(shifted_indexed_expression@kind, "indexed")
+expect_true(S7::S7_inherits(
+  shifted_indexed_expression@index_proofs[[1L]],
+  TccqIndexProof
+))
+expect_equal(
+  shifted_indexed_expression@reference@access@index_map[[1L]]@offset,
+  1L
+)
+expect_identical(
+  shifted_indexed_expression@reference@access@index_map[[1L]],
+  shifted_indexed_expression@index_proofs[[1L]]@index
+)
+
 indexed_matrix_sum <- function(x) {
   declare(type(x = double(n, p)))
   total <- 0
@@ -4603,6 +4661,54 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(indexed_sum_fortran_shared@success)
   check_indexed_sum(backend_callable(indexed_sum_fortran_shared))
+}
+
+shifted_indexed_inputs <- list(
+  c(1, 2, 3, 4),
+  c(1, NA_real_, 3, 4),
+  c(1, NaN, 3, 4),
+  c(-1, -2, -3, -4)
+)
+shifted_indexed_expected <- vapply(
+  shifted_indexed_inputs,
+  function(input) sum(input[2:4]),
+  numeric(1)
+)
+check_shifted_indexed_sum <- function(callable) {
+  expect_equal(
+    vapply(shifted_indexed_inputs, callable, numeric(1)),
+    shifted_indexed_expected
+  )
+}
+
+if (rtinycc_jit_available) {
+  shifted_indexed_jit <- tccq_plan_backend(
+    shifted_indexed_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(shifted_indexed_jit@success)
+  check_shifted_indexed_sum(backend_callable(shifted_indexed_jit))
+}
+
+if (can_build_shared_library("c")) {
+  shifted_indexed_c_shared <- tccq_plan_backend(
+    shifted_indexed_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(shifted_indexed_c_shared@success)
+  check_shifted_indexed_sum(backend_callable(shifted_indexed_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  shifted_indexed_fortran_shared <- tccq_plan_backend(
+    shifted_indexed_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(shifted_indexed_fortran_shared@success)
+  check_shifted_indexed_sum(backend_callable(shifted_indexed_fortran_shared))
 }
 
 indexed_matrix_inputs <- list(

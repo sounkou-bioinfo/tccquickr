@@ -254,6 +254,18 @@ expect_true(resolved_range_subscript@success)
 expect_equal(resolved_range_subscript@value@target, "r_language")
 expect_null(resolved_range_subscript@value@subscript)
 
+resolved_shifted_subscript <- tccq_resolve_call(
+  default_registry,
+  tccq_call("[", expr = quote(x[index + 1L])),
+  tccq_op_context()
+)
+expect_true(resolved_shifted_subscript@success)
+expect_equal(resolved_shifted_subscript@value@target, "native")
+expect_true(S7::S7_inherits(
+  resolved_shifted_subscript@value@subscript,
+  TccqSubscriptSpec
+))
+
 invalid_subscript_impl <- tryCatch(
   tccq_op_impl(
     "invalid_subscript",

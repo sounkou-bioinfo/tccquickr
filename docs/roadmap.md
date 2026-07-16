@@ -234,11 +234,14 @@ graph-level dead-value elimination. This is enough to establish the
 program-to-program boundary without inventing a pass manager before pass
 composition exists.
 
-The second experiment should generalize proven access beyond an iterator cell
-without claiming full R indexing. An affine scalar selector can be admitted
-when range constraints prove every access in bounds. This will test whether
-dimension constraints, domains, and accesses compose cleanly before mutation
-or views complicate ownership.
+The second experiment is now established without claiming full R indexing.
+`TccqIndexProof` replaces parallel iterator, selector, and iteration lists with
+one per-axis contract relating the iterator cell, domain extent, source extent,
+normalized selector call, and affine storage index. Constant virtual domains
+make `x[index + 1L]` executable when the complete selector range is proved in
+bounds, and the same proof-bearing neutral expression runs through TinyCC, C,
+and Fortran. Symbolic affine iteration extents remain a separate ABI and
+constraint-system problem rather than being smuggled in through source strings.
 
 The third experiment should make one nontrivial fusion and one deliberate
 fusion refusal executable. The accepted case should eliminate a materialized

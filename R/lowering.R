@@ -884,16 +884,36 @@ tccq_lower_function <- function(
       ))
     }
     selector_exprs <- unname(selector_arguments)
-    selector_names <- vapply(selector_exprs, function(selector_expr) {
-      if (!is.symbol(selector_expr)) {
-        return("")
+    selector_names <- character(length(selector_exprs))
+    selector_offsets <- integer(length(selector_exprs))
+    selectors_are_affine <- length(selector_exprs) > 0L
+    for (position in seq_along(selector_exprs)) {
+      selector_expr <- selector_exprs[[position]]
+      if (is.symbol(selector_expr)) {
+        selector_names[[position]] <- as.character(selector_expr)
+        next
       }
-      name <- as.character(selector_expr)
-      if (length(name) == 1L && nzchar(name)) name else ""
-    }, character(1))
-    selectors_are_symbols <- length(selector_names) > 0L && all(nzchar(selector_names))
+      selector_is_positive_shift <-
+        is.call(selector_expr) &&
+          identical(tccq_call_name(selector_expr), "+") &&
+          length(selector_expr) == 3L &&
+          is.symbol(selector_expr[[2L]]) &&
+          is.integer(selector_expr[[3L]]) &&
+          length(selector_expr[[3L]]) == 1L &&
+          !is.na(selector_expr[[3L]]) &&
+          selector_expr[[3L]] > 0L
+      if (!selector_is_positive_shift) {
+        selectors_are_affine <- FALSE
+        break
+      }
+      selector_names[[position]] <- as.character(selector_expr[[2L]])
+      selector_offsets[[position]] <- as.integer(selector_expr[[3L]])
+    }
+    selectors_are_affine <-
+      selectors_are_affine &&
+        all(nzchar(selector_names))
 
-    if (selectors_are_symbols) {
+    if (selectors_are_affine) {
       if (length(selector_exprs) != target$type@shape@rank) {
         return(diagnostic_value(
           "lowering.index_selector_rank_mismatch",
@@ -923,26 +943,6 @@ tccq_lower_function <- function(
           data = list(selectors = selector_names, unproven = unproven)
         ))
       }
-      dimensions_match <- vapply(seq_along(iterations), function(position) {
-        iteration <- iterations[[position]]
-        iteration@domain@shape@rank == 1L && identical(
-          target$type@shape@dims[[position]],
-          iteration@domain@shape@dims[[1L]]
-        )
-      }, logical(1))
-      if (!all(dimensions_match)) {
-        return(diagnostic_value(
-          "lowering.index_iteration_domain_mismatch",
-          "Each indexed source dimension must match its selector's proven iteration domain.",
-          expr,
-          data = list(
-            source_shape = target$type@shape,
-            iteration_domains = lapply(iterations, function(iteration) iteration@domain),
-            mismatched_dimensions = which(!dimensions_match)
-          )
-        ))
-      }
-
       semantics <- take_call_semantics(expr, "[", state)
       if (is.null(semantics)) {
         return(diagnostic_value(
@@ -964,7 +964,42 @@ tccq_lower_function <- function(
         ))
       }
 
-      selectors <- lapply(selector_exprs, lower_expression, state = state)
+      selector_operations <- vector("list", length(selector_exprs))
+      selector_semantics <- vector("list", length(selector_exprs))
+      shifted_positions <- which(selector_offsets > 0L)
+      for (position in shifted_positions) {
+        shift_semantics <- take_call_semantics(selector_exprs[[position]], "+", state)
+        if (is.null(shift_semantics)) {
+          return(diagnostic_value(
+            "lowering.missing_call_semantics",
+            "The shifted selector has no matching `+` evaluator facts in the frontend call index.",
+            selector_exprs[[position]]
+          ))
+        }
+        shift_resolution <- tccq_resolve_call(registry, shift_semantics@call, context)
+        if (
+          !shift_resolution@success ||
+            !S7::S7_inherits(shift_resolution@value@elementwise, TccqElementwiseSpec)
+        ) {
+          return(diagnostic_value(
+            "lowering.unimplemented_index_shift",
+            "The affine selector `+` call has no typed elementwise implementation in this context.",
+            selector_exprs[[position]],
+            data = list(diagnostics = shift_resolution@diagnostics)
+          ))
+        }
+        selector_semantics[[position]] <- shift_semantics
+        selector_operations[[position]] <- tccq_lowered_operation(
+          "elementwise",
+          shift_resolution@value,
+          elementwise = shift_resolution@value@elementwise
+        )
+      }
+
+      selectors <- lapply(
+        selector_names,
+        function(selector_name) lower_expression(as.name(selector_name), state)
+      )
       failed_selector <- which(vapply(
         selectors,
         function(selector) length(selector$diagnostics) > 0L,
@@ -1021,17 +1056,50 @@ tccq_lower_function <- function(
       }
 
       value_id <- next_value_id(state)
+      index_proofs <- vector("list", length(selector_values))
+      for (position in seq_along(selector_values)) {
+        iteration <- iterations[[position]]
+        proof <- tryCatch(
+          tccq_index_proof(
+            state$cell_targets[[selector_names[[position]]]],
+            selector_values[[position]],
+            iteration,
+            target$type@shape@dims[[position]],
+            tccq_index_expr(
+              iteration@domain@axes[[1L]],
+              selector_offsets[[position]]
+            ),
+            operation = selector_operations[[position]],
+            semantics = selector_semantics[[position]]
+          ),
+          error = identity
+        )
+        if (inherits(proof, "error")) {
+          return(diagnostic_value(
+            "lowering.unproven_affine_subscript",
+            "The selector range does not prove an in-bounds affine source access.",
+            selector_exprs[[position]],
+            data = list(
+              selector = deparse1(selector_exprs[[position]]),
+              source_extent = target$type@shape@dims[[position]],
+              iteration_extent = iteration@domain@shape@dims[[1L]],
+              message = conditionMessage(proof)
+            )
+          ))
+        }
+        index_proofs[[position]] <- proof
+      }
       iteration_axes <- vapply(
-        iterations,
-        function(iteration) iteration@domain@axes[[1L]],
+        index_proofs,
+        function(proof) proof@iteration@domain@axes[[1L]],
         character(1)
       )
       unique_axis_positions <- !duplicated(iteration_axes)
       access_domain <- tccq_domain(
         paste0(value_id, "_access_domain"),
         tccq_shape(lapply(
-          iterations[unique_axis_positions],
-          function(iteration) iteration@domain@shape@dims[[1L]]
+          index_proofs[unique_axis_positions],
+          function(proof) proof@iteration@domain@shape@dims[[1L]]
         )),
         axes = iteration_axes[unique_axis_positions],
         attrs = list(kind = "proven_scalar_extract")
@@ -1040,7 +1108,7 @@ tccq_lower_function <- function(
         source_expression@reference@source_value_id,
         access_domain,
         kind = "extract",
-        index_map = lapply(iteration_axes, tccq_index_expr)
+        index_map = lapply(index_proofs, function(proof) proof@index)
       )
       operation <- tccq_lowered_operation(
         "subscript",
@@ -1052,9 +1120,7 @@ tccq_lower_function <- function(
           value_id,
           source_expression@reference@source_value_id,
           target$type,
-          unname(state$cell_targets[selector_names]),
-          selector_values,
-          iterations,
+          index_proofs,
           access,
           operation,
           semantics
@@ -2188,13 +2254,18 @@ tccq_lower_function <- function(
                 ))
               }
               extent_expr <- iteration_arguments[[iteration_spec@extent_arg]]
-              if (
-                !is.symbol(extent_expr) ||
-                  !as.character(extent_expr) %in% state$dim_symbols
-              ) {
+              extent_is_declared_symbol <-
+                is.symbol(extent_expr) &&
+                  as.character(extent_expr) %in% state$dim_symbols
+              extent_is_nonnegative_integer_literal <-
+                is.integer(extent_expr) &&
+                  length(extent_expr) == 1L &&
+                  !is.na(extent_expr) &&
+                  extent_expr >= 0L
+              if (!extent_is_declared_symbol && !extent_is_nonnegative_integer_literal) {
                 return(diagnostic_value(
                   "lowering.unsupported_iteration_extent",
-                  "Virtual iteration currently requires a declared dimension symbol as its extent.",
+                  "Virtual iteration currently requires a declared dimension symbol or non-negative integer literal as its extent.",
                   iterable_expr,
                   data = list(
                     operation = iteration_resolution@value@call@name,
@@ -2226,10 +2297,13 @@ tccq_lower_function <- function(
                   diagnostics = source_expression_result@diagnostics
                 ))
               }
-              if (!S7::S7_inherits(
-                source_expression_result@value@reference,
-                TccqDimensionReference
-              )) {
+              if (
+                extent_is_declared_symbol &&
+                  !S7::S7_inherits(
+                    source_expression_result@value@reference,
+                    TccqDimensionReference
+                  )
+              ) {
                 return(diagnostic_value(
                   "lowering.shadowed_iteration_extent",
                   "The iteration extent resolves to an ordinary binding that shadows the declared dimension.",
@@ -2239,7 +2313,11 @@ tccq_lower_function <- function(
               }
               domain <- tccq_domain(
                 paste0(statement_id, "_domain"),
-                tccq_shape(tccq_dim_symbol(as.character(extent_expr))),
+                tccq_shape(if (extent_is_declared_symbol) {
+                  tccq_dim_symbol(as.character(extent_expr))
+                } else {
+                  tccq_dim_constant(extent_expr)
+                }),
                 axes = axis_name,
                 attrs = list(kind = "sequential_for")
               )

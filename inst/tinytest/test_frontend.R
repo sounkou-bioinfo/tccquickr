@@ -977,23 +977,166 @@ expect_identical(
 expect_equal(indexed_value@access@kind, "extract")
 expect_identical(
   indexed_value@access@domain@axes,
-  indexed_value@iterations[[1L]]@domain@axes
+  indexed_value@index_proofs[[1L]]@iteration@domain@axes
 )
 expect_identical(
   indexed_value@access@domain@shape,
-  indexed_value@iterations[[1L]]@domain@shape
+  indexed_value@index_proofs[[1L]]@iteration@domain@shape
 )
-expect_equal(indexed_value@selectors[[1L]]@cell@name, "index")
+expect_true(S7::S7_inherits(indexed_value@index_proofs[[1L]], TccqIndexProof))
+expect_equal(indexed_value@index_proofs[[1L]]@selector@cell@name, "index")
 expect_identical(
-  indexed_value@iterators[[1L]]@binding,
-  indexed_value@selectors[[1L]]@cell
+  indexed_value@index_proofs[[1L]]@iterator@binding,
+  indexed_value@index_proofs[[1L]]@selector@cell
 )
-expect_equal(indexed_value@iterations[[1L]]@element@offset, 1L)
+expect_equal(indexed_value@index_proofs[[1L]]@iteration@element@offset, 1L)
 expect_equal(indexed_value@access@index_map[[1L]]@offset, 0L)
 expect_identical(
   indexed_value@semantics@call@id,
   indexed_value@operation@resolved_op@call@id
 )
+
+shifted_indexed_sum <- function(x) {
+  declare(type(x = double(4)))
+  total <- 0
+  for (index in seq_len(3L)) {
+    total <- total + x[index + 1L]
+  }
+  total
+}
+shifted_indexed_result <- tccq_analyze(shifted_indexed_sum, strict = TRUE)
+expect_true(shifted_indexed_result@success)
+shifted_indexed_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  shifted_indexed_result@value@schedule@body@statements
+)[[1L]]
+expect_equal(shifted_indexed_loop@iteration@domain@shape@dims[[1L]]@kind, "constant")
+expect_equal(shifted_indexed_loop@iteration@domain@shape@dims[[1L]]@value, 3L)
+expect_equal(shifted_indexed_loop@iteration@source@kind, "literal")
+shifted_indexed_value <- Filter(
+  function(value) S7::S7_inherits(value, TccqIndexedValue),
+  shifted_indexed_result@value@values
+)[[1L]]
+shifted_index_proof <- shifted_indexed_value@index_proofs[[1L]]
+expect_true(S7::S7_inherits(shifted_index_proof, TccqIndexProof))
+expect_equal(shifted_index_proof@source_extent@value, 4L)
+expect_equal(shifted_index_proof@index@offset, 1L)
+expect_equal(shifted_index_proof@operation@family, "elementwise")
+expect_equal(shifted_index_proof@operation@resolved_op@call@name, "+")
+expect_identical(
+  shifted_index_proof@operation@resolved_op@call@id,
+  shifted_index_proof@semantics@call@id
+)
+expect_identical(
+  shifted_indexed_value@access@index_map[[1L]],
+  shifted_index_proof@index
+)
+
+shifted_indexed_expression_result <- tccq_expression_tree(
+  shifted_indexed_result@value,
+  shifted_indexed_value@id
+)
+expect_true(shifted_indexed_expression_result@success)
+shifted_indexed_expression <- shifted_indexed_expression_result@value
+missing_index_proof_error <- tryCatch(
+  S7::set_props(shifted_indexed_expression, index_proofs = list()),
+  error = identity
+)
+expect_true(inherits(missing_index_proof_error, "error"))
+mismatched_source_proof <- S7::set_props(
+  shifted_index_proof,
+  source_extent = tccq_dim_constant(5L)
+)
+mismatched_source_proof_error <- tryCatch(
+  S7::set_props(
+    shifted_indexed_expression,
+    index_proofs = list(mismatched_source_proof)
+  ),
+  error = identity
+)
+expect_true(inherits(mismatched_source_proof_error, "error"))
+
+left_shifted_index <- function(x) {
+  declare(type(x = double(4)))
+  total <- 0
+  for (index in seq_len(3L)) {
+    total <- total + x[1L + index]
+  }
+  total
+}
+subtracted_index <- function(x) {
+  declare(type(x = double(4)))
+  total <- 0
+  for (index in seq_len(3L)) {
+    total <- total + x[index - 1L]
+  }
+  total
+}
+zero_shifted_index <- function(x) {
+  declare(type(x = double(4)))
+  total <- 0
+  for (index in seq_len(3L)) {
+    total <- total + x[index + 0L]
+  }
+  total
+}
+noncanonical_index_results <- lapply(
+  list(left_shifted_index, subtracted_index, zero_shifted_index),
+  tccq_analyze
+)
+expect_true(all(vapply(
+  noncanonical_index_results,
+  function(result) !result@success,
+  logical(1)
+)))
+expect_true(all(vapply(
+  noncanonical_index_results,
+  function(result) any(vapply(
+    result@diagnostics,
+    function(diagnostic) identical(diagnostic@code, "lowering.unsupported_index"),
+    logical(1)
+  )),
+  logical(1)
+)))
+
+empty_constant_iteration <- function(x) {
+  declare(type(x = double(0)))
+  total <- 0
+  for (index in seq_len(0L)) {
+    total <- total + index
+  }
+  total
+}
+empty_constant_iteration_result <- tccq_analyze(
+  empty_constant_iteration,
+  strict = TRUE
+)
+expect_true(empty_constant_iteration_result@success)
+empty_constant_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  empty_constant_iteration_result@value@schedule@body@statements
+)[[1L]]
+expect_equal(empty_constant_loop@iteration@domain@shape@dims[[1L]]@value, 0L)
+expect_equal(empty_constant_loop@iteration@source@literal@value, 0L)
+
+out_of_bounds_shifted_sum <- function(x) {
+  declare(type(x = double(3)))
+  total <- 0
+  for (index in seq_len(3L)) {
+    total <- total + x[index + 1L]
+  }
+  total
+}
+out_of_bounds_shifted_result <- tccq_analyze(out_of_bounds_shifted_sum)
+expect_false(out_of_bounds_shifted_result@success)
+expect_true(any(vapply(
+  out_of_bounds_shifted_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.unproven_affine_subscript"
+  ),
+  logical(1)
+)))
 
 indexed_matrix_sum <- function(x) {
   declare(type(x = double(n, p)))
@@ -1016,8 +1159,8 @@ indexed_matrix_value <- indexed_matrix_values[[1L]]
 expect_equal(indexed_matrix_value@source_type@shape@rank, 2L)
 expect_equal(
   vapply(
-    indexed_matrix_value@selectors,
-    function(selector) selector@cell@name,
+    indexed_matrix_value@index_proofs,
+    function(proof) proof@selector@cell@name,
     character(1)
   ),
   c("row", "column")
@@ -1030,8 +1173,8 @@ expect_identical(
     character(1)
   ),
   vapply(
-    indexed_matrix_value@iterations,
-    function(iteration) iteration@domain@axes[[1L]],
+    indexed_matrix_value@index_proofs,
+    function(proof) proof@iteration@domain@axes[[1L]],
     character(1)
   )
 )
@@ -1059,8 +1202,8 @@ indexed_diagonal_value <- Filter(
   indexed_diagonal_result@value@values
 )[[1L]]
 expect_identical(
-  indexed_diagonal_value@iterations[[1L]],
-  indexed_diagonal_value@iterations[[2L]]
+  indexed_diagonal_value@index_proofs[[1L]]@iteration,
+  indexed_diagonal_value@index_proofs[[2L]]@iteration
 )
 expect_equal(length(indexed_diagonal_value@access@domain@axes), 1L)
 expect_equal(
@@ -1145,7 +1288,7 @@ expect_true(any(vapply(
   indexed_matrix_domain_result@diagnostics,
   function(diagnostic) identical(
     diagnostic@code,
-    "lowering.index_iteration_domain_mismatch"
+    "lowering.unproven_affine_subscript"
   ),
   logical(1)
 )))
@@ -1163,7 +1306,10 @@ unrelated_iterator_target <- tccq_write_target(
   binding = unrelated_iterator_cell
 )
 mismatched_iterator_proof <- tryCatch(
-  S7::set_props(indexed_value, iterators = list(unrelated_iterator_target)),
+  S7::set_props(
+    indexed_value@index_proofs[[1L]],
+    iterator = unrelated_iterator_target
+  ),
   error = identity
 )
 expect_true(inherits(mismatched_iterator_proof, "error"))
@@ -1197,7 +1343,7 @@ expect_true(any(vapply(
   mismatched_index_domain_result@diagnostics,
   function(diagnostic) identical(
     diagnostic@code,
-    "lowering.index_iteration_domain_mismatch"
+    "lowering.unproven_affine_subscript"
   ),
   logical(1)
 )))

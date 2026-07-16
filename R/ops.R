@@ -3659,11 +3659,18 @@ tccq_default_op_registry <- function() {
           is.call(call@expr) &&
           length(call@expr) == call@arity + 1L &&
           all(vapply(as.list(call@expr)[-(1:2)], function(selector) {
-            if (!is.symbol(selector)) {
-              return(FALSE)
+            if (is.symbol(selector)) {
+              selector_name <- as.character(selector)
+              return(length(selector_name) == 1L && nzchar(selector_name))
             }
-            selector_name <- as.character(selector)
-            length(selector_name) == 1L && nzchar(selector_name)
+            is.call(selector) &&
+              identical(tccq_call_name(selector), "+") &&
+              length(selector) == 3L &&
+              is.symbol(selector[[2L]]) &&
+              is.integer(selector[[3L]]) &&
+              length(selector[[3L]]) == 1L &&
+              !is.na(selector[[3L]]) &&
+              selector[[3L]] > 0L
           }, logical(1)))
       },
       subscript = atomic_subscript

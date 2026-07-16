@@ -261,29 +261,36 @@ For the reset core, keep these rules explicit:
   iterable/domain fields. The plan separates one-time source evaluation, a
   rank-1 `TccqDomain`, and current-element selection. Stored vectors select
   through a `TccqExpression` with identity `TccqAccess`. Virtual iterables
-  select through `TccqIndexExpr`; their source must be a
-  `TccqDimensionReference`, not an ordinary scalar reference with the same
-  symbol spelling, and they must carry the matching `TccqResolvedOp`,
-  `TccqIterationSpec`, and `TccqCallSemantics`. The first
-  virtual slice is `seq_len(n)` for a declared dimension `n`; arbitrary scalar
-  extents, general ranges, lists, and computed iterables require additional
-  typed iteration semantics. Source printers dispatch on the element class,
-  never on the originating operation name. Eager and lazy unary calls may use
-  the current virtual plan because its source is a direct pure extent
-  reference; special, replacement, control, or effectful calls may not. The
+  select through `TccqIndexExpr`; their source must be either a
+  `TccqDimensionReference` or a finite non-negative integer literal, not an
+  ordinary scalar reference with the same symbol spelling, and they must carry
+  the matching `TccqResolvedOp`, `TccqIterationSpec`, and
+  `TccqCallSemantics`. The first virtual slices are `seq_len(n)` for a declared
+  dimension and `seq_len(3L)` for a constant domain; arbitrary scalar extents,
+  general ranges, lists, and computed iterables require additional typed
+  iteration semantics. Source printers dispatch on the element class, never on
+  the originating operation name. Eager and lazy unary calls may use the
+  current virtual plan because its source is a direct pure extent reference or
+  literal; special, replacement, control, or effectful calls may not. The
   iterator is definitely
   initialized in the body but not after a possibly empty loop. A scalar cell
   may be introduced by its first assignment inside a loop, but every read must
   be dominated on all normally continuing paths; loop writes are not promoted
   after a possibly empty loop.
   A scalar extraction with exactly one selector per source axis is accepted
-  only as a `TccqIndexedValue`. The value must retain the source type, ordered
-  iterator targets, selector cell references, exact `TccqIterationPlan`
-  proofs, typed subscript implementation, original `TccqCallSemantics`, and one
-  `extract` access mapping one-based R iterators to zero-based storage axes.
-  Every source dimension must equal its selector's iteration extent. The
-  access domain owns unique iteration axes, so selectors may share a proof as
-  in `source[index, index]`; the index map still has one entry per source axis.
+  only as a `TccqIndexedValue`. The value must retain the source type, typed
+  subscript implementation, original `TccqCallSemantics`, one `extract`
+  access, and one `TccqIndexProof` per source axis. Each proof keeps the
+  iterator target and cell reference, `TccqIterationPlan`, source extent,
+  affine `TccqIndexExpr`, and optional normalized selector operation together;
+  do not reintroduce parallel iterator/selector/iteration lists. Exact reads
+  have offset zero. Canonical `iterator + positive_integer_literal` may use a
+  positive offset only when the source and iteration extents prove the complete
+  selector range in bounds. The proof retains the selected `+` implementation
+  and call semantics and discharges its general integer-overflow warning only
+  under that range invariant. The access domain owns unique iteration axes, so
+  selectors may share an iteration as in `source[index, index]`; the index map
+  still has one entry per source axis.
   The loop body must not assign to a selector iterator, because rebinding
   invalidates that induction proof for the complete body. Stored-vector
   iteration does not imply a subscript proof. This is not general R indexing:

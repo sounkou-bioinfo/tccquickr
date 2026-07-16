@@ -181,7 +181,7 @@ such as `colSums()` and `rowSums()`, `%*%` contractions, and rank-1 interior
 slices such as `x[2:(n - 1L)]` whose bounds are affine in declared dimension
 symbols. It also handles scalar loop-carried cells updated by `while` and
 `repeat` loops after explicit initialization, plus direct rank-1 atomic and
-declared-extent `seq_len(n)` iteration through `for`, including nested
+declared or constant-extent unit iteration through `for`, including nested
 procedural `if` statements and nearest-loop `break`/`next` transfers over typed
 blocks. Slice extents are typed
 affine dimensions (`n - 2` is a `TccqDim`
@@ -392,11 +392,16 @@ carry a neutral `TccqExpression` with identity `TccqAccess`; virtual unit
 sequences carry an affine `TccqIndexExpr` plus the matching resolved operation
 and call semantics. `TccqIterationSpec` declares the current unary extent and
 start contract. The first virtual implementation is `seq_len(n)` for a declared
-dimension `n`. A `TccqDimensionReference` distinguishes that ABI extent from an
-ordinary scalar binding with the same source name, and printers dispatch on the
-element class rather than the operation name. The iterator is definitely
-initialized inside the body but not after the loop because its domain may be
-empty.
+dimension or `seq_len(3L)` for a constant domain. A `TccqDimensionReference`
+distinguishes an ABI extent from an ordinary scalar binding with the same source
+name, and printers dispatch on the element class rather than the operation name.
+Scalar indexed reads carry one `TccqIndexProof` per source axis. The proof ties
+the iterator cell and domain to the source extent and zero-based
+`TccqIndexExpr`; shifted `iterator + positive_integer_literal` selectors also
+retain the resolved addition and call semantics. A shift is legal only when the
+complete domain proves it in bounds, allowing the proof to discharge the general
+integer-addition warning effect. The iterator is definitely initialized inside
+the body but not after the loop because its domain may be empty.
 Loop-carried state is explicit `TccqCell` storage:
 mutable by contract and distinct from immutable `TccqLocalBinding` definitions.
 Conditions and assignments reuse `TccqExpression`, so the C and Fortran

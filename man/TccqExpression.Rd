@@ -15,7 +15,8 @@ TccqExpression(
   literal = NULL,
   operation = NULL,
   branch = NULL,
-  reference = NULL
+  reference = NULL,
+  index_proofs = list()
 )
 }
 \arguments{
@@ -40,6 +41,8 @@ TccqExpression(
 \item{branch}{Typed conditional payload for branch expressions.}
 
 \item{reference}{Typed source payload for reference expressions.}
+
+\item{index_proofs}{Per-axis bounds proofs for indexed expressions.}
 }
 \description{
 \code{TccqExpression} is the small tree form consumed by source printers. It is

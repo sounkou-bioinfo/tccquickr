@@ -319,49 +319,51 @@ writes are not assumed to run after a possibly empty loop. `TccqFor`
 adds a scalar iteration cell and a `TccqIterationPlan` that separates
 one-time source evaluation, the one-dimensional `TccqDomain`, and
 selection of the current element. A stored rank-1 atomic vector selects
-through a neutral expression carrying `TccqAccess`. A virtual
-`seq_len(n)` selects through `TccqIndexExpr`, but only when `n` is a
-declared dimension whose non-negative integral extent is already an ABI
-fact. Its source is a `TccqDimensionReference`, distinct from an
-ordinary scalar formal or local that happens to use the same name. The
-registry declares that behavior with `TccqIterationSpec`; C, Fortran,
+through a neutral expression carrying `TccqAccess`. A virtual unit
+sequence selects through `TccqIndexExpr` when its extent is either a
+declared dimension already present in the ABI or a non-negative integer
+literal. A symbolic source is a `TccqDimensionReference`, distinct from
+an ordinary scalar formal or local that happens to use the same name.
+The registry declares the behavior with `TccqIterationSpec`; C, Fortran,
 and Rtinycc never recognize the `seq_len` spelling. A scalar read with
-exactly one selector per source axis becomes `TccqIndexedValue` when
-every selector is an active virtual iterator whose dimension matches
-that source axis. The value carries ordered iterator targets, selector
-references, iteration proofs, the selected subscript implementation,
-evaluator semantics, and one typed `extract` access. `TccqArity` gives
-this rank-polymorphic subscript an open argument-count contract instead
-of inventing a maximum array rank. R iterators remain one-based while
-the access map is zero-based. The access domain contains the unique loop
-axes, so `x[index, index]` is one loop mapped onto two source axes
-rather than a fabricated two-dimensional iteration. Assigning to any
+exactly one selector per source axis becomes `TccqIndexedValue` only
+when each axis has a `TccqIndexProof`. That proof keeps the iterator
+target and cell reference, iteration domain, source extent, zero-based
+affine access, and any normalized selector operation together. Bare
+`index` has offset zero. The first shifted form is canonical
+`index + 1L`; it is admitted only when the source extent is at least one
+element larger than the complete iteration domain. The retained typed
+`+` implementation and evaluator facts show which operation was
+normalized, while the bounds proof discharges integer overflow and
+subscript warnings for that range. `TccqArity` gives the
+rank-polymorphic subscript an open argument-count contract instead of
+inventing a maximum array rank. The access domain contains the unique
+loop axes, so `x[index, index]` is one loop mapped onto two source axes
+rather than a fabricated two-dimensional iteration. Assigning to an
 iterator invalidates its proof for the complete loop body, and
-stored-vector iteration supplies no such proof. Arbitrary scalar
-selectors, rank or dimension mismatches, tagged subscript arguments such
-as `drop`, and indirect indexed sources remain structured diagnostics
-until their R argument-matching semantics are modeled. The same neutral
-indexed expression reaches C, TinyCC, and Fortran; their existing
-column-major access linearizers account for target index conventions.
-The iterator is initialized on entry to the body but remains
-uninitialized after a possibly empty loop, so post-loop reads are
-refused until non-emptiness is proven. A nested procedural `if` is a
-`TccqIf` whose consequent and alternative are general typed blocks;
-omitting `else` produces an explicit empty alternative block. Positional
-statement `switch` is a `TccqSwitch` with one scalar integer selector, a
-typed local selector target, and ordered typed alternative blocks. The
-selector is evaluated exactly once through a local binding in the shared
-backend function interface. Its completion retains normal fallthrough
-for an unmatched position, while an arm’s `break` or `next` still
-targets the surrounding R loop. C therefore emits ordered conditional
-arms instead of a native C `switch`, which would capture `break` and
-change the program’s meaning; Fortran consumes the same neutral
-statement. Character selection, numeric-double coercion and warnings,
-missing alternatives, and value-producing `switch` remain structured
-refusals. C, Fortran, and Rtinycc consume that same structured body
-without encoding recurrence as a `TccqLoopNest`. The body is the
-structured form of `TccqProgramSchedule`, so there is still one
-top-level owner of order; the schedule constructor validates result
+stored-vector iteration supplies no such proof. Unproved scalar
+selectors, tagged arguments such as `drop`, and indirect indexed sources
+remain structured diagnostics. The same proof-bearing expression reaches
+C, TinyCC, and Fortran; their shared affine access map accounts for
+target index conventions. The iterator is initialized on entry to the
+body but remains uninitialized after a possibly empty loop, so post-loop
+reads are refused until non-emptiness is proven. A nested procedural
+`if` is a `TccqIf` whose consequent and alternative are general typed
+blocks; omitting `else` produces an explicit empty alternative block.
+Positional statement `switch` is a `TccqSwitch` with one scalar integer
+selector, a typed local selector target, and ordered typed alternative
+blocks. The selector is evaluated exactly once through a local binding
+in the shared backend function interface. Its completion retains normal
+fallthrough for an unmatched position, while an arm’s `break` or `next`
+still targets the surrounding R loop. C therefore emits ordered
+conditional arms instead of a native C `switch`, which would capture
+`break` and change the program’s meaning; Fortran consumes the same
+neutral statement. Character selection, numeric-double coercion and
+warnings, missing alternatives, and value-producing `switch` remain
+structured refusals. C, Fortran, and Rtinycc consume that same
+structured body without encoding recurrence as a `TccqLoopNest`. The
+body is the structured form of `TccqProgramSchedule`, so there is still
+one top-level owner of order; the schedule constructor validates result
 identity, graph references, exact cell and local ownership,
 graph-consistent target types, and initialization dominance over
 normally completing paths. Arbitrary scalar extents, general ranges,
@@ -402,6 +404,22 @@ indexed_sum_plan <- tccq_plan_backend(
 )
 indexed_sum_kernel <- indexed_sum_plan@value@products@attrs$callable
 identical(indexed_sum_kernel(c(1, 2, 3)), 6)
+#> [1] TRUE
+
+shifted_indexed_sum <- function(x) {
+  declare(type(x = double(4)))
+  total <- 0
+  for (index in seq_len(3L)) total <- total + x[index + 1L]
+  total
+}
+
+shifted_indexed_plan <- tccq_plan_backend(
+  tccq_analyze(shifted_indexed_sum, strict = TRUE)@value,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "jit", target = "c")
+)
+shifted_indexed_kernel <- shifted_indexed_plan@value@products@attrs$callable
+identical(shifted_indexed_kernel(c(1, 2, 3, 4)), 9)
 #> [1] TRUE
 
 indexed_matrix_sum <- function(x) {

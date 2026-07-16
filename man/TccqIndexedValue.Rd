@@ -12,9 +12,7 @@ TccqIndexedValue(
   effect = TccqEffect(),
   attrs = list(),
   source_type = TccqType(),
-  iterators = list(),
-  selectors = list(),
-  iterations = list(),
+  index_proofs = list(),
   access = TccqAccess(),
   operation = TccqLoweredOperation(),
   semantics = TccqCallSemantics()
@@ -35,13 +33,9 @@ TccqIndexedValue(
 
 \item{source_type}{Type of the source storage.}
 
-\item{iterators}{Iterator targets populated by the enclosing virtual loops.}
+\item{index_proofs}{Per-axis affine selector and bounds proofs.}
 
-\item{selectors}{Iterator-cell references used by the R expression.}
-
-\item{iterations}{Virtual iterations proving selector bounds.}
-
-\item{access}{Zero-based source access corresponding to the iterator.}
+\item{access}{Zero-based source access corresponding to the proofs.}
 
 \item{operation}{Lowered subscript implementation payload.}
 
@@ -49,8 +43,7 @@ TccqIndexedValue(
 }
 \description{
 This value represents one scalar extraction only when every source axis has
-an integer selector backed by a typed virtual iteration over that exact
-dimension. Selectors may share an iteration, as in a diagonal read. The
+a \link{TccqIndexProof}. Proofs may share an iteration, as in a diagonal read. The
 stored access is zero-based; iterator cells retain R's one-based values. No
 general R subscript semantics are implied by this class.
 }
