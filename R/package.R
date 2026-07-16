@@ -10,5 +10,6 @@
 
 .onLoad <- function(...) {
   tccq_register_traits()
+  tccq_register_optimization_traits()
   tccq_register_backend_traits()
 }

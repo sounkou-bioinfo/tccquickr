@@ -1590,6 +1590,39 @@ expect_true(grepl("break;", backend_source(repeat_c), fixed = TRUE))
 expect_true(grepl("cycle", backend_source(repeat_fortran), fixed = TRUE))
 expect_true(grepl("exit", backend_source(repeat_fortran), fixed = TRUE))
 
+dead_store_kernel <- function(x) {
+  declare(type(x = double()))
+  repeat {
+    discarded <- exp(x)
+    break
+  }
+  x
+}
+dead_store_program <- tccq_analyze(dead_store_kernel, strict = TRUE)@value
+dead_store_optimized <- with(
+  TccqProgramOptimization,
+  tccq_optimize(TccqDeadStoreOptimization(), dead_store_program)
+)@value
+dead_store_c <- tccq_plan_backend(
+  dead_store_optimized,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+dead_store_fortran <- tccq_plan_backend(
+  dead_store_optimized,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(dead_store_c@success)
+expect_true(dead_store_fortran@success)
+expect_identical(
+  backend_products(dead_store_c)@body,
+  backend_products(dead_store_fortran)@body
+)
+expect_equal(length(backend_products(dead_store_c)@body@locals), 0L)
+expect_false(grepl("exp", backend_source(dead_store_c), fixed = TRUE))
+expect_false(grepl("exp", backend_source(dead_store_fortran), fixed = TRUE))
+
 positional_switch_recurrence <- function(x) {
   declare(type(x = double(n)))
   total <- 0
@@ -4345,6 +4378,44 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(repeat_fortran_shared@success)
   check_repeat_recurrence(backend_callable(repeat_fortran_shared))
+}
+
+dead_store_inputs <- c(-Inf, -1, 0, 1, Inf, NA_real_, NaN)
+check_dead_store_kernel <- function(callable) {
+  expect_equal(
+    vapply(dead_store_inputs, callable, numeric(1)),
+    dead_store_inputs
+  )
+}
+
+if (rtinycc_jit_available) {
+  dead_store_jit <- tccq_plan_backend(
+    dead_store_optimized,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(dead_store_jit@success)
+  check_dead_store_kernel(backend_callable(dead_store_jit))
+}
+
+if (can_build_shared_library("c")) {
+  dead_store_c_shared <- tccq_plan_backend(
+    dead_store_optimized,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(dead_store_c_shared@success)
+  check_dead_store_kernel(backend_callable(dead_store_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  dead_store_fortran_shared <- tccq_plan_backend(
+    dead_store_optimized,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(dead_store_fortran_shared@success)
+  check_dead_store_kernel(backend_callable(dead_store_fortran_shared))
 }
 
 positional_switch_inputs <- lapply(

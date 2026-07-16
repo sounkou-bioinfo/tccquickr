@@ -8,6 +8,7 @@ tccq_rtinycc_backend()
 }
 \description{
 This descriptor models the available TinyCC-backed C path without making it
-the compiler architecture. It can produce backend plans once the typed IR is
-lowerable, but today it still reports structured lowering absence.
+the compiler architecture. It consumes the same typed function interface,
+neutral body or loop nests, storage plan, and C source artifact as the
+generic C path, then produces a JIT callable through \code{Rtinycc}.
 }

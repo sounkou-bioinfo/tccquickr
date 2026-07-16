@@ -8,6 +8,7 @@ tccq_compile(
   fn,
   backends = tccq_core_backends(),
   context = tccq_backend_context(),
+  optimization = TccqDeadStoreOptimization(),
   strict = TRUE
 )
 }
@@ -18,14 +19,16 @@ tccq_compile(
 
 \item{context}{Backend planning context.}
 
+\item{optimization}{Program optimization applied before backend planning.}
+
 \item{strict}{If \code{TRUE}, throw the first diagnostic as a classed condition.}
 }
 \description{
-Compilation currently stops at backend planning. By default it asks the core
-backend suite to account for the same typed program, so C, Fortran,
-graph/device, Rtinycc, and R-call evaluation all report constraints through
-one contract instead of letting one concrete backend shape the IR. The
-result succeeds when at least one backend produces a working plan; backends
-that cannot lower the program report feasibility diagnostics in their plans
+Compilation applies one explicit typed optimization, then asks the core
+backend suite to account for the same verified program. Generic C,
+Rtinycc/TinyCC, and quickr-style Fortran report constraints through one
+contract instead of letting one concrete backend shape the IR. The result
+succeeds when at least one backend produces a working plan; backends that
+cannot lower the program report feasibility diagnostics in their plans
 without vetoing the suite.
 }

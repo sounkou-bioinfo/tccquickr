@@ -22,7 +22,8 @@ This repo is responsible for:
 - S7 schemas for compiler values: dimensions, shapes, types, effects, bindings,
   IR values, programs, diagnostics, backend plans, and phase results
 - `s7contract` traits for internal compiler protocols that implementations
-  must opt into, today operation implementations and backend planning
+  must opt into, today operation implementations, program optimization, and
+  backend planning
 - classed diagnostics and result values instead of branching on error strings
 - symbolic shape, effect, legality, and pass-pipeline work before backend work
 - operation signatures, implementation metadata, neutral expression lowering,
@@ -60,6 +61,8 @@ The active architecture is the small typed core:
   render contracts.
 - `R/lowering.R`: typed lowering from the declared subset into values, regions,
   fusion groups, and storage plans.
+- `R/optimization.R`: the explicit program-optimization trait, conservative
+  structured dead-store transformation, and its verification boundary.
 - `R/z-expression.R`: backend-neutral expression and statement trees,
   sequential control values including `TccqIterationPlan` and `TccqSwitch`,
   the `TccqLoopNest` with-loop plan (SAC lineage), and the loop-nest planner
@@ -320,6 +323,23 @@ For the reset core, keep these rules explicit:
   and the final result. In the structured form it must validate exact cell
   and local ownership, initialization dominance, graph-consistent target and
   expression types, graph references, and body/result identity.
+- Program optimization is an explicit opt-in protocol through
+  `TccqProgramOptimization`; it is not a private pass convention. The first
+  implementation, `TccqDeadStoreOptimization`, rewrites only structured
+  `TccqValueBlock` control. It may remove an assignment to compiler-owned local
+  or cell storage only when the target is neither read, a block result, a
+  control target, nor protected by the storage plan, and the assigned
+  expression cannot write, allocate, cross a boundary, error, or warn. It
+  eliminates newly dead chains to a fixed point, functionally rebuilds typed
+  blocks, region membership, and effects, then verifies the exact expected
+  `TccqProgram` at the compiler boundary before backend planning. It leaves
+  the source value graph, call index, schedule result, and storage plan intact;
+  graph-level dead-value elimination is a separate future transformation that
+  must rewrite all of those facts together. Source backends derive executable
+  values from typed regions plus declared ABI formals and the result; dead
+  source-graph provenance must not veto a verified live program. Do not
+  introduce a pass manager until a second real transformation creates a
+  concrete composition problem.
 - A local symbol read lowers to `TccqBindingReference`, not directly to the
   value graph that originally defined the local. The reference retains exact
   lexical binding identity and points to bound storage; expression and effect

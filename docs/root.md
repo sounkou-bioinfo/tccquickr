@@ -147,6 +147,21 @@ effects are barriers, so `sqrt` remains eager and materialized while a silent
 single optimization decision consumed by the neutral loop planner; C, TinyCC,
 and Fortran do not rediscover it.
 
+Program-to-program optimization now has its own explicit contract rather than
+being another backend preparation detail. `TccqProgramOptimization` requires a
+typed transformation and verifier. Its first implementation removes a dead
+assignment only from a structured neutral body, only for compiler-owned local
+or cell storage, and only when typed effects prove that evaluating the right
+hand side cannot write, allocate, cross a boundary, error, or warn. Storage
+owned values and control results are protected. The transformation rebuilds
+the typed blocks and region effect/membership to a fixed point, and the compiler
+invokes its verifier independently to require the exact expected program before
+C, TinyCC, or Fortran planning. The source value graph and storage plan remain
+unchanged, so this is dead-store elimination, not a disguised graph-level
+dead-value pass or a generic pass framework. Backend validation therefore
+consumes region-reachable values together with declared ABI formals and the
+result; dead source provenance is not executable target work.
+
 The first storage-reuse decision is similarly narrow. Lifetime propagation
 derives order from the typed program schedule and accounts for complete
 consumer expressions and lexical binding references.

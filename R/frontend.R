@@ -107,23 +107,25 @@ tccq_analyze <- function(
 
 #' Compile a declared R function
 #'
-#' Compilation currently stops at backend planning. By default it asks the core
-#' backend suite to account for the same typed program, so C, Fortran,
-#' graph/device, Rtinycc, and R-call evaluation all report constraints through
-#' one contract instead of letting one concrete backend shape the IR. The
-#' result succeeds when at least one backend produces a working plan; backends
-#' that cannot lower the program report feasibility diagnostics in their plans
+#' Compilation applies one explicit typed optimization, then asks the core
+#' backend suite to account for the same verified program. Generic C,
+#' Rtinycc/TinyCC, and quickr-style Fortran report constraints through one
+#' contract instead of letting one concrete backend shape the IR. The result
+#' succeeds when at least one backend produces a working plan; backends that
+#' cannot lower the program report feasibility diagnostics in their plans
 #' without vetoing the suite.
 #'
 #' @param fn Function to compile.
 #' @param backends Backend implementation descriptors.
 #' @param context Backend planning context.
+#' @param optimization Program optimization applied before backend planning.
 #' @param strict If `TRUE`, throw the first diagnostic as a classed condition.
 #' @export
 tccq_compile <- function(
   fn,
   backends = tccq_core_backends(),
   context = tccq_backend_context(),
+  optimization = TccqDeadStoreOptimization(),
   strict = TRUE
 ) {
   analysis <- tccq_analyze(fn, strict = FALSE)
@@ -134,7 +136,57 @@ tccq_compile <- function(
     return(analysis)
   }
 
-  plan <- tccq_plan_backends(analysis@value, backends = backends, context = context)
+  s7contract::assert_trait(
+    optimization,
+    TccqProgramOptimization,
+    arg = "optimization"
+  )
+  optimized <- with(
+    TccqProgramOptimization,
+    tccq_optimize(optimization, analysis@value)
+  )
+  if (!optimized@success) {
+    if (isTRUE(strict)) {
+      tccq_abort_diagnostic(optimized@diagnostics[[1L]])
+    }
+    return(optimized)
+  }
+  if (!S7::S7_inherits(optimized@value, TccqProgram)) {
+    invalid_result <- tccq_result(
+      success = FALSE,
+      diagnostics = list(tccq_diagnostic(
+        "optimization.invalid_result",
+        "Program optimization must return a typed TccqProgram value.",
+        phase = "optimization",
+        path = "optimization.result",
+        data = list(optimization = S7::S7_class(optimization)@name)
+      ))
+    )
+    if (isTRUE(strict)) {
+      tccq_abort_diagnostic(invalid_result@diagnostics[[1L]])
+    }
+    return(invalid_result)
+  }
+  verified <- with(
+    TccqProgramOptimization,
+    tccq_verify_optimization(
+      optimization,
+      before = analysis@value,
+      after = optimized@value
+    )
+  )
+  if (!verified@success) {
+    if (isTRUE(strict)) {
+      tccq_abort_diagnostic(verified@diagnostics[[1L]])
+    }
+    return(verified)
+  }
+
+  plan <- tccq_plan_backends(
+    optimized@value,
+    backends = backends,
+    context = context
+  )
   if (!plan@success && isTRUE(strict)) {
     tccq_abort_diagnostic(plan@diagnostics[[1L]])
   }

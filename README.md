@@ -458,6 +458,21 @@ contractions, and warning-capable operations such as `sqrt` remain
 materialized. Purity alone is not treated as a proof that eager R
 evaluation can be reordered.
 
+**Verified program optimization.** `TccqProgramOptimization` is an
+explicit opt-in contract for a typed program transformation and its
+verifier. The first implementation removes assignments only from a
+structured neutral body, only when a compiler-owned local or cell is
+never read or otherwise required, and only when the assigned expression
+cannot write, allocate, cross a boundary, error, or warn. It removes
+newly dead assignment chains to a fixed point, rebuilds typed control
+blocks and region facts, then `tccq_compile()` invokes its verifier
+independently before handing one common body to C, TinyCC, and Fortran.
+The source value graph and storage plan remain intact; graph-level
+dead-value elimination, liveness rewriting, and pass composition are
+deliberately separate future work. Source backends validate executable
+region values together with declared ABI formals and the result, so dead
+provenance does not become target work.
+
 **Composition.** Non-root reductions and contractions become
 intermediate nests — named scalars for rank-0 results and materialized
 temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,

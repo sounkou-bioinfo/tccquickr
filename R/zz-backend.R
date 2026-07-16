@@ -1620,8 +1620,9 @@ tccq_c_backend <- function() {
 #' Rtinycc backend descriptor
 #'
 #' This descriptor models the available TinyCC-backed C path without making it
-#' the compiler architecture. It can produce backend plans once the typed IR is
-#' lowerable, but today it still reports structured lowering absence.
+#' the compiler architecture. It consumes the same typed function interface,
+#' neutral body or loop nests, storage plan, and C source artifact as the
+#' generic C path, then produces a JIT callable through `Rtinycc`.
 #'
 #' @export
 tccq_rtinycc_backend <- function() {
@@ -1762,6 +1763,24 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
   force(execute_with_rtinycc)
 
   function(backend, program, context) {
+    declared_formal_value_ids <- vapply(
+      Filter(function(value) identical(value@op, "formal"), program@values),
+      function(value) value@id,
+      character(1)
+    )
+    region_value_ids <- unlist(lapply(program@regions, function(region) {
+      vapply(region@values, function(value) value@id, character(1))
+    }), use.names = FALSE)
+    execution_value_ids <- unique(c(
+      declared_formal_value_ids,
+      region_value_ids,
+      program@result
+    ))
+    execution_values <- Filter(
+      function(value) value@id %in% execution_value_ids,
+      program@values
+    )
+
     c_identifier <- function(prefix, ordinal) {
       sprintf("%s_%04d", prefix, ordinal)
     }
@@ -1791,7 +1810,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           source_language,
           backend@id,
           program@result,
-          vapply(program@values, value_signature, character(1))
+          vapply(execution_values, value_signature, character(1))
         ),
         collapse = "|"
       )
@@ -1799,7 +1818,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     }
 
     formal_values <- function() {
-      Filter(function(value) identical(value@op, "formal"), unname(program@values))
+      Filter(function(value) identical(value@op, "formal"), unname(execution_values))
     }
 
     result_value <- function() {
@@ -1894,7 +1913,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       unsupported_literals <- Filter(function(value) {
         literal <- value@attrs$literal
         S7::S7_inherits(literal, TccqLiteral) && !identical(literal@kind, "finite")
-      }, program@values)
+      }, execution_values)
       if (length(unsupported_literals) > 0L) {
         return(tccq_diagnostic(
           "backend.unsupported_literal_kind",
@@ -2589,7 +2608,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     }
 
     register_dim_symbols <- function(emit_context) {
-      for (value in program@values) {
+      for (value in execution_values) {
         if (!identical(value@op, "dim_symbol")) {
           next
         }

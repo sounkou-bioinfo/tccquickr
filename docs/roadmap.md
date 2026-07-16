@@ -223,11 +223,16 @@ core cannot explain the program is not.
 
 ## Immediate Experiments
 
-The first experiment should introduce one real typed optimization pass and its
-verification boundary. A conservative neutral canonicalizer or dead-value pass
-is preferable to a pass manager: it establishes the program-to-program
-contract, preserved facts, diagnostic behavior, and proof obligations with
-minimal policy.
+The first experiment is now established: `TccqProgramOptimization` is an
+explicit transformation-and-verification trait, and
+`TccqDeadStoreOptimization` is its first implementation. It removes only
+provably unobserved assignments from structured neutral control, rebuilds
+typed blocks and region facts to a fixed point, and verifies the exact expected
+program at the compiler boundary before backend planning. It intentionally
+preserves the source graph and storage plan rather than pretending to perform
+graph-level dead-value elimination. This is enough to establish the
+program-to-program boundary without inventing a pass manager before pass
+composition exists.
 
 The second experiment should generalize proven access beyond an iterator cell
 without claiming full R indexing. An affine scalar selector can be admitted
