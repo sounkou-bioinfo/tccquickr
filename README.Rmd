@@ -267,7 +267,17 @@ when `n` is a declared dimension whose non-negative integral extent is already
 an ABI fact. Its source is a `TccqDimensionReference`, distinct from an
 ordinary scalar formal or local that happens to use the same name. The registry
 declares that behavior with `TccqIterationSpec`; C, Fortran, and Rtinycc never
-recognize the `seq_len` spelling.
+recognize the `seq_len` spelling. A scalar read `x[index]` inside that exact
+iteration becomes `TccqIndexedValue`, which carries the iterator proof, source
+shape, selected subscript implementation, evaluator semantics, and a typed
+`extract` access. The R iterator remains one-based while the access map is
+zero-based. The source shape must equal the iteration domain, so this does not
+silently claim general R indexing. Assigning to the iterator invalidates the
+proof for the complete loop body, and stored-vector iteration supplies no such
+proof. Arbitrary scalar selectors, mismatched domains, and indirect indexed
+sources remain structured diagnostics. The same
+neutral indexed expression reaches C, TinyCC, and Fortran; their existing
+access linearizers account for target index conventions.
 The iterator is initialized on entry to the body but remains uninitialized
 after a possibly empty loop, so post-loop reads are refused until non-emptiness
 is proven. A nested procedural `if` is a `TccqIf` whose consequent and
@@ -307,6 +317,23 @@ extent_sequence_plan <- tccq_plan_backend(
 )
 extent_sequence <- extent_sequence_plan@value@products@attrs$callable
 identical(extent_sequence(numeric(5)), 15)
+```
+
+```{r proven-indexed-read}
+indexed_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) total <- total + x[index]
+  total
+}
+
+indexed_sum_plan <- tccq_plan_backend(
+  tccq_analyze(indexed_sum, strict = TRUE)@value,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "jit", target = "c")
+)
+indexed_sum_kernel <- indexed_sum_plan@value@products@attrs$callable
+identical(indexed_sum_kernel(c(1, 2, 3)), 6)
 ```
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in declared

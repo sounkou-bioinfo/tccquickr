@@ -88,6 +88,16 @@ dimension `n`; its source is a `TccqDimensionReference`, so a scalar binding
 named `n` cannot masquerade as that extent. `TccqIterationSpec` owns its unary
 signature, extent argument, and first value. Its iterator is
 initialized inside the body but not after a potentially empty domain.
+Within that exact virtual iteration, scalar `x[index]` is a
+`TccqIndexedValue`, not an untyped special case. It retains the source type,
+iterator cell, iteration proof, selected subscript implementation, evaluator
+semantics, and a typed `extract` access whose zero-based axis corresponds to
+the one-based R iterator. The source shape must exactly match the iteration
+domain. Assignment to the iterator invalidates that proof for the complete
+body, and stored-vector iteration never creates it. Unproven selectors and
+mismatched domains remain diagnostics, while C,
+TinyCC, and Fortran consume the same neutral indexed expression through their
+existing access linearizers.
 Loop-carried variables become mutable `TccqCell` storage rather
 than fake SSA bindings or a special `TccqLoopNest` mode. `TccqLoopTransfer`
 represents nearest-loop `break` and `next` completion without pretending it is

@@ -22,7 +22,9 @@ TCCQ_MATH_GROUP_CALL_NAMES <- c(
 TCCQ_SUMMARY_GROUP_CALL_NAMES <- c("all", "any", "sum", "prod", "min", "max", "range")
 
 TCCQ_OP_RENDER_LANGUAGES <- c("c", "fortran")
-TCCQ_LOWERED_OPERATION_FAMILIES <- c("elementwise", "reduction", "contraction")
+TCCQ_LOWERED_OPERATION_FAMILIES <- c(
+  "elementwise", "reduction", "contraction", "subscript"
+)
 TCCQ_REDUCTION_EMPTY_POLICIES <- c("identity", "error")
 
 TCCQ_S3_PRIMITIVE_GENERIC_NAMES <- get0(
@@ -418,6 +420,35 @@ TccqIterationSpec <- S7::new_class(
   }
 )
 
+#' Subscript implementation metadata
+#'
+#' A subscript spec describes one typed R indexing contract. The first slice is
+#' deliberately strict: a rank-1 atomic source and a scalar integer selector
+#' whose enclosing iteration proves that the selector is one-based and in
+#' bounds. Other selector kinds require their own shape and bounds semantics.
+#'
+#' @param name Human-readable subscript operation name.
+#' @param signature Shared operation signature.
+#' @export
+TccqSubscriptSpec <- S7::new_class(
+  "TccqSubscriptSpec",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    signature = TccqOpSignature
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (!identical(self@signature@arity, 2L)) {
+      problems <- c(problems, "the current subscript contract requires source and selector arguments")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Backend-neutral operation body
 #'
 #' An operation body is one R expression whose symbols are bound by exact call
@@ -512,6 +543,7 @@ TccqOpBody <- S7::new_class(
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
 #' @param iteration Optional iteration metadata.
+#' @param subscript Optional subscript metadata.
 #' @export
 TccqOpImpl <- S7::new_class(
   "TccqOpImpl",
@@ -531,7 +563,8 @@ TccqOpImpl <- S7::new_class(
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
-    iteration = S7::new_union(NULL, TccqIterationSpec)
+    iteration = S7::new_union(NULL, TccqIterationSpec),
+    subscript = S7::new_union(NULL, TccqSubscriptSpec)
   ),
   validator = function(self) {
     problems <- character()
@@ -591,7 +624,8 @@ TccqOpImpl <- S7::new_class(
       !is.null(self@elementwise),
       !is.null(self@reduction),
       !is.null(self@contraction),
-      !is.null(self@iteration)
+      !is.null(self@iteration),
+      !is.null(self@subscript)
     ))
     if (family_count > 1L) {
       problems <- c(problems, "an operation implementation may declare at most one operation family")
@@ -608,6 +642,20 @@ TccqOpImpl <- S7::new_class(
         isTRUE(self@effect@may_warn)
       if (invalid_iteration_effect) {
         problems <- c(problems, "virtual iteration implementations must be pure read-only operations")
+      }
+    }
+    if (!is.null(self@subscript)) {
+      invalid_subscript_effect <-
+        !isTRUE(self@pure) ||
+          isTRUE(self@uses_rapi) ||
+          isTRUE(self@boundary) ||
+          isTRUE(self@effect@writes) ||
+          isTRUE(self@effect@allocates) ||
+          isTRUE(self@effect@boundary) ||
+          isTRUE(self@effect@may_error) ||
+          isTRUE(self@effect@may_warn)
+      if (invalid_subscript_effect) {
+        problems <- c(problems, "proven subscript implementations must be pure read-only operations")
       }
     }
     if (length(problems) > 0L) problems
@@ -670,6 +718,7 @@ TccqOpRegistry <- S7::new_class(
 #' @param contraction Optional contraction metadata supplied by the
 #'   implementation.
 #' @param iteration Optional iteration metadata supplied by the implementation.
+#' @param subscript Optional subscript metadata supplied by the implementation.
 #' @param body Optional backend-neutral body supplied by the implementation.
 #' @param attrs Structured resolution metadata.
 #' @export
@@ -691,6 +740,7 @@ TccqResolvedOp <- S7::new_class(
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
     iteration = S7::new_union(NULL, TccqIterationSpec),
+    subscript = S7::new_union(NULL, TccqSubscriptSpec),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -742,7 +792,8 @@ TccqResolvedOp <- S7::new_class(
       identical(self@elementwise, self@implementation@elementwise) &&
       identical(self@reduction, self@implementation@reduction) &&
       identical(self@contraction, self@implementation@contraction) &&
-      identical(self@iteration, self@implementation@iteration)
+      identical(self@iteration, self@implementation@iteration) &&
+      identical(self@subscript, self@implementation@subscript)
     if (!implementation_snapshot_matches) {
       problems <- c(problems, "resolved implementation fields must match @implementation")
     }
@@ -764,6 +815,7 @@ TccqResolvedOp <- S7::new_class(
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
+#' @param subscript Optional subscript metadata.
 #' @param attrs Structured metadata.
 #' @export
 TccqLoweredOperation <- S7::new_class(
@@ -777,6 +829,7 @@ TccqLoweredOperation <- S7::new_class(
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
+    subscript = S7::new_union(NULL, TccqSubscriptSpec),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -792,7 +845,11 @@ TccqLoweredOperation <- S7::new_class(
       if (!S7::S7_inherits(self@elementwise, TccqElementwiseSpec)) {
         problems <- c(problems, "elementwise lowered operations must carry elementwise metadata")
       }
-      if (!is.null(self@reduction) || !is.null(self@contraction)) {
+      if (
+        !is.null(self@reduction) ||
+          !is.null(self@contraction) ||
+          !is.null(self@subscript)
+      ) {
         problems <- c(problems, "elementwise lowered operations cannot carry reducer metadata")
       }
       if (!S7::S7_inherits(self@resolved_op@elementwise, TccqElementwiseSpec)) {
@@ -803,7 +860,11 @@ TccqLoweredOperation <- S7::new_class(
       if (!S7::S7_inherits(self@reduction, TccqReductionSpec)) {
         problems <- c(problems, "reduction lowered operations must carry reduction metadata")
       }
-      if (!is.null(self@elementwise) || !is.null(self@contraction)) {
+      if (
+        !is.null(self@elementwise) ||
+          !is.null(self@contraction) ||
+          !is.null(self@subscript)
+      ) {
         problems <- c(problems, "reduction lowered operations cannot carry other family metadata")
       }
       if (!S7::S7_inherits(self@resolved_op@reduction, TccqReductionSpec)) {
@@ -814,11 +875,30 @@ TccqLoweredOperation <- S7::new_class(
       if (!S7::S7_inherits(self@contraction, TccqContractionSpec)) {
         problems <- c(problems, "contraction lowered operations must carry contraction metadata")
       }
-      if (!is.null(self@elementwise) || !is.null(self@reduction)) {
+      if (
+        !is.null(self@elementwise) ||
+          !is.null(self@reduction) ||
+          !is.null(self@subscript)
+      ) {
         problems <- c(problems, "contraction lowered operations cannot carry other family metadata")
       }
       if (!S7::S7_inherits(self@resolved_op@contraction, TccqContractionSpec)) {
         problems <- c(problems, "contraction lowered operations need a contraction resolved op")
+      }
+    }
+    if (identical(self@family, "subscript")) {
+      if (!S7::S7_inherits(self@subscript, TccqSubscriptSpec)) {
+        problems <- c(problems, "subscript lowered operations must carry subscript metadata")
+      }
+      if (
+        !is.null(self@elementwise) ||
+          !is.null(self@reduction) ||
+          !is.null(self@contraction)
+      ) {
+        problems <- c(problems, "subscript lowered operations cannot carry arithmetic family metadata")
+      }
+      if (!S7::S7_inherits(self@resolved_op@subscript, TccqSubscriptSpec)) {
+        problems <- c(problems, "subscript lowered operations need a subscript resolved op")
       }
     }
     if (length(problems) > 0L) problems
@@ -1593,6 +1673,19 @@ tccq_iteration_spec <- function(name, signature, extent_arg = 1L, start = 1L) {
   )
 }
 
+#' Construct subscript implementation metadata
+#'
+#' @inheritParams TccqSubscriptSpec
+#' @export
+tccq_subscript_spec <- function(name, signature) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  TccqSubscriptSpec(
+    name = name,
+    signature = signature
+  )
+}
+
 #' Return a reducer identity literal
 #'
 #' @param spec Reduction metadata.
@@ -2302,6 +2395,7 @@ tccq_op_body <- function(fn) {
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
 #' @param iteration Optional iteration metadata.
+#' @param subscript Optional subscript metadata.
 #' @export
 tccq_op_impl <- function(
   op,
@@ -2318,7 +2412,8 @@ tccq_op_impl <- function(
   elementwise = NULL,
   reduction = NULL,
   contraction = NULL,
-  iteration = NULL
+  iteration = NULL,
+  subscript = NULL
 ) {
   .tccq_check_character_scalar(op, "op")
   .tccq_check_character_scalar(target, "target")
@@ -2358,6 +2453,7 @@ tccq_op_impl <- function(
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
   .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
   .tccq_check_optional_s7(iteration, TccqIterationSpec, "TccqIterationSpec", "iteration")
+  .tccq_check_optional_s7(subscript, TccqSubscriptSpec, "TccqSubscriptSpec", "subscript")
   if (!is.null(body)) {
     body_has_invalid_implementation <-
       !identical(target, "neutral") ||
@@ -2414,6 +2510,27 @@ tccq_op_impl <- function(
       data = list(op = op, effect = effect)
     )
   }
+  if (
+    !is.null(subscript) &&
+      (
+        !isTRUE(pure) ||
+          isTRUE(uses_rapi) ||
+          isTRUE(boundary) ||
+          isTRUE(effect@writes) ||
+          isTRUE(effect@allocates) ||
+          isTRUE(effect@boundary) ||
+          isTRUE(effect@may_error) ||
+          isTRUE(effect@may_warn)
+      )
+  ) {
+    tccq_abort(
+      "schema.invalid_subscript_implementation",
+      "Proven subscript implementations must be pure read-only operations.",
+      phase = "schema",
+      path = "op.subscript",
+      data = list(op = op, effect = effect)
+    )
+  }
 
   TccqOpImpl(
     op = op,
@@ -2430,7 +2547,8 @@ tccq_op_impl <- function(
     elementwise = elementwise,
     reduction = reduction,
     contraction = contraction,
-    iteration = iteration
+    iteration = iteration,
+    subscript = subscript
   )
 }
 
@@ -2489,6 +2607,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
     reduction = implementation@reduction,
     contraction = implementation@contraction,
     iteration = implementation@iteration,
+    subscript = implementation@subscript,
     attrs = attrs
   )
 }
@@ -2501,6 +2620,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
+#' @param subscript Optional subscript metadata.
 #' @param attrs Structured metadata.
 #' @export
 tccq_lowered_operation <- function(
@@ -2510,6 +2630,7 @@ tccq_lowered_operation <- function(
   elementwise = NULL,
   reduction = NULL,
   contraction = NULL,
+  subscript = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(family, "family")
@@ -2527,6 +2648,7 @@ tccq_lowered_operation <- function(
   .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
   .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
+  .tccq_check_optional_s7(subscript, TccqSubscriptSpec, "TccqSubscriptSpec", "subscript")
   .tccq_check_list(attrs, "attrs")
 
   if (identical(family, "elementwise")) {
@@ -2589,6 +2711,29 @@ tccq_lowered_operation <- function(
     signature <- signature %||% contraction@signature
   }
 
+  if (identical(family, "subscript")) {
+    subscript <- subscript %||% resolved_op@subscript
+    if (!S7::S7_inherits(subscript, TccqSubscriptSpec)) {
+      tccq_abort(
+        "schema.lowered_operation_subscript_required",
+        "Subscript lowered operations must carry subscript metadata.",
+        phase = "schema",
+        path = "lowered_operation.subscript",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    if (!is.null(elementwise) || !is.null(reduction) || !is.null(contraction)) {
+      tccq_abort(
+        "schema.invalid_lowered_operation_payload",
+        "Subscript lowered operations cannot carry arithmetic family metadata.",
+        phase = "schema",
+        path = "lowered_operation.subscript",
+        data = list(op = resolved_op@call@name)
+      )
+    }
+    signature <- signature %||% subscript@signature
+  }
+
   TccqLoweredOperation(
     family = family,
     resolved_op = resolved_op,
@@ -2597,6 +2742,7 @@ tccq_lowered_operation <- function(
     elementwise = elementwise,
     reduction = reduction,
     contraction = contraction,
+    subscript = subscript,
     attrs = attrs
   )
 }
@@ -3271,6 +3417,35 @@ tccq_default_op_registry <- function() {
     extent_arg = 1L,
     start = 1L
   )
+  rank1_subscript <- tccq_subscript_spec(
+    "rank1_element",
+    signature = tccq_op_signature(
+      "[",
+      2L,
+      result_type = function(input_types, result_shape) {
+        source_type <- input_types[[1L]]
+        selector_type <- input_types[[2L]]
+        if (
+          source_type@shape@rank != 1L ||
+            selector_type@shape@rank != 0L ||
+            !identical(selector_type@base, "integer")
+        ) {
+          tccq_abort(
+            "ops.invalid_subscript_types",
+            "The proven subscript slice requires a rank-1 source and scalar integer selector.",
+            phase = "ops",
+            path = "subscript.type",
+            data = list(source = source_type, selector = selector_type)
+          )
+        }
+        tccq_type(source_type@base, result_shape)
+      },
+      domain_policy = tccq_domain_policy(
+        "rank1_element_scalar_result",
+        result_shape = function(input_types) tccq_shape()
+      )
+    )
+  )
   language_ops <- c(
     "{", "(", "<-", "<<-", "->", "->>", "=",
     "if", "for", "while", "repeat", "break", "next", "switch", "function",
@@ -3278,6 +3453,19 @@ tccq_default_op_registry <- function() {
     "declare", "type", TCCQ_BASE_TYPES
   )
   registry <- tccq_op_registry(c(
+    list(tccq_op_impl(
+      "[",
+      target = "native",
+      region_kind = "kernel",
+      effect = tccq_effect(reads = TRUE),
+      supports = function(call, context) {
+        identical(call@arity, 2L) &&
+          is.call(call@expr) &&
+          length(call@expr) == 3L &&
+          is.symbol(call@expr[[3L]])
+      },
+      subscript = rank1_subscript
+    )),
     lapply(language_ops, function(op) {
       tccq_op_impl(op, target = "r_language", pure = FALSE)
     }),

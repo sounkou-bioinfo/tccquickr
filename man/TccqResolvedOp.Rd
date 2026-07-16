@@ -19,6 +19,7 @@ TccqResolvedOp(
   reduction = NULL,
   contraction = NULL,
   iteration = NULL,
+  subscript = NULL,
   attrs = list()
 )
 }
@@ -52,6 +53,8 @@ implementation.}
 implementation.}
 
 \item{iteration}{Optional iteration metadata supplied by the implementation.}
+
+\item{subscript}{Optional subscript metadata supplied by the implementation.}
 
 \item{attrs}{Structured resolution metadata.}
 }

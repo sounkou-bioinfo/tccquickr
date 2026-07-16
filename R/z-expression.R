@@ -1,5 +1,5 @@
 TCCQ_EXPRESSION_KINDS <- c(
-  "reference", "literal", "operation", "branch", "element"
+  "reference", "literal", "operation", "branch", "element", "indexed"
 )
 TCCQ_LOOP_CALL_NAMES <- c("for", "while", "repeat")
 TCCQ_LOOP_TRANSFER_ACTIONS <- c("break", "next")
@@ -212,6 +212,55 @@ TccqExpression <- S7::new_class(
         )
     ) {
       problems <- c(problems, "element expressions must project one scalar of the input base type")
+    }
+    indexed_has_invalid_payload <- length(self@inputs) != 2L ||
+      !is.null(self@literal) ||
+      is.null(self@operation) ||
+      !is.null(self@branch) ||
+      is.null(self@reference) ||
+      is.null(self@reference@access) ||
+      !identical(self@reference@access@kind, "extract")
+    if (identical(self@kind, "indexed") && indexed_has_invalid_payload) {
+      problems <- c(
+        problems,
+        "indexed expressions need source and selector inputs plus one typed extract access"
+      )
+    }
+    if (
+      identical(self@kind, "indexed") &&
+        length(self@inputs) == 2L &&
+        all(inputs_are_expressions)
+    ) {
+      source <- self@inputs[[1L]]
+      selector <- self@inputs[[2L]]
+      source_reference <- source@reference
+      access <- self@reference@access
+      indexed_types_match <-
+        source@type@shape@rank == 1L &&
+        selector@type@shape@rank == 0L &&
+        identical(selector@type@base, "integer") &&
+        self@type@shape@rank == 0L &&
+        identical(self@type@base, source@type@base)
+      if (!indexed_types_match) {
+        problems <- c(problems, "indexed expressions require rank-1 source and scalar integer selector types")
+      }
+      indexed_access_matches <-
+        !is.null(source_reference) &&
+        !is.null(access) &&
+        identical(access@value_id, source_reference@source_value_id) &&
+        identical(access@domain@shape, source@type@shape) &&
+        length(access@index_map) == 1L &&
+        identical(access@index_map[[1L]]@axis, access@domain@axes[[1L]]) &&
+        identical(access@index_map[[1L]]@offset, 0L)
+      if (!indexed_access_matches) {
+        problems <- c(problems, "indexed expression access must select the current source element")
+      }
+      if (
+        !S7::S7_inherits(self@operation, TccqLoweredOperation) ||
+          !identical(self@operation@family, "subscript")
+      ) {
+        problems <- c(problems, "indexed expressions must carry a subscript operation")
+      }
     }
     if (
       !is.null(self@branch) &&
@@ -555,6 +604,41 @@ S7::method(tccq_expression_tree, TccqValueGraph) <- function(graph, value_id = N
         reference = tccq_expression_reference(
           value@cell@value_id,
           binding = value@cell
+        )
+      ))
+    }
+    if (S7::S7_inherits(value, TccqIndexedValue)) {
+      source <- build_expression(value@inputs[[1L]], c(value_stack, current_value_id))
+      selector <- build_expression(value@inputs[[2L]], c(value_stack, current_value_id))
+      if (is.null(source) || is.null(selector)) {
+        return(NULL)
+      }
+      if (
+        !identical(source@kind, "reference") ||
+          is.null(source@reference) ||
+          !is.null(source@reference@access)
+      ) {
+        diagnostics <<- c(diagnostics, list(expression_diagnostic(
+          "expression.indexed_source_not_reference",
+          "A proven indexed read currently requires one direct source reference.",
+          "expression.indexed.source",
+          data = list(value_id = current_value_id)
+        )))
+        return(NULL)
+      }
+      return(tccq_expression(
+        id = current_value_id,
+        kind = "indexed",
+        value_id = current_value_id,
+        op = value@op,
+        inputs = list(source, selector),
+        type = value@type,
+        effect = value@effect,
+        operation = value@operation,
+        reference = tccq_expression_reference(
+          value@access@value_id,
+          symbol = source@reference@symbol,
+          access = value@access
         )
       ))
     }
@@ -1499,6 +1583,129 @@ TccqIterationPlan <- S7::new_class(
   }
 )
 
+#' Proven scalar indexed read
+#'
+#' This value represents `source[selector]` only when a typed virtual iteration
+#' proves that `selector` traverses the complete rank-1 source domain from one.
+#' The stored access is zero-based; the iterator cell retains R's one-based
+#' value. No general R subscript semantics are implied by this class.
+#'
+#' @inheritParams TccqValue
+#' @param source_type Type of the rank-1 source storage.
+#' @param iterator Iterator target populated by the enclosing virtual loop.
+#' @param selector Iterator-cell reference used by the R expression.
+#' @param iteration Virtual iteration proving selector bounds.
+#' @param access Zero-based source access corresponding to the iterator.
+#' @param operation Lowered subscript implementation payload.
+#' @param semantics Evaluator facts for the originating `[` call.
+#' @export
+TccqIndexedValue <- S7::new_class(
+  "TccqIndexedValue",
+  package = "tccquickr",
+  parent = TccqValue,
+  properties = list(
+    source_type = TccqType,
+    iterator = TccqWriteTarget,
+    selector = TccqCellReference,
+    iteration = TccqIterationPlan,
+    access = TccqAccess,
+    operation = TccqLoweredOperation,
+    semantics = TccqCallSemantics
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@op, "[") || length(self@inputs) != 2L) {
+      problems <- c(problems, "indexed values must be `[` calls with source and selector inputs")
+    }
+    if (
+      length(self@inputs) == 2L &&
+        (
+          !identical(self@inputs[[1L]], self@access@value_id) ||
+            !identical(self@inputs[[2L]], self@selector@id)
+        )
+    ) {
+      problems <- c(problems, "@inputs must identify the accessed source and selector reference")
+    }
+    if (
+      self@source_type@shape@rank != 1L ||
+        self@type@shape@rank != 0L ||
+        !identical(self@source_type@base, self@type@base)
+    ) {
+      problems <- c(problems, "indexed values require a rank-1 source and scalar result of one base type")
+    }
+    if (
+      !identical(self@selector@type@base, "integer") ||
+        self@selector@type@shape@rank != 0L ||
+        !identical(self@selector@type, self@iteration@element_type)
+    ) {
+      problems <- c(problems, "@selector must be the scalar integer value of @iteration")
+    }
+    iterator_owns_selector <-
+      identical(self@iterator@kind, "cell") &&
+        S7::S7_inherits(self@iterator@binding, TccqCell) &&
+        identical(self@iterator@binding, self@selector@cell) &&
+        identical(self@iterator@value_id, self@selector@cell@value_id) &&
+        identical(self@iterator@type, self@iteration@element_type)
+    if (!iterator_owns_selector) {
+      problems <- c(problems, "@iterator must own the selector cell populated by @iteration")
+    }
+    iteration_is_one_based_virtual <-
+      S7::S7_inherits(self@iteration@element, TccqIndexExpr) &&
+      !is.null(self@iteration@resolved_op) &&
+      S7::S7_inherits(self@iteration@resolved_op@iteration, TccqIterationSpec) &&
+      identical(self@iteration@element@offset, 1L) &&
+      identical(self@iteration@resolved_op@iteration@start, 1L)
+    if (!iteration_is_one_based_virtual) {
+      problems <- c(problems, "indexed values require a one-based virtual iteration proof")
+    }
+    exact_access <-
+      identical(self@access@kind, "extract") &&
+      identical(self@access@domain, self@iteration@domain) &&
+      identical(self@access@domain@shape, self@source_type@shape) &&
+      length(self@access@index_map) == 1L &&
+      identical(self@access@index_map[[1L]]@axis, self@iteration@domain@axes[[1L]]) &&
+      identical(self@access@index_map[[1L]]@offset, 0L)
+    if (!exact_access) {
+      problems <- c(problems, "@access must map the proven iteration to zero-based source storage")
+    }
+    if (
+      !identical(self@operation@family, "subscript") ||
+        !S7::S7_inherits(self@operation@subscript, TccqSubscriptSpec)
+    ) {
+      problems <- c(problems, "@operation must carry the proven scalar subscript contract")
+    }
+    if (!identical(self@attrs$operation, self@operation)) {
+      problems <- c(problems, "@attrs$operation must match the typed operation payload")
+    }
+    if (
+      !identical(self@semantics@call@name, "[") ||
+        isTRUE(self@semantics@control) ||
+        isTRUE(self@semantics@replacement) ||
+        !identical(self@semantics@call@id, self@operation@resolved_op@call@id)
+    ) {
+      problems <- c(problems, "@semantics must match the non-replacement `[` implementation")
+    }
+    invalid_effect <-
+      !isTRUE(self@effect@reads) ||
+        isTRUE(self@effect@writes) ||
+        isTRUE(self@effect@allocates) ||
+        isTRUE(self@effect@boundary) ||
+        isTRUE(self@effect@may_error) ||
+        isTRUE(self@effect@may_warn)
+    if (invalid_effect) {
+      problems <- c(problems, "proven indexed reads must have a read-only effect")
+    }
+    expected_effect <- tccq_effect_union(
+      self@selector@effect,
+      self@operation@resolved_op@effect
+    )
+    if (!identical(self@effect, expected_effect)) {
+      problems <- c(problems, "@effect must combine selector and subscript implementation effects")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Neutral for statement
 #'
 #' A for loop evaluates one typed iteration plan and assigns each selected
@@ -1837,6 +2044,63 @@ tccq_iteration_plan <- function(
     resolved_op = resolved_op,
     semantics = semantics,
     effect = effect
+  )
+}
+
+#' Construct a proven scalar indexed read
+#'
+#' @param id Stable value id.
+#' @param source_id Stable value id of the rank-1 source storage.
+#' @param source_type Type of the rank-1 source storage.
+#' @param iterator Iterator target populated by the enclosing virtual loop.
+#' @param selector Iterator-cell reference used by the R expression.
+#' @param iteration Virtual iteration proving selector bounds.
+#' @param access Zero-based source access corresponding to the iterator.
+#' @param operation Lowered subscript implementation payload.
+#' @param semantics Evaluator facts for the originating `[` call.
+#' @export
+tccq_indexed_value <- function(
+  id,
+  source_id,
+  source_type,
+  iterator,
+  selector,
+  iteration,
+  access,
+  operation,
+  semantics
+) {
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_character_scalar(source_id, "source_id")
+  .tccq_check_s7(source_type, TccqType, "TccqType", "source_type")
+  .tccq_check_s7(iterator, TccqWriteTarget, "TccqWriteTarget", "iterator")
+  .tccq_check_s7(selector, TccqCellReference, "TccqCellReference", "selector")
+  .tccq_check_s7(iteration, TccqIterationPlan, "TccqIterationPlan", "iteration")
+  .tccq_check_s7(access, TccqAccess, "TccqAccess", "access")
+  .tccq_check_s7(operation, TccqLoweredOperation, "TccqLoweredOperation", "operation")
+  .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+
+  result_type <- tccq_op_signature_result_type(
+    operation@signature,
+    list(source_type, selector@type)
+  )
+  if (!result_type@success) {
+    tccq_abort_diagnostic(result_type@diagnostics[[1L]])
+  }
+  TccqIndexedValue(
+    id = id,
+    op = "[",
+    inputs = list(source_id, selector@id),
+    type = result_type@value,
+    effect = tccq_effect_union(selector@effect, operation@resolved_op@effect),
+    attrs = list(operation = operation),
+    source_type = source_type,
+    iterator = iterator,
+    selector = selector,
+    iteration = iteration,
+    access = access,
+    operation = operation,
+    semantics = semantics
   )
 }
 

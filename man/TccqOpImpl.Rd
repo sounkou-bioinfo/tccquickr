@@ -19,7 +19,8 @@ TccqOpImpl(
   elementwise = NULL,
   reduction = NULL,
   contraction = NULL,
-  iteration = NULL
+  iteration = NULL,
+  subscript = NULL
 )
 }
 \arguments{
@@ -54,6 +55,8 @@ TccqOpImpl(
 \item{contraction}{Optional contraction metadata.}
 
 \item{iteration}{Optional iteration metadata.}
+
+\item{subscript}{Optional subscript metadata.}
 }
 \description{
 Operation implementation descriptor

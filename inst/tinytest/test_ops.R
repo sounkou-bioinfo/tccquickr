@@ -119,6 +119,44 @@ expect_true(S7::S7_inherits(
 expect_equal(resolved_seq_len@value@iteration@signature@arity, 1L)
 expect_equal(resolved_seq_len@value@iteration@extent_arg, 1L)
 expect_equal(resolved_seq_len@value@iteration@start, 1L)
+
+resolved_rank1_subscript <- tccq_resolve_call(
+  default_registry,
+  tccq_call("[", expr = quote(x[index])),
+  tccq_op_context()
+)
+expect_true(resolved_rank1_subscript@success)
+expect_equal(resolved_rank1_subscript@value@target, "native")
+expect_true(S7::S7_inherits(
+  resolved_rank1_subscript@value@subscript,
+  TccqSubscriptSpec
+))
+expect_equal(resolved_rank1_subscript@value@subscript@signature@arity, 2L)
+
+resolved_range_subscript <- tccq_resolve_call(
+  default_registry,
+  tccq_call("[", expr = quote(x[2:n])),
+  tccq_op_context()
+)
+expect_true(resolved_range_subscript@success)
+expect_equal(resolved_range_subscript@value@target, "r_language")
+expect_null(resolved_range_subscript@value@subscript)
+
+invalid_subscript_impl <- tryCatch(
+  tccq_op_impl(
+    "invalid_subscript",
+    target = "native",
+    pure = FALSE,
+    subscript = resolved_rank1_subscript@value@subscript
+  ),
+  tccq_error = identity
+)
+expect_true(inherits(invalid_subscript_impl, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(invalid_subscript_impl)@code,
+  "schema.invalid_subscript_implementation"
+)
+
 invalid_iteration_impl <- tryCatch(
   tccq_op_impl(
     "invalid_iteration",

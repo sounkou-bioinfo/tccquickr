@@ -1702,6 +1702,52 @@ expect_true(S7::S7_inherits(
 ))
 expect_equal(extent_sequence_statement@iterator@type@base, "integer")
 
+indexed_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + x[index]
+  }
+  total
+}
+indexed_sum_program <- tccq_analyze(indexed_sum, strict = TRUE)@value
+indexed_sum_c <- tccq_plan_backend(
+  indexed_sum_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+indexed_sum_fortran <- tccq_plan_backend(
+  indexed_sum_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(indexed_sum_c@success)
+expect_true(indexed_sum_fortran@success)
+indexed_sum_c_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(indexed_sum_c)@body@statements
+)[[1L]]
+indexed_sum_fortran_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(indexed_sum_fortran)@body@statements
+)[[1L]]
+indexed_sum_c_assignment <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqAssignment),
+  indexed_sum_c_loop@body@statements
+)[[1L]]
+indexed_sum_fortran_assignment <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqAssignment),
+  indexed_sum_fortran_loop@body@statements
+)[[1L]]
+indexed_expression <- indexed_sum_c_assignment@value@inputs[[2L]]
+expect_equal(indexed_expression@kind, "indexed")
+expect_true(S7::S7_inherits(indexed_expression@reference@access, TccqAccess))
+expect_equal(indexed_expression@reference@access@kind, "extract")
+expect_identical(
+  indexed_sum_c_assignment@value,
+  indexed_sum_fortran_assignment@value
+)
+
 completion_sensitive_sum <- function(x) {
   declare(type(x = double(n)))
   total <- 0
@@ -4330,6 +4376,51 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(extent_sequence_fortran_shared@success)
   check_extent_sequence(backend_callable(extent_sequence_fortran_shared))
+}
+
+indexed_sum_inputs <- list(
+  numeric(),
+  2,
+  c(1, 2, 3),
+  c(1, NA_real_, 3),
+  c(1, NaN, 3)
+)
+indexed_sum_expected <- vapply(indexed_sum_inputs, sum, numeric(1))
+check_indexed_sum <- function(callable) {
+  expect_equal(
+    vapply(indexed_sum_inputs, callable, numeric(1)),
+    indexed_sum_expected
+  )
+}
+
+if (rtinycc_jit_available) {
+  indexed_sum_jit <- tccq_plan_backend(
+    indexed_sum_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(indexed_sum_jit@success)
+  check_indexed_sum(backend_callable(indexed_sum_jit))
+}
+
+if (can_build_shared_library("c")) {
+  indexed_sum_c_shared <- tccq_plan_backend(
+    indexed_sum_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(indexed_sum_c_shared@success)
+  check_indexed_sum(backend_callable(indexed_sum_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  indexed_sum_fortran_shared <- tccq_plan_backend(
+    indexed_sum_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(indexed_sum_fortran_shared@success)
+  check_indexed_sum(backend_callable(indexed_sum_fortran_shared))
 }
 
 completion_sensitive_inputs <- list(

@@ -70,6 +70,7 @@ tccq_lower_function <- function(
     state$neutral_block_counter <- 0L
     state$statement_index <- 0L
     state$consumed_call_ids <- character()
+    state$active_iterations <- list()
     state$op_body_bindings <- list()
     state$op_body_implementation_stack <- list()
     state$dim_symbols <- unique(unlist(lapply(bindings, function(binding) {
@@ -94,6 +95,30 @@ tccq_lower_function <- function(
       )
     }
     state
+  }
+
+  take_call_semantics <- function(expr, call_name, state, consume = TRUE) {
+    matches <- Filter(
+      function(semantics) {
+        identical(semantics@call@name, call_name) &&
+          identical(semantics@call@expr, expr) &&
+          !semantics@call@id %in% state$consumed_call_ids
+      },
+      call_index@semantics
+    )
+    if (length(matches) == 0L) {
+      return(NULL)
+    }
+    semantics <- matches[[1L]]
+    if (isTRUE(consume)) {
+      state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
+    }
+    semantics
+  }
+
+  expression_for_value <- function(value_id, state) {
+    snapshot <- new_plan(values = state$values, result = value_id)
+    tccq_expression_tree(snapshot, value_id)
   }
 
   add_value <- function(state, value) {
@@ -323,24 +348,14 @@ tccq_lower_function <- function(
       ))
     }
 
-    semantic_matches <- Filter(
-      function(semantics) {
-        identical(semantics@call@name, "if") &&
-          identical(semantics@call@expr, expr) &&
-          !semantics@call@id %in% state$consumed_call_ids
-      },
-      call_index@semantics
-    )
-    if (length(semantic_matches) == 0L) {
+    semantics <- take_call_semantics(expr, "if", state)
+    if (is.null(semantics)) {
       return(diagnostic_value(
         "lowering.missing_call_semantics",
         "The `if` call has no matching evaluator facts in the frontend call index.",
         expr
       ))
     }
-    semantics <- semantic_matches[[1L]]
-    state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
-
     condition <- lower_expression(arguments[[1L]], state)
     if (length(condition$diagnostics) > 0L) {
       return(condition)
@@ -867,6 +882,132 @@ tccq_lower_function <- function(
       ))
     }
     index_expr <- expr[[3L]]
+    if (is.symbol(index_expr)) {
+      selector_name <- as.character(index_expr)
+      iteration <- state$active_iterations[[selector_name]]
+      if (!S7::S7_inherits(iteration, TccqIterationPlan)) {
+        return(diagnostic_value(
+          "lowering.unproven_scalar_subscript",
+          "A scalar integer subscript requires an active typed iteration proving one-based bounds.",
+          expr,
+          data = list(selector = selector_name)
+        ))
+      }
+      if (!identical(target$type@shape, iteration@domain@shape)) {
+        return(diagnostic_value(
+          "lowering.index_iteration_domain_mismatch",
+          "The indexed source shape must exactly match the active iteration domain.",
+          expr,
+          data = list(source_shape = target$type@shape, iteration_domain = iteration@domain)
+        ))
+      }
+
+      semantics <- take_call_semantics(expr, "[", state)
+      if (is.null(semantics)) {
+        return(diagnostic_value(
+          "lowering.missing_call_semantics",
+          "The `[` call has no matching evaluator facts in the frontend call index.",
+          expr
+        ))
+      }
+      resolution <- tccq_resolve_call(registry, semantics@call, context)
+      if (
+        !resolution@success ||
+          !S7::S7_inherits(resolution@value@subscript, TccqSubscriptSpec)
+      ) {
+        return(diagnostic_value(
+          "lowering.unimplemented_subscript",
+          "The scalar `[` call has no typed subscript implementation in this context.",
+          expr,
+          data = list(diagnostics = resolution@diagnostics)
+        ))
+      }
+
+      selector <- lower_expression(index_expr, state)
+      if (length(selector$diagnostics) > 0L) {
+        return(selector)
+      }
+      selector_value <- state$values[[selector$value_id]]
+      if (
+        !S7::S7_inherits(selector_value, TccqCellReference) ||
+          !identical(selector_value@cell, state$cells[[selector_name]]) ||
+          !identical(selector_value@type, iteration@element_type)
+      ) {
+        return(diagnostic_value(
+          "lowering.invalid_subscript_selector",
+          "The scalar subscript must read the active iteration cell without rebinding.",
+          index_expr,
+          data = list(selector = selector_name)
+        ))
+      }
+
+      source_expression <- expression_for_value(target$value_id, state)
+      if (!source_expression@success) {
+        return(list(
+          value_id = NULL,
+          type = NULL,
+          diagnostics = source_expression@diagnostics
+        ))
+      }
+      source_expression <- source_expression@value
+      source_is_direct <-
+        identical(source_expression@kind, "reference") &&
+          !is.null(source_expression@reference) &&
+          is.null(source_expression@reference@access) &&
+          length(source_expression@reference@slice_offsets) == 0L &&
+          identical(
+            source_expression@value_id,
+            source_expression@reference@source_value_id
+          )
+      if (!source_is_direct) {
+        return(diagnostic_value(
+          "lowering.indexed_source_not_direct",
+          "A proven scalar subscript currently requires one direct rank-1 source reference.",
+          expr[[2L]],
+          data = list(value_id = target$value_id)
+        ))
+      }
+
+      access <- tccq_access(
+        source_expression@reference@source_value_id,
+        iteration@domain,
+        kind = "extract",
+        index_map = list(tccq_index_expr(iteration@domain@axes[[1L]]))
+      )
+      operation <- tccq_lowered_operation(
+        "subscript",
+        resolution@value,
+        subscript = resolution@value@subscript
+      )
+      value_id <- next_value_id(state)
+      indexed_value <- tryCatch(
+        tccq_indexed_value(
+          value_id,
+          source_expression@reference@source_value_id,
+          target$type,
+          state$cell_targets[[selector_name]],
+          selector_value,
+          iteration,
+          access,
+          operation,
+          semantics
+        ),
+        tccq_error = identity
+      )
+      if (inherits(indexed_value, "tccq_error")) {
+        return(list(
+          value_id = NULL,
+          type = NULL,
+          diagnostics = list(tccq_condition_diagnostic(indexed_value))
+        ))
+      }
+      add_value(state, indexed_value)
+      return(list(
+        value_id = value_id,
+        type = indexed_value@type,
+        diagnostics = list()
+      ))
+    }
     if (!(is.call(index_expr) && identical(tccq_call_name(index_expr), ":") && length(index_expr) == 3L)) {
       return(diagnostic_value(
         "lowering.unsupported_index",
@@ -1004,7 +1145,9 @@ tccq_lower_function <- function(
   }
 
   value_is_slice <- function(value) {
-    identical(value@op, "[")
+    identical(value@op, "[") &&
+      !S7::S7_inherits(value, TccqIndexedValue) &&
+      !is.null(value@attrs$slice_offsets)
   }
 
   contracted_dim_of <- function(value, values) {
@@ -1565,27 +1708,9 @@ tccq_lower_function <- function(
         effect = effect
       )
     }
-    expression_for <- function(value_id) {
-      snapshot <- new_plan(values = state$values, result = value_id)
-      tccq_expression_tree(snapshot, value_id)
-    }
+    expression_for <- function(value_id) expression_for_value(value_id, state)
     take_semantics <- function(expr, call_name, consume = TRUE) {
-      matches <- Filter(
-        function(semantics) {
-          identical(semantics@call@name, call_name) &&
-            identical(semantics@call@expr, expr) &&
-            !semantics@call@id %in% state$consumed_call_ids
-        },
-        call_index@semantics
-      )
-      if (length(matches) == 0L) {
-        return(NULL)
-      }
-      semantics <- matches[[1L]]
-      if (isTRUE(consume)) {
-        state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
-      }
-      semantics
+      take_call_semantics(expr, call_name, state, consume)
     }
     lower_cell_assignment <- function(expr) {
       target <- expr[[2L]]
@@ -2134,7 +2259,31 @@ tccq_lower_function <- function(
         state$cells[[iterator_name]] <- iterator
         state$cell_targets[[iterator_name]] <- iterator_target
 
+        iterator_is_reassigned <- any(vapply(
+          tccq_collect_calls(expr[[4L]]),
+          function(call) {
+            call@name %in% c("<-", "=") &&
+              is.call(call@expr) &&
+              length(call@expr) == 3L &&
+              is.symbol(call@expr[[2L]]) &&
+              identical(as.character(call@expr[[2L]]), iterator_name)
+          },
+          logical(1)
+        ))
+        iteration_proves_one_based_index <-
+          S7::S7_inherits(iteration@element, TccqIndexExpr) &&
+            !is.null(iteration@resolved_op) &&
+            S7::S7_inherits(
+              iteration@resolved_op@iteration,
+              TccqIterationSpec
+            ) &&
+            identical(iteration@element@offset, 1L) &&
+            identical(iteration@resolved_op@iteration@start, 1L)
+        if (iteration_proves_one_based_index && !iterator_is_reassigned) {
+          state$active_iterations[[iterator_name]] <- iteration
+        }
         body_result <- lower_control_block(expr[[4L]], in_loop = TRUE)
+        state$active_iterations[[iterator_name]] <- NULL
         if (length(body_result$diagnostics) > 0L) {
           return(body_result)
         }

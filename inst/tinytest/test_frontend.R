@@ -953,6 +953,128 @@ expect_identical(
   extent_sequence_loop@iteration@semantics@call@id
 )
 
+indexed_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + x[index]
+  }
+  total
+}
+indexed_sum_result <- tccq_analyze(indexed_sum, strict = TRUE)
+expect_true(indexed_sum_result@success)
+indexed_values <- Filter(
+  function(value) S7::S7_inherits(value, TccqIndexedValue),
+  indexed_sum_result@value@values
+)
+expect_equal(length(indexed_values), 1L)
+indexed_value <- indexed_values[[1L]]
+expect_equal(indexed_value@operation@family, "subscript")
+expect_identical(
+  indexed_value@operation@subscript,
+  indexed_value@operation@resolved_op@subscript
+)
+expect_equal(indexed_value@access@kind, "extract")
+expect_identical(indexed_value@access@domain, indexed_value@iteration@domain)
+expect_equal(indexed_value@selector@cell@name, "index")
+expect_identical(indexed_value@iterator@binding, indexed_value@selector@cell)
+expect_equal(indexed_value@iteration@element@offset, 1L)
+expect_equal(indexed_value@access@index_map[[1L]]@offset, 0L)
+expect_identical(
+  indexed_value@semantics@call@id,
+  indexed_value@operation@resolved_op@call@id
+)
+unrelated_iterator_cell <- tccq_cell(
+  "other_index",
+  "cell_other_index",
+  tccq_type("integer")
+)
+unrelated_iterator_target <- tccq_write_target(
+  unrelated_iterator_cell@value_id,
+  unrelated_iterator_cell@type,
+  unrelated_iterator_cell@storage_type,
+  kind = "cell",
+  binding = unrelated_iterator_cell
+)
+mismatched_iterator_proof <- tryCatch(
+  S7::set_props(indexed_value, iterator = unrelated_iterator_target),
+  error = identity
+)
+expect_true(inherits(mismatched_iterator_proof, "error"))
+
+unproven_subscript <- function(x, index) {
+  declare(type(x = double(n), index = integer()))
+  x[index]
+}
+unproven_subscript_result <- tccq_analyze(unproven_subscript)
+expect_false(unproven_subscript_result@success)
+expect_true(any(vapply(
+  unproven_subscript_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.unproven_scalar_subscript"
+  ),
+  logical(1)
+)))
+
+mismatched_index_domain <- function(x, y) {
+  declare(type(x = double(n), y = double(p)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + y[index]
+  }
+  total
+}
+mismatched_index_domain_result <- tccq_analyze(mismatched_index_domain)
+expect_false(mismatched_index_domain_result@success)
+expect_true(any(vapply(
+  mismatched_index_domain_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.index_iteration_domain_mismatch"
+  ),
+  logical(1)
+)))
+
+mutated_index_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    index <- index + 1L
+    total <- total + x[index]
+  }
+  total
+}
+mutated_index_sum_result <- tccq_analyze(mutated_index_sum)
+expect_false(mutated_index_sum_result@success)
+expect_true(any(vapply(
+  mutated_index_sum_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.unproven_scalar_subscript"
+  ),
+  logical(1)
+)))
+
+stored_index_sum <- function(x, indices) {
+  declare(type(x = double(n), indices = integer(n)))
+  total <- 0
+  for (index in indices) {
+    total <- total + x[index]
+  }
+  total
+}
+stored_index_sum_result <- tccq_analyze(stored_index_sum)
+expect_false(stored_index_sum_result@success)
+expect_true(any(vapply(
+  stored_index_sum_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.unproven_scalar_subscript"
+  ),
+  logical(1)
+)))
+
 indices <- function(extent) seq_len(extent)
 indices_iteration <- tccq_iteration_spec(
   "indices",

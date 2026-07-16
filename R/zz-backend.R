@@ -2052,7 +2052,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
     }
 
     expression_text <- function(expression, emit_context) {
-      if (identical(expression@kind, "reference")) {
+      if (expression@kind %in% c("reference", "indexed")) {
         access <- expression@reference@access
         if (!S7::S7_inherits(access, TccqAccess)) {
           if (expression@type@shape@rank == 0L) {
