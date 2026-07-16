@@ -666,7 +666,7 @@ tccq_lower_function <- function(
     op <- resolved_operation@call@name
     elementwise_spec <- resolved_operation@elementwise
     signature <- elementwise_spec@signature
-    if (!(length(args) %in% signature@arity)) {
+    if (!tccq_arity_accepts(signature@arity, length(args))) {
       return(diagnostic_value(
         "lowering.unsupported_elementwise_arity",
         sprintf("Elementwise operation `%s` does not accept this argument count.", op),
@@ -735,7 +735,7 @@ tccq_lower_function <- function(
     reducer <- reduction_spec@name
     surface_op <- resolved_operation@call@name
     signature <- reduction_spec@signature
-    if (!(length(args) %in% signature@arity)) {
+    if (!tccq_arity_accepts(signature@arity, length(args))) {
       return(diagnostic_value(
         "lowering.unsupported_reducer_arity",
         sprintf("Reducer `%s` does not accept this argument count.", reducer),
@@ -861,44 +861,85 @@ tccq_lower_function <- function(
   }
 
   lower_slice <- function(expr, state) {
-    if (length(expr) != 3L) {
-      return(diagnostic_value(
-        "lowering.unsupported_index",
-        "Only single-axis `[` slices are lowerable for now.",
-        expr,
-        data = list(arity = length(expr) - 2L)
-      ))
-    }
     target <- lower_expression(expr[[2L]], state)
     if (length(target$diagnostics) > 0L) {
       return(target)
     }
-    if (target$type@shape@rank != 1L) {
+    selector_arguments <- as.list(expr)[-(1:2)]
+    selector_argument_tags <- names(selector_arguments)
+    if (is.null(selector_argument_tags)) {
+      selector_argument_tags <- rep("", length(selector_arguments))
+    }
+    selector_argument_tags[is.na(selector_argument_tags)] <- ""
+    tagged_selector_positions <- which(nzchar(selector_argument_tags))
+    if (length(tagged_selector_positions) > 0L) {
       return(diagnostic_value(
-        "lowering.unsupported_slice_rank",
-        "Slices currently apply to rank-1 values with one range index.",
+        "lowering.unsupported_subscript_argument_tags",
+        "Proven scalar extraction and range slicing currently require untagged subscript arguments.",
         expr,
-        data = list(rank = target$type@shape@rank)
+        data = list(
+          argument_tags = selector_argument_tags,
+          tagged_positions = tagged_selector_positions
+        )
       ))
     }
-    index_expr <- expr[[3L]]
-    if (is.symbol(index_expr)) {
-      selector_name <- as.character(index_expr)
-      iteration <- state$active_iterations[[selector_name]]
-      if (!S7::S7_inherits(iteration, TccqIterationPlan)) {
+    selector_exprs <- unname(selector_arguments)
+    selector_names <- vapply(selector_exprs, function(selector_expr) {
+      if (!is.symbol(selector_expr)) {
+        return("")
+      }
+      name <- as.character(selector_expr)
+      if (length(name) == 1L && nzchar(name)) name else ""
+    }, character(1))
+    selectors_are_symbols <- length(selector_names) > 0L && all(nzchar(selector_names))
+
+    if (selectors_are_symbols) {
+      if (length(selector_exprs) != target$type@shape@rank) {
         return(diagnostic_value(
-          "lowering.unproven_scalar_subscript",
-          "A scalar integer subscript requires an active typed iteration proving one-based bounds.",
+          "lowering.index_selector_rank_mismatch",
+          "A proven scalar extraction requires exactly one selector per source dimension.",
           expr,
-          data = list(selector = selector_name)
+          data = list(
+            source_rank = target$type@shape@rank,
+            selector_count = length(selector_exprs)
+          )
         ))
       }
-      if (!identical(target$type@shape, iteration@domain@shape)) {
+      iterations <- lapply(selector_names, function(selector_name) {
+        state$active_iterations[[selector_name]]
+      })
+      iterations_are_proven <- vapply(
+        iterations,
+        S7::S7_inherits,
+        logical(1),
+        class = TccqIterationPlan
+      )
+      if (!all(iterations_are_proven)) {
+        unproven <- selector_names[!iterations_are_proven]
+        return(diagnostic_value(
+          "lowering.unproven_scalar_subscript",
+          "Every scalar integer subscript requires an active typed iteration proving one-based bounds.",
+          expr,
+          data = list(selectors = selector_names, unproven = unproven)
+        ))
+      }
+      dimensions_match <- vapply(seq_along(iterations), function(position) {
+        iteration <- iterations[[position]]
+        iteration@domain@shape@rank == 1L && identical(
+          target$type@shape@dims[[position]],
+          iteration@domain@shape@dims[[1L]]
+        )
+      }, logical(1))
+      if (!all(dimensions_match)) {
         return(diagnostic_value(
           "lowering.index_iteration_domain_mismatch",
-          "The indexed source shape must exactly match the active iteration domain.",
+          "Each indexed source dimension must match its selector's proven iteration domain.",
           expr,
-          data = list(source_shape = target$type@shape, iteration_domain = iteration@domain)
+          data = list(
+            source_shape = target$type@shape,
+            iteration_domains = lapply(iterations, function(iteration) iteration@domain),
+            mismatched_dimensions = which(!dimensions_match)
+          )
         ))
       }
 
@@ -917,27 +958,38 @@ tccq_lower_function <- function(
       ) {
         return(diagnostic_value(
           "lowering.unimplemented_subscript",
-          "The scalar `[` call has no typed subscript implementation in this context.",
+          "The scalar `[` call has no typed exact-rank subscript implementation in this context.",
           expr,
           data = list(diagnostics = resolution@diagnostics)
         ))
       }
 
-      selector <- lower_expression(index_expr, state)
-      if (length(selector$diagnostics) > 0L) {
-        return(selector)
+      selectors <- lapply(selector_exprs, lower_expression, state = state)
+      failed_selector <- which(vapply(
+        selectors,
+        function(selector) length(selector$diagnostics) > 0L,
+        logical(1)
+      ))
+      if (length(failed_selector) > 0L) {
+        return(selectors[[failed_selector[[1L]]]])
       }
-      selector_value <- state$values[[selector$value_id]]
-      if (
-        !S7::S7_inherits(selector_value, TccqCellReference) ||
-          !identical(selector_value@cell, state$cells[[selector_name]]) ||
-          !identical(selector_value@type, iteration@element_type)
-      ) {
+      selector_values <- lapply(selectors, function(selector) {
+        state$values[[selector$value_id]]
+      })
+      selectors_match_iterations <- vapply(seq_along(selector_values), function(position) {
+        selector_value <- selector_values[[position]]
+        selector_name <- selector_names[[position]]
+        iteration <- iterations[[position]]
+        S7::S7_inherits(selector_value, TccqCellReference) &&
+          identical(selector_value@cell, state$cells[[selector_name]]) &&
+          identical(selector_value@type, iteration@element_type)
+      }, logical(1))
+      if (!all(selectors_match_iterations)) {
         return(diagnostic_value(
           "lowering.invalid_subscript_selector",
-          "The scalar subscript must read the active iteration cell without rebinding.",
-          index_expr,
-          data = list(selector = selector_name)
+          "Every scalar subscript must read its active iteration cell without rebinding.",
+          expr,
+          data = list(selectors = selector_names, invalid = which(!selectors_match_iterations))
         ))
       }
 
@@ -962,43 +1014,67 @@ tccq_lower_function <- function(
       if (!source_is_direct) {
         return(diagnostic_value(
           "lowering.indexed_source_not_direct",
-          "A proven scalar subscript currently requires one direct rank-1 source reference.",
+          "A proven scalar subscript currently requires one direct atomic source reference.",
           expr[[2L]],
           data = list(value_id = target$value_id)
         ))
       }
 
+      value_id <- next_value_id(state)
+      iteration_axes <- vapply(
+        iterations,
+        function(iteration) iteration@domain@axes[[1L]],
+        character(1)
+      )
+      unique_axis_positions <- !duplicated(iteration_axes)
+      access_domain <- tccq_domain(
+        paste0(value_id, "_access_domain"),
+        tccq_shape(lapply(
+          iterations[unique_axis_positions],
+          function(iteration) iteration@domain@shape@dims[[1L]]
+        )),
+        axes = iteration_axes[unique_axis_positions],
+        attrs = list(kind = "proven_scalar_extract")
+      )
       access <- tccq_access(
         source_expression@reference@source_value_id,
-        iteration@domain,
+        access_domain,
         kind = "extract",
-        index_map = list(tccq_index_expr(iteration@domain@axes[[1L]]))
+        index_map = lapply(iteration_axes, tccq_index_expr)
       )
       operation <- tccq_lowered_operation(
         "subscript",
         resolution@value,
         subscript = resolution@value@subscript
       )
-      value_id <- next_value_id(state)
       indexed_value <- tryCatch(
         tccq_indexed_value(
           value_id,
           source_expression@reference@source_value_id,
           target$type,
-          state$cell_targets[[selector_name]],
-          selector_value,
-          iteration,
+          unname(state$cell_targets[selector_names]),
+          selector_values,
+          iterations,
           access,
           operation,
           semantics
         ),
-        tccq_error = identity
+        tccq_error = identity,
+        error = identity
       )
       if (inherits(indexed_value, "tccq_error")) {
         return(list(
           value_id = NULL,
           type = NULL,
           diagnostics = list(tccq_condition_diagnostic(indexed_value))
+        ))
+      }
+      if (inherits(indexed_value, "error")) {
+        return(diagnostic_value(
+          "lowering.invalid_indexed_value",
+          "Typed indexed-value construction failed.",
+          expr,
+          data = list(message = conditionMessage(indexed_value))
         ))
       }
       add_value(state, indexed_value)
@@ -1008,6 +1084,15 @@ tccq_lower_function <- function(
         diagnostics = list()
       ))
     }
+    if (length(selector_exprs) != 1L || target$type@shape@rank != 1L) {
+      return(diagnostic_value(
+        "lowering.unsupported_index",
+        "Non-scalar slices currently require one range selector over a rank-1 source.",
+        expr,
+        data = list(rank = target$type@shape@rank, selector_count = length(selector_exprs))
+      ))
+    }
+    index_expr <- selector_exprs[[1L]]
     if (!(is.call(index_expr) && identical(tccq_call_name(index_expr), ":") && length(index_expr) == 3L)) {
       return(diagnostic_value(
         "lowering.unsupported_index",
@@ -1067,7 +1152,7 @@ tccq_lower_function <- function(
     contraction_spec <- resolved_operation@contraction
     surface_op <- resolved_operation@call@name
     signature <- contraction_spec@signature
-    if (!(length(args) %in% signature@arity)) {
+    if (!tccq_arity_accepts(signature@arity, length(args))) {
       return(diagnostic_value(
         "lowering.unsupported_contraction_arity",
         sprintf("Contraction `%s` does not accept this argument count.", surface_op),
@@ -2087,7 +2172,10 @@ tccq_lower_function <- function(
             ) {
               iteration_spec <- iteration_resolution@value@iteration
               iteration_arguments <- as.list(iterable_expr)[-1L]
-              if (!length(iteration_arguments) %in% iteration_spec@signature@arity) {
+              if (!tccq_arity_accepts(
+                iteration_spec@signature@arity,
+                length(iteration_arguments)
+              )) {
                 return(diagnostic_value(
                   "lowering.invalid_iteration_arity",
                   "The resolved iteration operation does not accept this argument count.",

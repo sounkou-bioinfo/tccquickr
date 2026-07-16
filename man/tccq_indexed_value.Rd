@@ -8,9 +8,9 @@ tccq_indexed_value(
   id,
   source_id,
   source_type,
-  iterator,
-  selector,
-  iteration,
+  iterators,
+  selectors,
+  iterations,
   access,
   operation,
   semantics
@@ -19,15 +19,15 @@ tccq_indexed_value(
 \arguments{
 \item{id}{Stable value id.}
 
-\item{source_id}{Stable value id of the rank-1 source storage.}
+\item{source_id}{Stable value id of the source storage.}
 
-\item{source_type}{Type of the rank-1 source storage.}
+\item{source_type}{Type of the source storage.}
 
-\item{iterator}{Iterator target populated by the enclosing virtual loop.}
+\item{iterators}{Iterator targets populated by the enclosing virtual loops.}
 
-\item{selector}{Iterator-cell reference used by the R expression.}
+\item{selectors}{Iterator-cell references used by the R expression.}
 
-\item{iteration}{Virtual iteration proving selector bounds.}
+\item{iterations}{Virtual iterations proving selector bounds.}
 
 \item{access}{Zero-based source access corresponding to the iterator.}
 

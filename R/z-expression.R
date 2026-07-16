@@ -213,7 +213,7 @@ TccqExpression <- S7::new_class(
     ) {
       problems <- c(problems, "element expressions must project one scalar of the input base type")
     }
-    indexed_has_invalid_payload <- length(self@inputs) != 2L ||
+    indexed_has_invalid_payload <- length(self@inputs) < 2L ||
       !is.null(self@literal) ||
       is.null(self@operation) ||
       !is.null(self@branch) ||
@@ -228,30 +228,35 @@ TccqExpression <- S7::new_class(
     }
     if (
       identical(self@kind, "indexed") &&
-        length(self@inputs) == 2L &&
+        length(self@inputs) >= 2L &&
         all(inputs_are_expressions)
     ) {
       source <- self@inputs[[1L]]
-      selector <- self@inputs[[2L]]
+      selectors <- self@inputs[-1L]
       source_reference <- source@reference
-      access <- self@reference@access
+      access <- if (is.null(self@reference)) NULL else self@reference@access
       indexed_types_match <-
-        source@type@shape@rank == 1L &&
-        selector@type@shape@rank == 0L &&
-        identical(selector@type@base, "integer") &&
+        source@type@shape@rank == length(selectors) &&
+        source@type@shape@rank > 0L &&
+        all(vapply(selectors, function(selector) {
+          selector@type@shape@rank == 0L &&
+            identical(selector@type@base, "integer")
+        }, logical(1))) &&
         self@type@shape@rank == 0L &&
         identical(self@type@base, source@type@base)
       if (!indexed_types_match) {
-        problems <- c(problems, "indexed expressions require rank-1 source and scalar integer selector types")
+        problems <- c(problems, "indexed expressions require one scalar integer selector per source axis")
       }
       indexed_access_matches <-
         !is.null(source_reference) &&
         !is.null(access) &&
         identical(access@value_id, source_reference@source_value_id) &&
-        identical(access@domain@shape, source@type@shape) &&
-        length(access@index_map) == 1L &&
-        identical(access@index_map[[1L]]@axis, access@domain@axes[[1L]]) &&
-        identical(access@index_map[[1L]]@offset, 0L)
+        length(access@index_map) == source@type@shape@rank &&
+        all(vapply(access@index_map, function(index) {
+          nzchar(index@axis) &&
+            index@axis %in% access@domain@axes &&
+            identical(index@offset, 0L)
+        }, logical(1)))
       if (!indexed_access_matches) {
         problems <- c(problems, "indexed expression access must select the current source element")
       }
@@ -609,8 +614,12 @@ S7::method(tccq_expression_tree, TccqValueGraph) <- function(graph, value_id = N
     }
     if (S7::S7_inherits(value, TccqIndexedValue)) {
       source <- build_expression(value@inputs[[1L]], c(value_stack, current_value_id))
-      selector <- build_expression(value@inputs[[2L]], c(value_stack, current_value_id))
-      if (is.null(source) || is.null(selector)) {
+      selectors <- lapply(
+        value@inputs[-1L],
+        build_expression,
+        value_stack = c(value_stack, current_value_id)
+      )
+      if (is.null(source) || any(vapply(selectors, is.null, logical(1)))) {
         return(NULL)
       }
       if (
@@ -631,7 +640,7 @@ S7::method(tccq_expression_tree, TccqValueGraph) <- function(graph, value_id = N
         kind = "indexed",
         value_id = current_value_id,
         op = value@op,
-        inputs = list(source, selector),
+        inputs = c(list(source), selectors),
         type = value@type,
         effect = value@effect,
         operation = value@operation,
@@ -1585,16 +1594,17 @@ TccqIterationPlan <- S7::new_class(
 
 #' Proven scalar indexed read
 #'
-#' This value represents `source[selector]` only when a typed virtual iteration
-#' proves that `selector` traverses the complete rank-1 source domain from one.
-#' The stored access is zero-based; the iterator cell retains R's one-based
-#' value. No general R subscript semantics are implied by this class.
+#' This value represents one scalar extraction only when every source axis has
+#' an integer selector backed by a typed virtual iteration over that exact
+#' dimension. Selectors may share an iteration, as in a diagonal read. The
+#' stored access is zero-based; iterator cells retain R's one-based values. No
+#' general R subscript semantics are implied by this class.
 #'
 #' @inheritParams TccqValue
-#' @param source_type Type of the rank-1 source storage.
-#' @param iterator Iterator target populated by the enclosing virtual loop.
-#' @param selector Iterator-cell reference used by the R expression.
-#' @param iteration Virtual iteration proving selector bounds.
+#' @param source_type Type of the source storage.
+#' @param iterators Iterator targets populated by the enclosing virtual loops.
+#' @param selectors Iterator-cell references used by the R expression.
+#' @param iterations Virtual iterations proving selector bounds.
 #' @param access Zero-based source access corresponding to the iterator.
 #' @param operation Lowered subscript implementation payload.
 #' @param semantics Evaluator facts for the originating `[` call.
@@ -1605,66 +1615,152 @@ TccqIndexedValue <- S7::new_class(
   parent = TccqValue,
   properties = list(
     source_type = TccqType,
-    iterator = TccqWriteTarget,
-    selector = TccqCellReference,
-    iteration = TccqIterationPlan,
+    iterators = S7::class_list,
+    selectors = S7::class_list,
+    iterations = S7::class_list,
     access = TccqAccess,
     operation = TccqLoweredOperation,
     semantics = TccqCallSemantics
   ),
   validator = function(self) {
     problems <- character()
-    if (!identical(self@op, "[") || length(self@inputs) != 2L) {
-      problems <- c(problems, "indexed values must be `[` calls with source and selector inputs")
+    source_rank <- self@source_type@shape@rank
+    list_lengths_match <-
+      source_rank > 0L &&
+        length(self@iterators) == source_rank &&
+        length(self@selectors) == source_rank &&
+        length(self@iterations) == source_rank
+    if (!identical(self@op, "[") || length(self@inputs) != source_rank + 1L) {
+      problems <- c(problems, "indexed values must be `[` calls with one selector per source axis")
+    }
+    if (!list_lengths_match) {
+      problems <- c(problems, "iterator, selector, and iteration lists must match source rank")
+    }
+    iterators_are_targets <- vapply(
+      self@iterators,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqWriteTarget
+    )
+    selectors_are_cells <- vapply(
+      self@selectors,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqCellReference
+    )
+    iterations_are_plans <- vapply(
+      self@iterations,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqIterationPlan
+    )
+    if (!all(iterators_are_targets)) {
+      problems <- c(problems, "@iterators must contain only <TccqWriteTarget> values")
+    }
+    if (!all(selectors_are_cells)) {
+      problems <- c(problems, "@selectors must contain only <TccqCellReference> values")
+    }
+    if (!all(iterations_are_plans)) {
+      problems <- c(problems, "@iterations must contain only <TccqIterationPlan> values")
     }
     if (
-      length(self@inputs) == 2L &&
+      list_lengths_match &&
+        length(self@inputs) == source_rank + 1L &&
+        all(selectors_are_cells) &&
         (
           !identical(self@inputs[[1L]], self@access@value_id) ||
-            !identical(self@inputs[[2L]], self@selector@id)
+            !identical(
+              self@inputs[-1L],
+              lapply(self@selectors, function(selector) selector@id)
+            )
         )
     ) {
-      problems <- c(problems, "@inputs must identify the accessed source and selector reference")
+      problems <- c(problems, "@inputs must identify the accessed source and selector references")
     }
-    if (
-      self@source_type@shape@rank != 1L ||
-        self@type@shape@rank != 0L ||
-        !identical(self@source_type@base, self@type@base)
-    ) {
-      problems <- c(problems, "indexed values require a rank-1 source and scalar result of one base type")
+    if (self@type@shape@rank != 0L || !identical(self@source_type@base, self@type@base)) {
+      problems <- c(problems, "indexed values require a non-scalar source and scalar result of one base type")
     }
-    if (
-      !identical(self@selector@type@base, "integer") ||
-        self@selector@type@shape@rank != 0L ||
-        !identical(self@selector@type, self@iteration@element_type)
-    ) {
-      problems <- c(problems, "@selector must be the scalar integer value of @iteration")
+    if (list_lengths_match && all(iterators_are_targets) && all(selectors_are_cells) && all(iterations_are_plans)) {
+      selectors_match_iterations <- vapply(seq_len(source_rank), function(position) {
+        selector <- self@selectors[[position]]
+        iteration <- self@iterations[[position]]
+        identical(selector@type@base, "integer") &&
+          selector@type@shape@rank == 0L &&
+          identical(selector@type, iteration@element_type)
+      }, logical(1))
+      if (!all(selectors_match_iterations)) {
+        problems <- c(problems, "each selector must be the scalar integer value of its iteration")
+      }
+      iterators_own_selectors <- vapply(seq_len(source_rank), function(position) {
+        iterator <- self@iterators[[position]]
+        selector <- self@selectors[[position]]
+        iteration <- self@iterations[[position]]
+        identical(iterator@kind, "cell") &&
+          S7::S7_inherits(iterator@binding, TccqCell) &&
+          identical(iterator@binding, selector@cell) &&
+          identical(iterator@value_id, selector@cell@value_id) &&
+          identical(iterator@type, iteration@element_type)
+      }, logical(1))
+      if (!all(iterators_own_selectors)) {
+        problems <- c(problems, "each iterator must own the selector cell populated by its iteration")
+      }
+      iterations_are_one_based <- vapply(self@iterations, function(iteration) {
+        S7::S7_inherits(iteration@element, TccqIndexExpr) &&
+          !is.null(iteration@resolved_op) &&
+          S7::S7_inherits(iteration@resolved_op@iteration, TccqIterationSpec) &&
+          identical(iteration@element@offset, 1L) &&
+          identical(iteration@resolved_op@iteration@start, 1L)
+      }, logical(1))
+      if (!all(iterations_are_one_based)) {
+        problems <- c(problems, "indexed values require one-based virtual iteration proofs")
+      }
+      dimensions_match <- vapply(seq_len(source_rank), function(position) {
+        iteration <- self@iterations[[position]]
+        iteration@domain@shape@rank == 1L && identical(
+          self@source_type@shape@dims[[position]],
+          iteration@domain@shape@dims[[1L]]
+        )
+      }, logical(1))
+      if (!all(dimensions_match)) {
+        problems <- c(problems, "each source dimension must match its selector iteration domain")
+      }
     }
-    iterator_owns_selector <-
-      identical(self@iterator@kind, "cell") &&
-        S7::S7_inherits(self@iterator@binding, TccqCell) &&
-        identical(self@iterator@binding, self@selector@cell) &&
-        identical(self@iterator@value_id, self@selector@cell@value_id) &&
-        identical(self@iterator@type, self@iteration@element_type)
-    if (!iterator_owns_selector) {
-      problems <- c(problems, "@iterator must own the selector cell populated by @iteration")
+    expected_axes <- if (all(iterations_are_plans)) {
+      unique(vapply(
+        self@iterations,
+        function(iteration) iteration@domain@axes[[1L]],
+        character(1)
+      ))
+    } else {
+      character()
     }
-    iteration_is_one_based_virtual <-
-      S7::S7_inherits(self@iteration@element, TccqIndexExpr) &&
-      !is.null(self@iteration@resolved_op) &&
-      S7::S7_inherits(self@iteration@resolved_op@iteration, TccqIterationSpec) &&
-      identical(self@iteration@element@offset, 1L) &&
-      identical(self@iteration@resolved_op@iteration@start, 1L)
-    if (!iteration_is_one_based_virtual) {
-      problems <- c(problems, "indexed values require a one-based virtual iteration proof")
+    expected_domain_dims <- if (all(iterations_are_plans)) {
+      iteration_axes <- vapply(
+        self@iterations,
+        function(iteration) iteration@domain@axes[[1L]],
+        character(1)
+      )
+      lapply(
+        self@iterations[!duplicated(iteration_axes)],
+        function(iteration) iteration@domain@shape@dims[[1L]]
+      )
+    } else {
+      list()
     }
     exact_access <-
       identical(self@access@kind, "extract") &&
-      identical(self@access@domain, self@iteration@domain) &&
-      identical(self@access@domain@shape, self@source_type@shape) &&
-      length(self@access@index_map) == 1L &&
-      identical(self@access@index_map[[1L]]@axis, self@iteration@domain@axes[[1L]]) &&
-      identical(self@access@index_map[[1L]]@offset, 0L)
+      identical(self@access@domain@axes, expected_axes) &&
+      identical(self@access@domain@shape@dims, expected_domain_dims) &&
+      length(self@access@index_map) == source_rank &&
+      all(vapply(seq_along(self@access@index_map), function(position) {
+        position <= length(self@iterations) &&
+          S7::S7_inherits(self@iterations[[position]], TccqIterationPlan) &&
+          identical(
+            self@access@index_map[[position]]@axis,
+            self@iterations[[position]]@domain@axes[[1L]]
+          ) &&
+          identical(self@access@index_map[[position]]@offset, 0L)
+      }, logical(1)))
     if (!exact_access) {
       problems <- c(problems, "@access must map the proven iteration to zero-based source storage")
     }
@@ -1695,12 +1791,15 @@ TccqIndexedValue <- S7::new_class(
     if (invalid_effect) {
       problems <- c(problems, "proven indexed reads must have a read-only effect")
     }
-    expected_effect <- tccq_effect_union(
-      self@selector@effect,
-      self@operation@resolved_op@effect
-    )
-    if (!identical(self@effect, expected_effect)) {
-      problems <- c(problems, "@effect must combine selector and subscript implementation effects")
+    if (all(selectors_are_cells)) {
+      expected_effect <- Reduce(
+        tccq_effect_union,
+        lapply(self@selectors, function(selector) selector@effect),
+        init = self@operation@resolved_op@effect
+      )
+      if (!identical(self@effect, expected_effect)) {
+        problems <- c(problems, "@effect must combine selector and subscript implementation effects")
+      }
     }
     if (length(problems) > 0L) problems
   }
@@ -2050,11 +2149,11 @@ tccq_iteration_plan <- function(
 #' Construct a proven scalar indexed read
 #'
 #' @param id Stable value id.
-#' @param source_id Stable value id of the rank-1 source storage.
-#' @param source_type Type of the rank-1 source storage.
-#' @param iterator Iterator target populated by the enclosing virtual loop.
-#' @param selector Iterator-cell reference used by the R expression.
-#' @param iteration Virtual iteration proving selector bounds.
+#' @param source_id Stable value id of the source storage.
+#' @param source_type Type of the source storage.
+#' @param iterators Iterator targets populated by the enclosing virtual loops.
+#' @param selectors Iterator-cell references used by the R expression.
+#' @param iterations Virtual iterations proving selector bounds.
 #' @param access Zero-based source access corresponding to the iterator.
 #' @param operation Lowered subscript implementation payload.
 #' @param semantics Evaluator facts for the originating `[` call.
@@ -2063,9 +2162,9 @@ tccq_indexed_value <- function(
   id,
   source_id,
   source_type,
-  iterator,
-  selector,
-  iteration,
+  iterators,
+  selectors,
+  iterations,
   access,
   operation,
   semantics
@@ -2073,16 +2172,16 @@ tccq_indexed_value <- function(
   .tccq_check_character_scalar(id, "id")
   .tccq_check_character_scalar(source_id, "source_id")
   .tccq_check_s7(source_type, TccqType, "TccqType", "source_type")
-  .tccq_check_s7(iterator, TccqWriteTarget, "TccqWriteTarget", "iterator")
-  .tccq_check_s7(selector, TccqCellReference, "TccqCellReference", "selector")
-  .tccq_check_s7(iteration, TccqIterationPlan, "TccqIterationPlan", "iteration")
+  .tccq_check_list_of(iterators, TccqWriteTarget, "TccqWriteTarget", "iterators")
+  .tccq_check_list_of(selectors, TccqCellReference, "TccqCellReference", "selectors")
+  .tccq_check_list_of(iterations, TccqIterationPlan, "TccqIterationPlan", "iterations")
   .tccq_check_s7(access, TccqAccess, "TccqAccess", "access")
   .tccq_check_s7(operation, TccqLoweredOperation, "TccqLoweredOperation", "operation")
   .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
 
   result_type <- tccq_op_signature_result_type(
     operation@signature,
-    list(source_type, selector@type)
+    c(list(source_type), lapply(selectors, function(selector) selector@type))
   )
   if (!result_type@success) {
     tccq_abort_diagnostic(result_type@diagnostics[[1L]])
@@ -2090,14 +2189,18 @@ tccq_indexed_value <- function(
   TccqIndexedValue(
     id = id,
     op = "[",
-    inputs = list(source_id, selector@id),
+    inputs = c(list(source_id), lapply(selectors, function(selector) selector@id)),
     type = result_type@value,
-    effect = tccq_effect_union(selector@effect, operation@resolved_op@effect),
+    effect = Reduce(
+      tccq_effect_union,
+      lapply(selectors, function(selector) selector@effect),
+      init = operation@resolved_op@effect
+    ),
     attrs = list(operation = operation),
     source_type = source_type,
-    iterator = iterator,
-    selector = selector,
-    iteration = iteration,
+    iterators = iterators,
+    selectors = selectors,
+    iterations = iterations,
     access = access,
     operation = operation,
     semantics = semantics

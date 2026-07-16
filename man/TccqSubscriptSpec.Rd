@@ -13,7 +13,7 @@ TccqSubscriptSpec(name = character(0), signature = TccqOpSignature())
 }
 \description{
 A subscript spec describes one typed R indexing contract. The first slice is
-deliberately strict: a rank-1 atomic source and a scalar integer selector
-whose enclosing iteration proves that the selector is one-based and in
+deliberately strict: one scalar integer selector per atomic source axis,
+with every enclosing iteration proving that its selector is one-based and in
 bounds. Other selector kinds require their own shape and bounds semantics.
 }

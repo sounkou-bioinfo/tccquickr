@@ -15,7 +15,7 @@ tccq_op_signature(
 \arguments{
 \item{name}{Human-readable operation signature name.}
 
-\item{arity}{Accepted argument counts.}
+\item{arity}{Accepted argument counts or a \link{TccqArity} contract.}
 
 \item{result_type}{Function from input \code{TccqType} list to result \code{TccqType}.}
 

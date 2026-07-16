@@ -6,7 +6,7 @@
 \usage{
 TccqOpSignature(
   name = character(0),
-  arity = integer(0),
+  arity = TccqArity(),
   result_type = function() NULL,
   domain_policy = NULL,
   attrs = list()
@@ -15,7 +15,7 @@ TccqOpSignature(
 \arguments{
 \item{name}{Human-readable operation signature name.}
 
-\item{arity}{Accepted argument counts.}
+\item{arity}{A \link{TccqArity} contract.}
 
 \item{result_type}{Function from input \code{TccqType} list to result \code{TccqType}.}
 

@@ -12,9 +12,9 @@ TccqIndexedValue(
   effect = TccqEffect(),
   attrs = list(),
   source_type = TccqType(),
-  iterator = TccqWriteTarget(),
-  selector = TccqCellReference(),
-  iteration = TccqIterationPlan(),
+  iterators = list(),
+  selectors = list(),
+  iterations = list(),
   access = TccqAccess(),
   operation = TccqLoweredOperation(),
   semantics = TccqCallSemantics()
@@ -33,13 +33,13 @@ TccqIndexedValue(
 
 \item{attrs}{Structured operation attributes.}
 
-\item{source_type}{Type of the rank-1 source storage.}
+\item{source_type}{Type of the source storage.}
 
-\item{iterator}{Iterator target populated by the enclosing virtual loop.}
+\item{iterators}{Iterator targets populated by the enclosing virtual loops.}
 
-\item{selector}{Iterator-cell reference used by the R expression.}
+\item{selectors}{Iterator-cell references used by the R expression.}
 
-\item{iteration}{Virtual iteration proving selector bounds.}
+\item{iterations}{Virtual iterations proving selector bounds.}
 
 \item{access}{Zero-based source access corresponding to the iterator.}
 
@@ -48,8 +48,9 @@ TccqIndexedValue(
 \item{semantics}{Evaluator facts for the originating \code{[} call.}
 }
 \description{
-This value represents \code{source[selector]} only when a typed virtual iteration
-proves that \code{selector} traverses the complete rank-1 source domain from one.
-The stored access is zero-based; the iterator cell retains R's one-based
-value. No general R subscript semantics are implied by this class.
+This value represents one scalar extraction only when every source axis has
+an integer selector backed by a typed virtual iteration over that exact
+dimension. Selectors may share an iteration, as in a diagonal read. The
+stored access is zero-based; iterator cells retain R's one-based values. No
+general R subscript semantics are implied by this class.
 }

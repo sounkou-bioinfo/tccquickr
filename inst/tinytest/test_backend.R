@@ -1748,6 +1748,117 @@ expect_identical(
   indexed_sum_fortran_assignment@value
 )
 
+indexed_matrix_sum <- function(x) {
+  declare(type(x = double(n, p)))
+  total <- 0
+  for (row in seq_len(n)) {
+    for (column in seq_len(p)) {
+      total <- total + x[row, column]
+    }
+  }
+  total
+}
+indexed_matrix_program <- tccq_analyze(indexed_matrix_sum, strict = TRUE)@value
+indexed_matrix_c <- tccq_plan_backend(
+  indexed_matrix_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+indexed_matrix_rtinycc <- tccq_plan_backend(
+  indexed_matrix_program,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+indexed_matrix_fortran <- tccq_plan_backend(
+  indexed_matrix_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(indexed_matrix_c@success)
+expect_true(indexed_matrix_rtinycc@success)
+expect_true(indexed_matrix_fortran@success)
+expect_identical(
+  backend_products(indexed_matrix_c)@body,
+  backend_products(indexed_matrix_rtinycc)@body
+)
+expect_identical(
+  backend_products(indexed_matrix_c)@body,
+  backend_products(indexed_matrix_fortran)@body
+)
+indexed_matrix_outer_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(indexed_matrix_c)@body@statements
+)[[1L]]
+indexed_matrix_inner_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  indexed_matrix_outer_loop@body@statements
+)[[1L]]
+indexed_matrix_assignment <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqAssignment),
+  indexed_matrix_inner_loop@body@statements
+)[[1L]]
+indexed_matrix_expression <- indexed_matrix_assignment@value@inputs[[2L]]
+expect_equal(indexed_matrix_expression@kind, "indexed")
+expect_equal(length(indexed_matrix_expression@inputs), 3L)
+expect_identical(
+  vapply(
+    indexed_matrix_expression@reference@access@index_map,
+    function(index) index@axis,
+    character(1)
+  ),
+  c(
+    indexed_matrix_outer_loop@iteration@domain@axes,
+    indexed_matrix_inner_loop@iteration@domain@axes
+  )
+)
+
+indexed_diagonal_sum <- function(x) {
+  declare(type(x = double(n, n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + x[index, index]
+  }
+  total
+}
+indexed_diagonal_program <- tccq_analyze(indexed_diagonal_sum, strict = TRUE)@value
+indexed_diagonal_c <- tccq_plan_backend(
+  indexed_diagonal_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+indexed_diagonal_fortran <- tccq_plan_backend(
+  indexed_diagonal_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(indexed_diagonal_c@success)
+expect_true(indexed_diagonal_fortran@success)
+expect_identical(
+  backend_products(indexed_diagonal_c)@body,
+  backend_products(indexed_diagonal_fortran)@body
+)
+indexed_diagonal_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(indexed_diagonal_c)@body@statements
+)[[1L]]
+indexed_diagonal_assignment <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqAssignment),
+  indexed_diagonal_loop@body@statements
+)[[1L]]
+indexed_diagonal_expression <- indexed_diagonal_assignment@value@inputs[[2L]]
+expect_equal(
+  vapply(
+    indexed_diagonal_expression@reference@access@index_map,
+    function(index) index@axis,
+    character(1)
+  ),
+  rep(indexed_diagonal_loop@iteration@domain@axes, 2L)
+)
+expect_equal(
+  length(indexed_diagonal_expression@reference@access@domain@axes),
+  1L
+)
+
 completion_sensitive_sum <- function(x) {
   declare(type(x = double(n)))
   total <- 0
@@ -4421,6 +4532,105 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(indexed_sum_fortran_shared@success)
   check_indexed_sum(backend_callable(indexed_sum_fortran_shared))
+}
+
+indexed_matrix_inputs <- list(
+  matrix(numeric(), nrow = 0L, ncol = 3L),
+  matrix(numeric(), nrow = 3L, ncol = 0L),
+  matrix(2, nrow = 1L, ncol = 1L),
+  matrix(c(1, 2, 3, 4, 5, 6), nrow = 2L, ncol = 3L),
+  matrix(c(1, NA_real_, 3, 4), nrow = 2L, ncol = 2L),
+  matrix(c(1, NaN, 3, 4), nrow = 2L, ncol = 2L)
+)
+indexed_matrix_expected <- vapply(indexed_matrix_inputs, sum, numeric(1))
+check_indexed_matrix_sum <- function(callable) {
+  expect_equal(
+    vapply(indexed_matrix_inputs, callable, numeric(1)),
+    indexed_matrix_expected
+  )
+}
+
+if (rtinycc_jit_available) {
+  indexed_matrix_jit <- tccq_plan_backend(
+    indexed_matrix_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(indexed_matrix_jit@success)
+  check_indexed_matrix_sum(backend_callable(indexed_matrix_jit))
+}
+
+if (can_build_shared_library("c")) {
+  indexed_matrix_c_shared <- tccq_plan_backend(
+    indexed_matrix_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(indexed_matrix_c_shared@success)
+  check_indexed_matrix_sum(backend_callable(indexed_matrix_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  indexed_matrix_fortran_shared <- tccq_plan_backend(
+    indexed_matrix_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(indexed_matrix_fortran_shared@success)
+  check_indexed_matrix_sum(backend_callable(indexed_matrix_fortran_shared))
+}
+
+indexed_diagonal_inputs <- list(
+  matrix(numeric(), nrow = 0L, ncol = 0L),
+  matrix(2, nrow = 1L, ncol = 1L),
+  matrix(c(1, 2, 3, 4), nrow = 2L, ncol = 2L),
+  matrix(c(1, NA_real_, 3, 4), nrow = 2L, ncol = 2L)
+)
+indexed_diagonal_expected <- vapply(
+  indexed_diagonal_inputs,
+  function(input) sum(diag(input)),
+  numeric(1)
+)
+check_indexed_diagonal_sum <- function(callable) {
+  expect_equal(
+    vapply(indexed_diagonal_inputs, callable, numeric(1)),
+    indexed_diagonal_expected
+  )
+  non_square_condition <- tryCatch(
+    callable(matrix(as.double(1:6), nrow = 2L, ncol = 3L)),
+    error = identity
+  )
+  expect_true(inherits(non_square_condition, "error"))
+}
+
+if (rtinycc_jit_available) {
+  indexed_diagonal_jit <- tccq_plan_backend(
+    indexed_diagonal_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(indexed_diagonal_jit@success)
+  check_indexed_diagonal_sum(backend_callable(indexed_diagonal_jit))
+}
+
+if (can_build_shared_library("c")) {
+  indexed_diagonal_c_shared <- tccq_plan_backend(
+    indexed_diagonal_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(indexed_diagonal_c_shared@success)
+  check_indexed_diagonal_sum(backend_callable(indexed_diagonal_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  indexed_diagonal_fortran_shared <- tccq_plan_backend(
+    indexed_diagonal_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(indexed_diagonal_fortran_shared@success)
+  check_indexed_diagonal_sum(backend_callable(indexed_diagonal_fortran_shared))
 }
 
 completion_sensitive_inputs <- list(

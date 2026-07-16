@@ -273,18 +273,23 @@ For the reset core, keep these rules explicit:
   may be introduced by its first assignment inside a loop, but every read must
   be dominated on all normally continuing paths; loop writes are not promoted
   after a possibly empty loop.
-  A scalar `source[index]` inside that virtual iteration is accepted only as a
-  `TccqIndexedValue`. The value must retain the rank-1 source type, iterator
-  cell reference, exact `TccqIterationPlan`, typed subscript implementation,
-  original `TccqCallSemantics`, and an `extract` access mapping the one-based R
-  iterator to the zero-based storage axis. The source shape must exactly equal
-  the iteration domain, and the loop body must not assign to the iterator;
-  rebinding invalidates the induction proof for the complete body. Stored-vector
+  A scalar extraction with exactly one selector per source axis is accepted
+  only as a `TccqIndexedValue`. The value must retain the source type, ordered
+  iterator targets, selector cell references, exact `TccqIterationPlan`
+  proofs, typed subscript implementation, original `TccqCallSemantics`, and one
+  `extract` access mapping one-based R iterators to zero-based storage axes.
+  Every source dimension must equal its selector's iteration extent. The
+  access domain owns unique iteration axes, so selectors may share a proof as
+  in `source[index, index]`; the index map still has one entry per source axis.
+  The loop body must not assign to a selector iterator, because rebinding
+  invalidates that induction proof for the complete body. Stored-vector
   iteration does not imply a subscript proof. This is not general R indexing:
-  an unproven scalar selector, mismatched domain, indirect source, or richer
-  subscript remains a classed diagnostic. C, Rtinycc, and Fortran consume the resulting
-  neutral indexed expression through the existing typed access linearizer;
-  printers must not recognize `[` or reconstruct the proof.
+  an unproven selector, rank or dimension mismatch, tagged subscript argument
+  such as `drop`, indirect source, or richer subscript remains a classed
+  diagnostic. Argument tags enter this path only with an explicit model of R's
+  subscript argument matching. C, Rtinycc, and Fortran consume the resulting
+  neutral indexed expression through the existing typed column-major access
+  linearizer; printers must not recognize `[` or reconstruct the proof.
   Positional statement `switch` is `TccqSwitch`: it owns one scalar integer
   selector expression, a typed local selector target with stable identity,
   ordered typed arm blocks, and the original `TccqCallSemantics`. The selector
@@ -370,8 +375,11 @@ For the reset core, keep these rules explicit:
   boundary implementation. The frontend asks an operation registry rather than
   owning the support policy. New implementation targets enter the registry
   together with their first real implementation.
-- `TccqOpSignature` is the shared operation contract for arity, result-domain
-  policy, and result type. `TccqElementwiseSpec`, `TccqReductionSpec`,
+- `TccqOpSignature` is the shared operation contract for typed `TccqArity`,
+  result-domain policy, and result type. Exact arities enumerate accepted
+  counts; rank-polymorphic operations use an explicit bounded or open interval
+  rather than an expanded count vector with an arbitrary maximum.
+  `TccqElementwiseSpec`, `TccqReductionSpec`,
   `TccqContractionSpec`, and `TccqIterationSpec` carry signatures; reductions
   refine into typed state protocols, contractions add contracted axes, and the
   current iteration spec adds one extent source and affine start. Do

@@ -975,15 +975,181 @@ expect_identical(
   indexed_value@operation@resolved_op@subscript
 )
 expect_equal(indexed_value@access@kind, "extract")
-expect_identical(indexed_value@access@domain, indexed_value@iteration@domain)
-expect_equal(indexed_value@selector@cell@name, "index")
-expect_identical(indexed_value@iterator@binding, indexed_value@selector@cell)
-expect_equal(indexed_value@iteration@element@offset, 1L)
+expect_identical(
+  indexed_value@access@domain@axes,
+  indexed_value@iterations[[1L]]@domain@axes
+)
+expect_identical(
+  indexed_value@access@domain@shape,
+  indexed_value@iterations[[1L]]@domain@shape
+)
+expect_equal(indexed_value@selectors[[1L]]@cell@name, "index")
+expect_identical(
+  indexed_value@iterators[[1L]]@binding,
+  indexed_value@selectors[[1L]]@cell
+)
+expect_equal(indexed_value@iterations[[1L]]@element@offset, 1L)
 expect_equal(indexed_value@access@index_map[[1L]]@offset, 0L)
 expect_identical(
   indexed_value@semantics@call@id,
   indexed_value@operation@resolved_op@call@id
 )
+
+indexed_matrix_sum <- function(x) {
+  declare(type(x = double(n, p)))
+  total <- 0
+  for (row in seq_len(n)) {
+    for (column in seq_len(p)) {
+      total <- total + x[row, column]
+    }
+  }
+  total
+}
+indexed_matrix_result <- tccq_analyze(indexed_matrix_sum, strict = TRUE)
+expect_true(indexed_matrix_result@success)
+indexed_matrix_values <- Filter(
+  function(value) S7::S7_inherits(value, TccqIndexedValue),
+  indexed_matrix_result@value@values
+)
+expect_equal(length(indexed_matrix_values), 1L)
+indexed_matrix_value <- indexed_matrix_values[[1L]]
+expect_equal(indexed_matrix_value@source_type@shape@rank, 2L)
+expect_equal(
+  vapply(
+    indexed_matrix_value@selectors,
+    function(selector) selector@cell@name,
+    character(1)
+  ),
+  c("row", "column")
+)
+expect_equal(length(indexed_matrix_value@access@domain@axes), 2L)
+expect_identical(
+  vapply(
+    indexed_matrix_value@access@index_map,
+    function(index) index@axis,
+    character(1)
+  ),
+  vapply(
+    indexed_matrix_value@iterations,
+    function(iteration) iteration@domain@axes[[1L]],
+    character(1)
+  )
+)
+expect_true(tccq_arity_accepts(
+  indexed_matrix_value@operation@signature@arity,
+  3L
+))
+expect_identical(
+  indexed_matrix_value@semantics@call@id,
+  indexed_matrix_value@operation@resolved_op@call@id
+)
+
+indexed_diagonal_sum <- function(x) {
+  declare(type(x = double(n, n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + x[index, index]
+  }
+  total
+}
+indexed_diagonal_result <- tccq_analyze(indexed_diagonal_sum, strict = TRUE)
+expect_true(indexed_diagonal_result@success)
+indexed_diagonal_value <- Filter(
+  function(value) S7::S7_inherits(value, TccqIndexedValue),
+  indexed_diagonal_result@value@values
+)[[1L]]
+expect_identical(
+  indexed_diagonal_value@iterations[[1L]],
+  indexed_diagonal_value@iterations[[2L]]
+)
+expect_equal(length(indexed_diagonal_value@access@domain@axes), 1L)
+expect_equal(
+  vapply(
+    indexed_diagonal_value@access@index_map,
+    function(index) index@axis,
+    character(1)
+  ),
+  rep(indexed_diagonal_value@access@domain@axes, 2L)
+)
+
+tagged_indexed_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + x[i = index]
+  }
+  total
+}
+tagged_indexed_result <- tccq_analyze(tagged_indexed_sum)
+expect_false(tagged_indexed_result@success)
+expect_true(any(vapply(
+  tagged_indexed_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.unsupported_subscript_argument_tags"
+  ),
+  logical(1)
+)))
+
+drop_indexed_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + x[drop = index]
+  }
+  total
+}
+drop_indexed_result <- tccq_analyze(drop_indexed_sum)
+expect_false(drop_indexed_result@success)
+expect_true(any(vapply(
+  drop_indexed_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.unsupported_subscript_argument_tags"
+  ),
+  logical(1)
+)))
+
+indexed_matrix_rank_mismatch <- function(x) {
+  declare(type(x = double(n, p)))
+  total <- 0
+  for (row in seq_len(n)) {
+    total <- total + x[row]
+  }
+  total
+}
+indexed_matrix_rank_result <- tccq_analyze(indexed_matrix_rank_mismatch)
+expect_false(indexed_matrix_rank_result@success)
+expect_true(any(vapply(
+  indexed_matrix_rank_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.index_selector_rank_mismatch"
+  ),
+  logical(1)
+)))
+
+indexed_matrix_domain_mismatch <- function(x) {
+  declare(type(x = double(n, p)))
+  total <- 0
+  for (row in seq_len(p)) {
+    for (column in seq_len(n)) {
+      total <- total + x[row, column]
+    }
+  }
+  total
+}
+indexed_matrix_domain_result <- tccq_analyze(indexed_matrix_domain_mismatch)
+expect_false(indexed_matrix_domain_result@success)
+expect_true(any(vapply(
+  indexed_matrix_domain_result@diagnostics,
+  function(diagnostic) identical(
+    diagnostic@code,
+    "lowering.index_iteration_domain_mismatch"
+  ),
+  logical(1)
+)))
+
 unrelated_iterator_cell <- tccq_cell(
   "other_index",
   "cell_other_index",
@@ -997,7 +1163,7 @@ unrelated_iterator_target <- tccq_write_target(
   binding = unrelated_iterator_cell
 )
 mismatched_iterator_proof <- tryCatch(
-  S7::set_props(indexed_value, iterator = unrelated_iterator_target),
+  S7::set_props(indexed_value, iterators = list(unrelated_iterator_target)),
   error = identity
 )
 expect_true(inherits(mismatched_iterator_proof, "error"))

@@ -145,6 +145,61 @@ TccqDomainPolicy <- S7::new_class(
   }
 )
 
+#' Operation arity contract
+#'
+#' Arity is a typed operation fact rather than an expanded vector of convenient
+#' argument counts. Exact contracts enumerate accepted counts; interval
+#' contracts own inclusive lower and optional upper bounds. This lets
+#' rank-polymorphic operations such as `[` remain independent of an arbitrary
+#' maximum array rank.
+#'
+#' @param counts Exact accepted argument counts.
+#' @param minimum Inclusive lower argument-count bound, or `NULL` for an exact
+#'   contract.
+#' @param maximum Inclusive upper argument-count bound, or `NULL` for no upper
+#'   bound.
+#' @export
+TccqArity <- S7::new_class(
+  "TccqArity",
+  package = "tccquickr",
+  properties = list(
+    counts = S7::class_integer,
+    minimum = S7::new_union(NULL, S7::class_integer),
+    maximum = S7::new_union(NULL, S7::class_integer)
+  ),
+  validator = function(self) {
+    problems <- character()
+    exact <- length(self@counts) > 0L
+    interval <- !is.null(self@minimum)
+    if (exact == interval) {
+      problems <- c(problems, "arity must be either exact counts or one interval")
+    }
+    if (exact && (anyNA(self@counts) || any(self@counts <= 0L))) {
+      problems <- c(problems, "@counts must contain positive integers")
+    }
+    if (exact && anyDuplicated(self@counts)) {
+      problems <- c(problems, "@counts must not contain duplicates")
+    }
+    if (interval && (length(self@minimum) != 1L || is.na(self@minimum) || self@minimum <= 0L)) {
+      problems <- c(problems, "@minimum must be one positive integer")
+    }
+    if (!is.null(self@maximum)) {
+      if (
+        !interval ||
+          length(self@maximum) != 1L ||
+          is.na(self@maximum) ||
+          self@maximum < self@minimum
+      ) {
+        problems <- c(problems, "@maximum must be one integer no smaller than @minimum")
+      }
+    }
+    if (exact && !is.null(self@maximum)) {
+      problems <- c(problems, "exact arity must not carry interval bounds")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Operation signature metadata
 #'
 #' A signature is the shared operation contract for argument count and result
@@ -153,7 +208,7 @@ TccqDomainPolicy <- S7::new_class(
 #' each inventing their own arity, shape, and type checks.
 #'
 #' @param name Human-readable operation signature name.
-#' @param arity Accepted argument counts.
+#' @param arity A [TccqArity] contract.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
 #' @param domain_policy Optional result-shape policy.
 #' @param attrs Structured signature metadata.
@@ -163,7 +218,7 @@ TccqOpSignature <- S7::new_class(
   package = "tccquickr",
   properties = list(
     name = S7::class_character,
-    arity = S7::class_integer,
+    arity = TccqArity,
     result_type = S7::class_function,
     domain_policy = S7::new_union(NULL, TccqDomainPolicy),
     attrs = S7::class_list
@@ -172,9 +227,6 @@ TccqOpSignature <- S7::new_class(
     problems <- character()
     if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
       problems <- c(problems, "@name must be a single non-empty string")
-    }
-    if (length(self@arity) == 0L || anyNA(self@arity) || any(self@arity <= 0L)) {
-      problems <- c(problems, "@arity must contain positive integer arities")
     }
     if (!is.function(self@result_type)) {
       problems <- c(problems, "@result_type must be a function")
@@ -405,15 +457,18 @@ TccqIterationSpec <- S7::new_class(
     if (
       length(self@extent_arg) != 1L ||
         is.na(self@extent_arg) ||
-        self@extent_arg < 1L ||
-        any(self@extent_arg > self@signature@arity)
+        self@extent_arg < 1L
     ) {
-      problems <- c(problems, "@extent_arg must select an argument accepted by @signature")
+      problems <- c(problems, "@extent_arg must be one positive argument position")
     }
     if (length(self@start) != 1L || is.na(self@start)) {
       problems <- c(problems, "@start must be one integer")
     }
-    if (!identical(self@signature@arity, 1L) || !identical(self@extent_arg, 1L)) {
+    if (
+      !identical(self@signature@arity@counts, 1L) ||
+        !is.null(self@signature@arity@minimum) ||
+        !identical(self@extent_arg, 1L)
+    ) {
       problems <- c(problems, "the current iteration contract must have exactly one extent argument")
     }
     if (length(problems) > 0L) problems
@@ -423,8 +478,8 @@ TccqIterationSpec <- S7::new_class(
 #' Subscript implementation metadata
 #'
 #' A subscript spec describes one typed R indexing contract. The first slice is
-#' deliberately strict: a rank-1 atomic source and a scalar integer selector
-#' whose enclosing iteration proves that the selector is one-based and in
+#' deliberately strict: one scalar integer selector per atomic source axis,
+#' with every enclosing iteration proving that its selector is one-based and in
 #' bounds. Other selector kinds require their own shape and bounds semantics.
 #'
 #' @param name Human-readable subscript operation name.
@@ -442,8 +497,13 @@ TccqSubscriptSpec <- S7::new_class(
     if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
       problems <- c(problems, "@name must be a single non-empty string")
     }
-    if (!identical(self@signature@arity, 2L)) {
-      problems <- c(problems, "the current subscript contract requires source and selector arguments")
+    minimum_supported_arity <- if (length(self@signature@arity@counts) > 0L) {
+      min(self@signature@arity@counts)
+    } else {
+      self@signature@arity@minimum
+    }
+    if (minimum_supported_arity < 2L) {
+      problems <- c(problems, "a subscript contract must require source and selector arguments")
     }
     if (length(problems) > 0L) problems
   }
@@ -615,7 +675,13 @@ TccqOpImpl <- S7::new_class(
           "neutral operation bodies require a pure, renderer-free elementwise implementation"
         )
       } else if (
-        !identical(self@elementwise@signature@arity, as.integer(length(self@body@parameters)))
+        length(self@elementwise@signature@arity@counts) != 1L ||
+          !identical(
+            self@elementwise@signature@arity@counts[[1L]],
+            as.integer(length(self@body@parameters))
+          ) ||
+          !is.null(self@elementwise@signature@arity@minimum) ||
+          !is.null(self@elementwise@signature@arity@maximum)
       ) {
         problems <- c(problems, "neutral operation body parameters must match the elementwise arity")
       }
@@ -1305,10 +1371,121 @@ tccq_elementwise_domain_policy <- function() {
   )
 }
 
+#' Construct an operation arity contract
+#'
+#' @inheritParams TccqArity
+#' @export
+tccq_arity <- function(counts = integer(), minimum = NULL, maximum = NULL) {
+  if (
+    !is.numeric(counts) ||
+      anyNA(counts) ||
+      any(counts <= 0L) ||
+      any(counts != as.integer(counts))
+  ) {
+    tccq_abort(
+      "schema.invalid_arity_counts",
+      "`counts` must contain positive integers.",
+      phase = "schema",
+      path = "arity.counts",
+      data = list(counts = counts)
+    )
+  }
+  if (!is.null(minimum) && (
+    !is.numeric(minimum) ||
+      length(minimum) != 1L ||
+      is.na(minimum) ||
+      minimum <= 0L ||
+      minimum != as.integer(minimum)
+  )) {
+    tccq_abort(
+      "schema.invalid_arity_minimum",
+      "`minimum` must be one positive integer or `NULL`.",
+      phase = "schema",
+      path = "arity.minimum",
+      data = list(minimum = minimum)
+    )
+  }
+  if (!is.null(maximum) && (
+    !is.numeric(maximum) ||
+      length(maximum) != 1L ||
+      is.na(maximum) ||
+      maximum <= 0L ||
+      maximum != as.integer(maximum)
+  )) {
+    tccq_abort(
+      "schema.invalid_arity_maximum",
+      "`maximum` must be one positive integer or `NULL`.",
+      phase = "schema",
+      path = "arity.maximum",
+      data = list(maximum = maximum)
+    )
+  }
+  exact_contract <- length(counts) > 0L
+  interval_contract <- !is.null(minimum)
+  if (identical(exact_contract, interval_contract)) {
+    tccq_abort(
+      "schema.invalid_arity_contract",
+      "Arity must declare either exact `counts` or one `minimum` interval.",
+      phase = "schema",
+      path = "arity",
+      data = list(counts = counts, minimum = minimum, maximum = maximum)
+    )
+  }
+  if (!is.null(maximum) && (!interval_contract || maximum < minimum)) {
+    tccq_abort(
+      "schema.invalid_arity_maximum",
+      "`maximum` requires `minimum` and must be no smaller than it.",
+      phase = "schema",
+      path = "arity.maximum",
+      data = list(minimum = minimum, maximum = maximum)
+    )
+  }
+  TccqArity(
+    counts = unique(as.integer(counts)),
+    minimum = if (is.null(minimum)) NULL else as.integer(minimum),
+    maximum = if (is.null(maximum)) NULL else as.integer(maximum)
+  )
+}
+
+#' Test an operation arity contract
+#'
+#' @param arity A [TccqArity] contract.
+#' @param count Observed argument count.
+#' @return One logical value.
+#' @export
+tccq_arity_accepts <- S7::new_generic(
+  "tccq_arity_accepts",
+  dispatch_args = "arity",
+  function(arity, count) S7::S7_dispatch()
+)
+
+S7::method(tccq_arity_accepts, TccqArity) <- function(arity, count) {
+  if (
+    !is.numeric(count) ||
+      length(count) != 1L ||
+      is.na(count) ||
+      count < 0L ||
+      count != as.integer(count)
+  ) {
+    tccq_abort(
+      "schema.invalid_observed_arity",
+      "`count` must be one non-negative integer.",
+      phase = "schema",
+      path = "arity.count",
+      data = list(count = count)
+    )
+  }
+  count <- as.integer(count)
+  if (length(arity@counts) > 0L) {
+    return(count %in% arity@counts)
+  }
+  count >= arity@minimum && (is.null(arity@maximum) || count <= arity@maximum)
+}
+
 #' Construct operation signature metadata
 #'
 #' @param name Human-readable operation signature name.
-#' @param arity Accepted argument counts.
+#' @param arity Accepted argument counts or a [TccqArity] contract.
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
 #' @param attrs Structured signature metadata.
 #' @param domain_policy Optional result-shape policy.
@@ -1321,22 +1498,9 @@ tccq_op_signature <- function(
   domain_policy = NULL
 ) {
   .tccq_check_character_scalar(name, "name")
-  if (
-    !is.numeric(arity) ||
-      length(arity) == 0L ||
-      anyNA(arity) ||
-      any(arity <= 0L) ||
-      any(arity != as.integer(arity))
-  ) {
-    tccq_abort(
-      "schema.invalid_op_signature_arity",
-      "`arity` must contain positive integer arities.",
-      phase = "schema",
-      path = "op_signature.arity",
-      data = list(arity = arity)
-    )
+  if (!S7::S7_inherits(arity, TccqArity)) {
+    arity <- tccq_arity(arity)
   }
-  arity <- unique(as.integer(arity))
   if (!is.function(result_type)) {
     tccq_abort(
       "schema.invalid_op_signature_result_type",
@@ -1378,7 +1542,7 @@ S7::method(tccq_op_signature_result_type, TccqOpSignature) <- function(signature
   }
 
   .tccq_check_list_of(input_types, TccqType, "TccqType", "input_types")
-  if (!(length(input_types) %in% signature@arity)) {
+  if (!tccq_arity_accepts(signature@arity, length(input_types))) {
     diagnostic <- tccq_diagnostic(
       "ops.invalid_op_signature_arity",
       "Operation signature arity is not supported by this implementation.",
@@ -1680,6 +1844,20 @@ tccq_iteration_spec <- function(name, signature, extent_arg = 1L, start = 1L) {
 tccq_subscript_spec <- function(name, signature) {
   .tccq_check_character_scalar(name, "name")
   .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  minimum_supported_arity <- if (length(signature@arity@counts) > 0L) {
+    min(signature@arity@counts)
+  } else {
+    signature@arity@minimum
+  }
+  if (minimum_supported_arity < 2L) {
+    tccq_abort(
+      "schema.invalid_subscript_arity",
+      "A subscript signature must require source and selector arguments.",
+      phase = "schema",
+      path = "subscript.signature.arity",
+      data = list(name = name, arity = signature@arity)
+    )
+  }
   TccqSubscriptSpec(
     name = name,
     signature = signature
@@ -1780,17 +1958,23 @@ tccq_register_traits <- function() {
         if (isTRUE(impl@boundary) && !isTRUE(context@allow_boundary)) {
           return(FALSE)
         }
-        if (
-          S7::S7_inherits(impl@elementwise, TccqElementwiseSpec) &&
-            !is.na(call@arity) &&
-            !(call@arity %in% impl@elementwise@signature@arity)
-        ) {
-          return(FALSE)
+        signature <- if (S7::S7_inherits(impl@elementwise, TccqElementwiseSpec)) {
+          impl@elementwise@signature
+        } else if (S7::S7_inherits(impl@reduction, TccqReductionSpec)) {
+          impl@reduction@signature
+        } else if (S7::S7_inherits(impl@contraction, TccqContractionSpec)) {
+          impl@contraction@signature
+        } else if (S7::S7_inherits(impl@iteration, TccqIterationSpec)) {
+          impl@iteration@signature
+        } else if (S7::S7_inherits(impl@subscript, TccqSubscriptSpec)) {
+          impl@subscript@signature
+        } else {
+          NULL
         }
         if (
-          S7::S7_inherits(impl@reduction, TccqReductionSpec) &&
+          !is.null(signature) &&
             !is.na(call@arity) &&
-            !(call@arity %in% impl@reduction@signature@arity)
+            !tccq_arity_accepts(signature@arity, call@arity)
         ) {
           return(FALSE)
         }
@@ -2466,7 +2650,13 @@ tccq_op_impl <- function(
       !is.null(render) ||
       !S7::S7_inherits(elementwise, TccqElementwiseSpec)
     body_arity_matches <- S7::S7_inherits(elementwise, TccqElementwiseSpec) &&
-      identical(elementwise@signature@arity, as.integer(length(body@parameters)))
+      length(elementwise@signature@arity@counts) == 1L &&
+      identical(
+        elementwise@signature@arity@counts[[1L]],
+        as.integer(length(body@parameters))
+      ) &&
+      is.null(elementwise@signature@arity@minimum) &&
+      is.null(elementwise@signature@arity@maximum)
     if (body_has_invalid_implementation || !body_arity_matches) {
       tccq_abort(
         "schema.invalid_op_body_implementation",
@@ -3417,31 +3607,34 @@ tccq_default_op_registry <- function() {
     extent_arg = 1L,
     start = 1L
   )
-  rank1_subscript <- tccq_subscript_spec(
-    "rank1_element",
+  atomic_subscript <- tccq_subscript_spec(
+    "atomic_element",
     signature = tccq_op_signature(
       "[",
-      2L,
+      tccq_arity(minimum = 2L),
       result_type = function(input_types, result_shape) {
         source_type <- input_types[[1L]]
-        selector_type <- input_types[[2L]]
+        selector_types <- input_types[-1L]
         if (
-          source_type@shape@rank != 1L ||
-            selector_type@shape@rank != 0L ||
-            !identical(selector_type@base, "integer")
+          source_type@shape@rank == 0L ||
+            source_type@shape@rank != length(selector_types) ||
+            !all(vapply(selector_types, function(selector_type) {
+              selector_type@shape@rank == 0L &&
+                identical(selector_type@base, "integer")
+            }, logical(1)))
         ) {
           tccq_abort(
             "ops.invalid_subscript_types",
-            "The proven subscript slice requires a rank-1 source and scalar integer selector.",
+            "The proven subscript requires one scalar integer selector per source axis.",
             phase = "ops",
             path = "subscript.type",
-            data = list(source = source_type, selector = selector_type)
+            data = list(source = source_type, selectors = selector_types)
           )
         }
         tccq_type(source_type@base, result_shape)
       },
       domain_policy = tccq_domain_policy(
-        "rank1_element_scalar_result",
+        "atomic_element_scalar_result",
         result_shape = function(input_types) tccq_shape()
       )
     )
@@ -3459,12 +3652,21 @@ tccq_default_op_registry <- function() {
       region_kind = "kernel",
       effect = tccq_effect(reads = TRUE),
       supports = function(call, context) {
-        identical(call@arity, 2L) &&
+        !is.na(call@arity) &&
+          call@arity >= 2L &&
+          length(call@argument_names) == call@arity &&
+          !any(nzchar(call@argument_names)) &&
           is.call(call@expr) &&
-          length(call@expr) == 3L &&
-          is.symbol(call@expr[[3L]])
+          length(call@expr) == call@arity + 1L &&
+          all(vapply(as.list(call@expr)[-(1:2)], function(selector) {
+            if (!is.symbol(selector)) {
+              return(FALSE)
+            }
+            selector_name <- as.character(selector)
+            length(selector_name) == 1L && nzchar(selector_name)
+          }, logical(1)))
       },
-      subscript = rank1_subscript
+      subscript = atomic_subscript
     )),
     lapply(language_ops, function(op) {
       tccq_op_impl(op, target = "r_language", pure = FALSE)

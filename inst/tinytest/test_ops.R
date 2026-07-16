@@ -51,7 +51,35 @@ same_type_signature <- tccq_op_signature(
 )
 expect_true(S7::S7_inherits(same_type_signature, TccqOpSignature))
 expect_true(S7::S7_inherits(same_type_signature@domain_policy, TccqDomainPolicy))
-expect_equal(same_type_signature@arity, c(1L, 2L))
+expect_true(S7::S7_inherits(same_type_signature@arity, TccqArity))
+expect_equal(same_type_signature@arity@counts, c(1L, 2L))
+expect_true(tccq_arity_accepts(same_type_signature@arity, 1L))
+expect_true(tccq_arity_accepts(same_type_signature@arity, 2L))
+expect_false(tccq_arity_accepts(same_type_signature@arity, 3L))
+open_arity <- tccq_arity(minimum = 2L)
+expect_equal(open_arity@counts, integer())
+expect_equal(open_arity@minimum, 2L)
+expect_null(open_arity@maximum)
+expect_false(tccq_arity_accepts(open_arity, 1L))
+expect_true(tccq_arity_accepts(open_arity, 8L))
+invalid_mixed_arity <- tryCatch(
+  tccq_arity(2L, minimum = 2L),
+  tccq_error = identity
+)
+expect_true(inherits(invalid_mixed_arity, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(invalid_mixed_arity)@code,
+  "schema.invalid_arity_contract"
+)
+invalid_arity_range <- tryCatch(
+  tccq_arity(minimum = 3L, maximum = 2L),
+  tccq_error = identity
+)
+expect_true(inherits(invalid_arity_range, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(invalid_arity_range)@code,
+  "schema.invalid_arity_maximum"
+)
 same_type_signature_result <- tccq_op_signature_result_type(
   same_type_signature,
   list(tccq_type("integer", tccq_shape("n")))
@@ -116,22 +144,106 @@ expect_true(S7::S7_inherits(
   resolved_seq_len@value@iteration,
   TccqIterationSpec
 ))
-expect_equal(resolved_seq_len@value@iteration@signature@arity, 1L)
+expect_equal(resolved_seq_len@value@iteration@signature@arity@counts, 1L)
 expect_equal(resolved_seq_len@value@iteration@extent_arg, 1L)
 expect_equal(resolved_seq_len@value@iteration@start, 1L)
 
-resolved_rank1_subscript <- tccq_resolve_call(
+resolved_atomic_subscript <- tccq_resolve_call(
   default_registry,
   tccq_call("[", expr = quote(x[index])),
   tccq_op_context()
 )
-expect_true(resolved_rank1_subscript@success)
-expect_equal(resolved_rank1_subscript@value@target, "native")
+expect_true(resolved_atomic_subscript@success)
+expect_equal(resolved_atomic_subscript@value@target, "native")
 expect_true(S7::S7_inherits(
-  resolved_rank1_subscript@value@subscript,
+  resolved_atomic_subscript@value@subscript,
   TccqSubscriptSpec
 ))
-expect_equal(resolved_rank1_subscript@value@subscript@signature@arity, 2L)
+expect_equal(resolved_atomic_subscript@value@subscript@name, "atomic_element")
+expect_equal(resolved_atomic_subscript@value@subscript@signature@arity@minimum, 2L)
+expect_true(tccq_arity_accepts(
+  resolved_atomic_subscript@value@subscript@signature@arity,
+  12L
+))
+
+resolved_matrix_subscript <- tccq_resolve_call(
+  default_registry,
+  tccq_call("[", expr = quote(x[row, column])),
+  tccq_op_context()
+)
+expect_true(resolved_matrix_subscript@success)
+expect_identical(
+  resolved_matrix_subscript@value@subscript,
+  resolved_atomic_subscript@value@subscript
+)
+
+resolved_tagged_subscript <- tccq_resolve_call(
+  default_registry,
+  tccq_call("[", expr = quote(x[i = index])),
+  tccq_op_context()
+)
+expect_true(resolved_tagged_subscript@success)
+expect_equal(resolved_tagged_subscript@value@target, "r_language")
+expect_null(resolved_tagged_subscript@value@subscript)
+
+resolved_drop_subscript <- tccq_resolve_call(
+  default_registry,
+  tccq_call("[", expr = quote(x[drop = index])),
+  tccq_op_context()
+)
+expect_true(resolved_drop_subscript@success)
+expect_equal(resolved_drop_subscript@value@target, "r_language")
+expect_null(resolved_drop_subscript@value@subscript)
+
+invalid_unary_subscript <- tryCatch(
+  tccq_subscript_spec(
+    "invalid_unary_subscript",
+    tccq_op_signature(
+      "invalid_unary_subscript",
+      tccq_arity(minimum = 1L),
+      result_type = function(input_types) input_types[[1L]]
+    )
+  ),
+  tccq_error = identity
+)
+expect_true(inherits(invalid_unary_subscript, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(invalid_unary_subscript)@code,
+  "schema.invalid_subscript_arity"
+)
+
+rank_two_subscript <- tccq_subscript_spec(
+  "rank_two_subscript",
+  tccq_op_signature(
+    "rank_two_subscript",
+    3L,
+    result_type = function(input_types) input_types[[1L]]
+  )
+)
+expect_true(S7::S7_inherits(rank_two_subscript, TccqSubscriptSpec))
+expect_false(tccq_arity_accepts(rank_two_subscript@signature@arity, 2L))
+expect_true(tccq_arity_accepts(rank_two_subscript@signature@arity, 3L))
+
+rank_two_subscript_registry <- tccq_op_registry(tccq_op_impl(
+  "[",
+  target = "native",
+  region_kind = "kernel",
+  effect = tccq_effect(reads = TRUE),
+  subscript = rank_two_subscript
+))
+unresolved_rank_one_subscript <- tccq_resolve_call(
+  rank_two_subscript_registry,
+  tccq_call("[", expr = quote(x[index])),
+  tccq_op_context()
+)
+expect_false(unresolved_rank_one_subscript@success)
+resolved_rank_two_subscript <- tccq_resolve_call(
+  rank_two_subscript_registry,
+  tccq_call("[", expr = quote(x[row, column])),
+  tccq_op_context()
+)
+expect_true(resolved_rank_two_subscript@success)
+expect_identical(resolved_rank_two_subscript@value@subscript, rank_two_subscript)
 
 resolved_range_subscript <- tccq_resolve_call(
   default_registry,
@@ -147,7 +259,7 @@ invalid_subscript_impl <- tryCatch(
     "invalid_subscript",
     target = "native",
     pure = FALSE,
-    subscript = resolved_rank1_subscript@value@subscript
+    subscript = resolved_atomic_subscript@value@subscript
   ),
   tccq_error = identity
 )
@@ -334,7 +446,7 @@ expect_equal(resolved_sum@value@target, "pure_c")
 expect_equal(resolved_sum@value@region_kind, "kernel")
 expect_true(S7::S7_inherits(resolved_sum@value@reduction, TccqReductionSpec))
 expect_true(S7::S7_inherits(resolved_sum@value@reduction@signature, TccqOpSignature))
-expect_equal(resolved_sum@value@reduction@signature@arity, 1L)
+expect_equal(resolved_sum@value@reduction@signature@arity@counts, 1L)
 sum_identity <- tccq_reduction_identity(resolved_sum@value@reduction, tccq_type("double"))
 expect_true(sum_identity@success)
 expect_true(S7::S7_inherits(sum_identity@value, TccqLiteral))
