@@ -501,6 +501,59 @@ expect_equal(next_statement@action, "next")
 expect_identical(repeat_statement@effect, repeat_body@effect)
 expect_identical(break_statement@effect, tccq_effect())
 
+break_block <- TccqBlock(
+  id = "block_break_completion",
+  locals = list(),
+  statements = list(break_statement),
+  effect = break_statement@effect
+)
+next_block <- TccqBlock(
+  id = "block_next_completion",
+  locals = list(),
+  statements = list(next_statement),
+  effect = next_statement@effect
+)
+transfer_if <- tccq_if(
+  "statement_transfer_if",
+  condition_expression,
+  break_block,
+  next_block,
+  branch_value@semantics
+)
+assignment_completion <- tccq_completion(counter_assignment)
+break_completion <- tccq_completion(break_statement)
+next_completion <- tccq_completion(next_statement)
+transfer_completion <- tccq_completion(transfer_if)
+repeat_completion <- tccq_completion(repeat_statement)
+unreachable_assignment_completion <- tccq_completion(TccqBlock(
+  id = "block_unreachable_assignment",
+  locals = list(),
+  statements = list(break_statement, counter_assignment),
+  effect = counter_assignment@effect
+))
+nested_loop_completion <- tccq_completion(TccqBlock(
+  id = "block_nested_loop_completion",
+  locals = list(),
+  statements = list(repeat_statement, counter_assignment),
+  effect = counter_assignment@effect
+))
+
+expect_true(S7::S7_inherits(assignment_completion, TccqControlCompletion))
+expect_true(assignment_completion@falls_through)
+expect_false(assignment_completion@breaks)
+expect_false(break_completion@falls_through)
+expect_true(break_completion@breaks)
+expect_true(next_completion@continues)
+expect_false(transfer_completion@falls_through)
+expect_true(transfer_completion@breaks)
+expect_true(transfer_completion@continues)
+expect_true(repeat_completion@falls_through)
+expect_false(repeat_completion@breaks)
+expect_false(unreachable_assignment_completion@falls_through)
+expect_true(unreachable_assignment_completion@breaks)
+expect_true(nested_loop_completion@falls_through)
+expect_false(nested_loop_completion@breaks)
+
 for_type <- tccq_type("double", tccq_shape(tccq_dim_symbol("n")))
 for_domain <- tccq_domain(
   "domain_for",
@@ -548,6 +601,7 @@ expect_identical(for_statement@domain, for_domain)
 expect_identical(for_statement@iterator@binding, for_iterator)
 expect_true(for_statement@effect@reads)
 expect_true(for_statement@effect@writes)
+expect_true(tccq_completion(for_statement)@falls_through)
 
 mismatched_for_domain <- tryCatch(
   tccq_for(

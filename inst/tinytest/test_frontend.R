@@ -870,7 +870,7 @@ expect_true(any(vapply(
   logical(1)
 )))
 
-uninitialized_recurrence <- function(n) {
+loop_local_definition <- function(n) {
   declare(type(n = double()))
   total <- 0
   while (total < n) {
@@ -879,13 +879,82 @@ uninitialized_recurrence <- function(n) {
   }
   total
 }
-uninitialized_recurrence_result <- tccq_analyze(uninitialized_recurrence)
-expect_false(uninitialized_recurrence_result@success)
+loop_local_definition_result <- tccq_analyze(
+  loop_local_definition,
+  strict = TRUE
+)
+expect_true(loop_local_definition_result@success)
+
+break_sensitive_definition <- function(flag) {
+  declare(type(flag = logical()))
+  output <- 0
+  repeat {
+    if (flag) break else selected <- 2
+    output <- selected
+    break
+  }
+  output
+}
+break_sensitive_result <- tccq_analyze(
+  break_sensitive_definition,
+  strict = TRUE
+)
+expect_true(break_sensitive_result@success)
+
+next_sensitive_definition <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (element in x) {
+    if (element < 0) next else selected <- element
+    total <- total + selected
+  }
+  total
+}
+next_sensitive_result <- tccq_analyze(
+  next_sensitive_definition,
+  strict = TRUE
+)
+expect_true(next_sensitive_result@success)
+
+missing_normal_definition <- function(flag) {
+  declare(type(flag = logical()))
+  output <- 0
+  repeat {
+    if (flag) selected <- 1
+    output <- selected
+    break
+  }
+  output
+}
+missing_normal_definition_result <- tccq_analyze(missing_normal_definition)
+expect_false(missing_normal_definition_result@success)
 expect_true(any(vapply(
-  uninitialized_recurrence_result@diagnostics,
-  function(diagnostic) identical(diagnostic@code, "lowering.uninitialized_loop_cell"),
+  missing_normal_definition_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "schema.program_cell_use_before_definition")
+  },
   logical(1)
 )))
+
+unreachable_after_transfers <- function(flag) {
+  declare(type(flag = logical()))
+  output <- 0
+  repeat {
+    if (flag) {
+      selected <- 1
+      break
+    } else {
+      next
+    }
+    output <- selected
+  }
+  output
+}
+unreachable_after_transfers_result <- tccq_analyze(
+  unreachable_after_transfers,
+  strict = TRUE
+)
+expect_true(unreachable_after_transfers_result@success)
 
 explicit_replacement <- function(x) {
   declare(type(x = double(n)))

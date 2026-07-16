@@ -372,8 +372,14 @@ source names. `TccqLoopTransfer` records a validated `break` or `next` action
 against its originating call semantics and always targets the nearest enclosing
 loop. It is control completion rather than an ordinary effect, so a
 transformation must not move work across it merely because its `TccqEffect` is
-empty. This slice is scalar, requires cells to be initialized before loop
-entry, and admits
+empty. `TccqControlCompletion` records whether a statement or block may fall
+through, break, or continue. `tccq_completion()` composes those outcomes in
+evaluation order and consumes transfers at their nearest loop. Structured
+definite assignment intersects only branch arms that may fall through; a
+transfer-only arm cannot erase a valid definition from the continuing arm,
+and unreachable assignments cannot establish one. A scalar cell may be
+introduced by its first assignment inside a loop, but every normal-path read
+must be dominated by that assignment. This slice is scalar and admits
 procedural `TccqIf` statements whose arms are general typed blocks. A source
 `if` without `else` has an explicit empty alternative. `TccqConditional` is the
 stricter value-producing subtype used by expression loop nests; its retained
@@ -385,7 +391,7 @@ The structured body is the mutually exclusive body form of
 `TccqProgramSchedule`; it does not compete with the schedule for ownership of
 top-level order. Schedule construction verifies exact cell, local, and result
 targets, graph-consistent expression and target types, and initialization
-dominance before a backend sees the body.
+dominance over normally completing paths before a backend sees the body.
 
 Scalar, range, list, and computed `for` iterables, `switch`, vectorized
 `ifelse`, and idiomatic R surfaces such as `Map`, `lapply`,

@@ -73,7 +73,10 @@ initialized inside the body but not after a potentially empty domain.
 Loop-carried variables become mutable `TccqCell` storage rather
 than fake SSA bindings or a special `TccqLoopNest` mode. `TccqLoopTransfer`
 represents nearest-loop `break` and `next` completion without pretending it is
-a read/write effect. Cell reads use the same neutral expressions as the array
+a read/write effect. `TccqControlCompletion` keeps normal, break, and continue
+outcomes separate from effects. Blocks compose those facts in evaluation order,
+nested loops consume their own transfers, and initialization joins consider
+only arms that can reach the next statement. Cell reads use the same neutral expressions as the array
 path, assignments carry write effects, and nested procedural branches are
 `TccqIf` statements over typed arm blocks. `TccqConditional` is its stricter
 value-producing subtype; the shared parent keeps printers independent of that
@@ -81,10 +84,12 @@ distinction while exact local effects remain separate from the retained source
 branch effect. C, TinyCC, and Fortran consume the same structured program body.
 That body is the mutually exclusive
 structured form of `TccqProgramSchedule`, preserving one owner for top-level
-order and result identity. Initialization before entry is mandatory. Numeric
+order and result identity. A scalar cell can be first defined inside a loop
+when the definition dominates every normally reachable read; definitions are
+not assumed after a loop that may execute zero times. Numeric
 comparisons preserve missing logical results, and every generated control test
 reports them through a typed callable error channel; labeled or nonlocal exits,
-loop forms beyond while/repeat, and array-carried state remain explicit gaps. A
+scalar/range/list/computed `for` iterables, and array-carried state remain explicit gaps. A
 controlled array result
 uses caller-owned output storage, so C, Rtinycc, and Fortran inspect that error
 channel without first converting a returned buffer pointer.

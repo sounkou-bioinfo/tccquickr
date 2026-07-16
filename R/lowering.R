@@ -1460,7 +1460,7 @@ tccq_lower_function <- function(
       state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
       semantics
     }
-    lower_cell_assignment <- function(expr, in_loop) {
+    lower_cell_assignment <- function(expr) {
       target <- expr[[2L]]
       if (!is.symbol(target)) {
         return(diagnostic_value(
@@ -1485,14 +1485,6 @@ tccq_lower_function <- function(
       }
       cell <- state$cells[[cell_name]]
       if (is.null(cell)) {
-        if (isTRUE(in_loop)) {
-          return(diagnostic_value(
-            "lowering.uninitialized_loop_cell",
-            sprintf("Loop-carried cell `%s` must be initialized before entering the loop.", cell_name),
-            expr,
-            data = list(symbol = cell_name)
-          ))
-        }
         if (result$type@shape@rank != 0L) {
           return(diagnostic_value(
             "lowering.nonscalar_loop_cell",
@@ -1549,7 +1541,7 @@ tccq_lower_function <- function(
     lower_control_statement <- function(expr, in_loop) {
       call_name <- if (is.call(expr)) tccq_call_name(expr) else ""
       if (call_name %in% c("<-", "=") && length(expr) == 3L) {
-        return(lower_cell_assignment(expr, in_loop))
+        return(lower_cell_assignment(expr))
       }
       if (call_name %in% TCCQ_LOOP_TRANSFER_ACTIONS && length(expr) == 1L) {
         if (!isTRUE(in_loop)) {

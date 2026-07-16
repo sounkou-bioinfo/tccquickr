@@ -1951,7 +1951,12 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
       invisible(NULL)
     }
 
-    validate_expression <- function(expression, initialized_cells, statement_id) {
+    validate_expression <- function(
+      expression,
+      initialized_cells,
+      statement_id,
+      require_initialized = TRUE
+    ) {
       if (!expression@value_id %in% value_ids) {
         tccq_abort(
           "schema.unknown_program_expression",
@@ -1986,7 +1991,10 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
               data = list(statement = statement_id, cell = reference@source_value_id)
             )
           }
-          if (!reference@source_value_id %in% initialized_cells) {
+          if (
+            require_initialized &&
+              !reference@source_value_id %in% initialized_cells
+          ) {
             tccq_abort(
               "schema.program_cell_use_before_definition",
               "A program cell must be initialized before it is read.",
@@ -2006,7 +2014,12 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
         }
       }
       for (input in expression@inputs) {
-        validate_expression(input, initialized_cells, statement_id)
+        validate_expression(
+          input,
+          initialized_cells,
+          statement_id,
+          require_initialized
+        )
       }
       invisible(NULL)
     }
@@ -2015,10 +2028,12 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
       block,
       initialized_cells,
       visible_local_targets = list(),
-      loop_depth = 0L
+      loop_depth = 0L,
+      normal_input = TRUE
     ) {
       current_cells <- initialized_cells
       current_local_targets <- visible_local_targets
+      normal_path <- normal_input
       for (local_target in block@locals) {
         if (identical(local_target@kind, "cell")) {
           validate_target(local_target, block@id, current_local_targets)
@@ -2042,26 +2057,54 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
       }
       for (statement in block@statements) {
         if (S7::S7_inherits(statement, TccqAssignment)) {
-          validate_expression(statement@value, current_cells, statement@id)
+          validate_expression(
+            statement@value,
+            current_cells,
+            statement@id,
+            normal_path
+          )
           validate_target(statement@target, statement@id, current_local_targets)
-          if (identical(statement@target@kind, "cell")) {
+          if (
+            normal_path &&
+              identical(statement@target@kind, "cell")
+          ) {
             current_cells <- union(current_cells, statement@target@value_id)
           }
         } else if (S7::S7_inherits(statement, TccqIf)) {
-          validate_expression(statement@condition, current_cells, statement@id)
+          validate_expression(
+            statement@condition,
+            current_cells,
+            statement@id,
+            normal_path
+          )
           consequent_cells <- validate_block(
             statement@consequent,
             current_cells,
             current_local_targets,
-            loop_depth
+            loop_depth,
+            normal_path
           )
           alternative_cells <- validate_block(
             statement@alternative,
             current_cells,
             current_local_targets,
-            loop_depth
+            loop_depth,
+            normal_path
           )
-          current_cells <- intersect(consequent_cells, alternative_cells)
+          if (normal_path) {
+            consequent_completion <- tccq_completion(statement@consequent)
+            alternative_completion <- tccq_completion(statement@alternative)
+            if (
+              consequent_completion@falls_through &&
+                alternative_completion@falls_through
+            ) {
+              current_cells <- intersect(consequent_cells, alternative_cells)
+            } else if (consequent_completion@falls_through) {
+              current_cells <- consequent_cells
+            } else if (alternative_completion@falls_through) {
+              current_cells <- alternative_cells
+            }
+          }
         } else if (S7::S7_inherits(statement, TccqLoopTransfer)) {
           if (loop_depth == 0L) {
             tccq_abort(
@@ -2075,14 +2118,24 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
         } else if (S7::S7_inherits(statement, TccqLoop)) {
           loop_entry_cells <- current_cells
           if (S7::S7_inherits(statement, TccqFor)) {
-            validate_expression(statement@iterable, current_cells, statement@id)
+            validate_expression(
+              statement@iterable,
+              current_cells,
+              statement@id,
+              normal_path
+            )
             validate_target(statement@iterator, statement@id, current_local_targets)
             loop_entry_cells <- union(
               loop_entry_cells,
               statement@iterator@value_id
             )
           } else if (S7::S7_inherits(statement, TccqWhile)) {
-            validate_expression(statement@condition, current_cells, statement@id)
+            validate_expression(
+              statement@condition,
+              current_cells,
+              statement@id,
+              normal_path
+            )
           } else if (!S7::S7_inherits(statement, TccqRepeat)) {
             tccq_abort(
               "schema.unsupported_program_loop",
@@ -2096,7 +2149,8 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
             statement@body,
             loop_entry_cells,
             current_local_targets,
-            loop_depth + 1L
+            loop_depth + 1L,
+            normal_path
           )
         } else {
           tccq_abort(
@@ -2107,6 +2161,7 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
             data = list(statement = statement@id, class = class(statement))
           )
         }
+        normal_path <- normal_path && tccq_completion(statement)@falls_through
       }
       current_cells
     }

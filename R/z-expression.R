@@ -738,6 +738,45 @@ TccqStatement <- S7::new_class(
   }
 )
 
+#' Structured control completion
+#'
+#' Completion is distinct from [TccqEffect]. It records whether structured
+#' control may reach the next statement or transfer to the nearest enclosing
+#' loop. These facts let dominance and later transformations reason about
+#' normal paths without treating `break` or `next` as fabricated side effects.
+#'
+#' @param falls_through Whether evaluation may reach the next statement.
+#' @param breaks Whether evaluation may break from the nearest enclosing loop.
+#' @param continues Whether evaluation may continue the nearest enclosing loop.
+#' @export
+TccqControlCompletion <- S7::new_class(
+  "TccqControlCompletion",
+  package = "tccquickr",
+  properties = list(
+    falls_through = S7::class_logical,
+    breaks = S7::class_logical,
+    continues = S7::class_logical
+  ),
+  validator = function(self) {
+    properties <- list(
+      falls_through = self@falls_through,
+      breaks = self@breaks,
+      continues = self@continues
+    )
+    invalid_properties <- names(properties)[vapply(
+      properties,
+      function(value) length(value) != 1L || is.na(value),
+      logical(1)
+    )]
+    if (length(invalid_properties) > 0L) {
+      sprintf(
+        "@%s must be a single TRUE/FALSE value",
+        invalid_properties[[1L]]
+      )
+    }
+  }
+)
+
 #' Neutral statement block
 #'
 #' A block owns lexical local declarations and ordered typed statements. Its
@@ -1393,6 +1432,92 @@ tccq_loop_transfer <- function(id, action, semantics) {
     effect = tccq_effect(),
     action = action,
     semantics = semantics
+  )
+}
+
+#' Compute structured control completion
+#'
+#' Completion summarizes only paths reachable in evaluation order. Nested
+#' loops consume their own `break` and `next` transfers, while a block retains
+#' transfers that target its nearest enclosing loop.
+#'
+#' @param control Typed statement or statement block.
+#' @return A `TccqControlCompletion` value.
+#' @export
+tccq_completion <- S7::new_generic(
+  "tccq_completion",
+  dispatch_args = "control",
+  function(control) S7::S7_dispatch()
+)
+
+S7::method(tccq_completion, TccqAssignment) <- function(control) {
+  TccqControlCompletion(
+    falls_through = TRUE,
+    breaks = FALSE,
+    continues = FALSE
+  )
+}
+
+S7::method(tccq_completion, TccqLoopTransfer) <- function(control) {
+  TccqControlCompletion(
+    falls_through = FALSE,
+    breaks = identical(control@action, "break"),
+    continues = identical(control@action, "next")
+  )
+}
+
+S7::method(tccq_completion, TccqIf) <- function(control) {
+  consequent <- tccq_completion(control@consequent)
+  alternative <- tccq_completion(control@alternative)
+  TccqControlCompletion(
+    falls_through = consequent@falls_through || alternative@falls_through,
+    breaks = consequent@breaks || alternative@breaks,
+    continues = consequent@continues || alternative@continues
+  )
+}
+
+S7::method(tccq_completion, TccqWhile) <- function(control) {
+  TccqControlCompletion(
+    falls_through = TRUE,
+    breaks = FALSE,
+    continues = FALSE
+  )
+}
+
+S7::method(tccq_completion, TccqFor) <- function(control) {
+  TccqControlCompletion(
+    falls_through = TRUE,
+    breaks = FALSE,
+    continues = FALSE
+  )
+}
+
+S7::method(tccq_completion, TccqRepeat) <- function(control) {
+  body_completion <- tccq_completion(control@body)
+  TccqControlCompletion(
+    falls_through = body_completion@breaks,
+    breaks = FALSE,
+    continues = FALSE
+  )
+}
+
+S7::method(tccq_completion, TccqBlock) <- function(control) {
+  falls_through <- TRUE
+  breaks <- FALSE
+  continues <- FALSE
+  for (statement in control@statements) {
+    if (!falls_through) {
+      break
+    }
+    statement_completion <- tccq_completion(statement)
+    breaks <- breaks || statement_completion@breaks
+    continues <- continues || statement_completion@continues
+    falls_through <- statement_completion@falls_through
+  }
+  TccqControlCompletion(
+    falls_through = falls_through,
+    breaks = breaks,
+    continues = continues
   )
 }
 
