@@ -824,20 +824,140 @@ vector_for_loop <- Filter(
 expect_true(S7::S7_inherits(vector_for_loop, TccqLoop))
 expect_equal(vector_for_loop@iterator@binding@name, "element")
 expect_equal(vector_for_loop@iterator@type@shape@rank, 0L)
-expect_equal(vector_for_loop@iterable@type@shape@rank, 1L)
+expect_true(S7::S7_inherits(vector_for_loop@iteration, TccqIterationPlan))
+expect_equal(vector_for_loop@iteration@source@type@shape@rank, 1L)
 expect_identical(
-  vector_for_loop@iterable@reference@access@domain,
-  vector_for_loop@domain
+  vector_for_loop@iteration@element@reference@access@domain,
+  vector_for_loop@iteration@domain
 )
 expect_equal(
-  vector_for_loop@iterable@reference@access@index_map[[1L]]@axis,
-  vector_for_loop@domain@axes
+  vector_for_loop@iteration@element@reference@access@index_map[[1L]]@axis,
+  vector_for_loop@iteration@domain@axes
 )
+expect_null(vector_for_loop@iteration@resolved_op)
 expect_true(any(vapply(
   vector_for_loop@body@statements,
   S7::S7_inherits,
   logical(1),
   class = TccqIf
+)))
+
+extent_sequence_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + index
+  }
+  total
+}
+extent_sequence_result <- tccq_analyze(extent_sequence_sum, strict = TRUE)
+expect_true(extent_sequence_result@success)
+extent_sequence_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  extent_sequence_result@value@schedule@body@statements
+)[[1L]]
+expect_true(S7::S7_inherits(extent_sequence_loop@iteration, TccqIterationPlan))
+expect_equal(extent_sequence_loop@iteration@source@op, "dim_symbol")
+expect_true(S7::S7_inherits(
+  extent_sequence_loop@iteration@source@reference,
+  TccqDimensionReference
+))
+expect_true(S7::S7_inherits(
+  extent_sequence_loop@iteration@element,
+  TccqIndexExpr
+))
+expect_equal(extent_sequence_loop@iteration@element@offset, 1L)
+expect_equal(extent_sequence_loop@iteration@element_type@base, "integer")
+expect_true(S7::S7_inherits(
+  extent_sequence_loop@iteration@resolved_op@iteration,
+  TccqIterationSpec
+))
+expect_equal(extent_sequence_loop@iteration@resolved_op@call@name, "seq_len")
+expect_identical(
+  extent_sequence_loop@iteration@resolved_op@call@id,
+  extent_sequence_loop@iteration@semantics@call@id
+)
+
+indices <- function(extent) seq_len(extent)
+indices_iteration <- tccq_iteration_spec(
+  "indices",
+  tccq_op_signature(
+    "indices",
+    1L,
+    result_type = function(input_types) {
+      tccq_type("integer", tccq_shape(tccq_dim_unknown()))
+    }
+  )
+)
+indices_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "indices",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE),
+    iteration = indices_iteration
+  )
+)
+custom_extent_sequence <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in indices(n)) {
+    total <- total + index
+  }
+  total
+}
+custom_extent_result <- tccq_analyze(
+  custom_extent_sequence,
+  strict = TRUE,
+  registry = indices_registry
+)
+expect_true(custom_extent_result@success)
+custom_extent_loop <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  custom_extent_result@value@schedule@body@statements
+)[[1L]]
+expect_equal(custom_extent_loop@iteration@resolved_op@call@name, "indices")
+expect_equal(custom_extent_loop@iteration@semantics@forcing_policy, "lazy")
+expect_true(S7::S7_inherits(
+  custom_extent_loop@iteration@element,
+  TccqIndexExpr
+))
+
+shadowed_extent_sequence <- function(x, n) {
+  declare(type(x = double(n), n = double()))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + index
+  }
+  total
+}
+shadowed_extent_result <- tccq_analyze(shadowed_extent_sequence)
+expect_false(shadowed_extent_result@success)
+expect_true(any(vapply(
+  shadowed_extent_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.shadowed_iteration_extent")
+  },
+  logical(1)
+)))
+
+scalar_extent_sequence <- function(limit) {
+  declare(type(limit = double()))
+  total <- 0
+  for (index in seq_len(limit)) {
+    total <- total + index
+  }
+  total
+}
+scalar_extent_sequence_result <- tccq_analyze(scalar_extent_sequence)
+expect_false(scalar_extent_sequence_result@success)
+expect_true(any(vapply(
+  scalar_extent_sequence_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.unsupported_iteration_extent")
+  },
+  logical(1)
 )))
 
 for_iterator_after_empty <- function(x) {

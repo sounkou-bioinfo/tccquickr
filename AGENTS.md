@@ -55,12 +55,13 @@ The active architecture is the small typed core:
 - `R/frontend.R`: declaration extraction, `codetools`-assisted call discovery,
   and operation-registry diagnostics.
 - `R/ops.R`: operation signatures, implementation traits, registries,
-  elementwise/reduction specs, and operation source render contracts.
+  elementwise/reduction/contraction/iteration specs, and operation source
+  render contracts.
 - `R/lowering.R`: typed lowering from the declared subset into values, regions,
   fusion groups, and storage plans.
-- `R/z-expression.R`: backend-neutral expression trees, the `TccqLoopNest`
-  with-loop plan (SAC lineage), and the loop-nest planner consumed by source
-  printers.
+- `R/z-expression.R`: backend-neutral expression trees, sequential
+  `TccqIterationPlan` values, the `TccqLoopNest` with-loop plan (SAC lineage),
+  and the loop-nest planner consumed by source printers.
 - `R/utils.R`: small schema validation helpers.
 - `docs/root.md`: the current root direction.
 
@@ -250,14 +251,26 @@ For the reset core, keep these rules explicit:
   compose those facts in evaluation order, nested loops consume their own
   transfers, and definite-assignment joins intersect only arms that can reach
   the next statement. Do not add control flags to `TccqEffect` or let
-  unreachable assignments establish dominance. `TccqFor` owns a scalar iteration
-  cell, a typed iterable expression, and the `TccqDomain`/`TccqAccess` selecting
-  its current element. The first slice accepts direct rank-1 atomic iterables;
-  the iterator is definitely initialized in the body but not after a possibly
-  empty loop. Scalar, range, list, and computed iterables require their own
-  typed iteration semantics. A scalar cell may be introduced by its first
-  assignment inside a loop, but every read must be dominated on all normally
-  continuing paths; loop writes are not promoted after a possibly empty loop.
+  unreachable assignments establish dominance. `TccqFor` owns a scalar
+  iteration cell and one `TccqIterationPlan`; it does not own parallel
+  iterable/domain fields. The plan separates one-time source evaluation, a
+  rank-1 `TccqDomain`, and current-element selection. Stored vectors select
+  through a `TccqExpression` with identity `TccqAccess`. Virtual iterables
+  select through `TccqIndexExpr`; their source must be a
+  `TccqDimensionReference`, not an ordinary scalar reference with the same
+  symbol spelling, and they must carry the matching `TccqResolvedOp`,
+  `TccqIterationSpec`, and `TccqCallSemantics`. The first
+  virtual slice is `seq_len(n)` for a declared dimension `n`; arbitrary scalar
+  extents, general ranges, lists, and computed iterables require additional
+  typed iteration semantics. Source printers dispatch on the element class,
+  never on the originating operation name. Eager and lazy unary calls may use
+  the current virtual plan because its source is a direct pure extent
+  reference; special, replacement, control, or effectful calls may not. The
+  iterator is definitely
+  initialized in the body but not after a possibly empty loop. A scalar cell
+  may be introduced by its first assignment inside a loop, but every read must
+  be dominated on all normally continuing paths; loop writes are not promoted
+  after a possibly empty loop.
   The current slice does not cover labeled or nonlocal transfer or
   array-carried state. Numeric comparison
   implementations must preserve `NA`/`NaN` in logical results so `while` and
@@ -330,10 +343,13 @@ For the reset core, keep these rules explicit:
   owning the support policy. New implementation targets enter the registry
   together with their first real implementation.
 - `TccqOpSignature` is the shared operation contract for arity, result-domain
-  policy, and result type. `TccqElementwiseSpec` and `TccqReductionSpec` carry
-  signatures; reductions add reducer identity and combine behavior. Do not add
-  another result-type helper, shape predicate, or source-name switch when a
-  signature, domain policy, or implementation trait is the actual concept.
+  policy, and result type. `TccqElementwiseSpec`, `TccqReductionSpec`,
+  `TccqContractionSpec`, and `TccqIterationSpec` carry signatures; reductions
+  add reducer identity and combine behavior, contractions add contracted axes,
+  and the current iteration spec adds one extent source and affine start. Do
+  not add another result-type helper, shape predicate, or source-name switch
+  when a signature, domain policy, or implementation trait is the actual
+  concept.
 - Lowered operation values must carry a `TccqLoweredOperation` payload that
   preserves the selected implementation, signature, domain policy, operation
   family, and optional reducer facts. Later fusion, access, legality, storage,
@@ -368,11 +384,11 @@ For the reset core, keep these rules explicit:
   names, iteration domain, per-axis input extent parameters, total input
   element-count parameter, per-axis result extent parameters, result-count
   parameter, index variable, or reduction accumulator names.
-- Source backends consume exactly one iteration abstraction: `TccqLoopNest`,
-  the SAC-style with-loop, planned as an ordered sequence (intermediate nests
-  first, result nest last). A selected-arm intermediate extends that same nest
-  with an ordered `TccqLoopGuard` control path rather than introducing a second
-  schedule abstraction. Each nest carries ordered `TccqLoopAxis` values
+- Source backends consume exactly one data-parallel iteration abstraction:
+  `TccqLoopNest`, the SAC-style with-loop, planned as an ordered sequence
+  (intermediate nests first, result nest last). A selected-arm intermediate
+  extends that same nest with an ordered `TccqLoopGuard` control path rather
+  than introducing a second schedule abstraction. Each nest carries ordered `TccqLoopAxis` values
   (`map` produces output positions, `reduce` folds into an accumulator), a
   value-expression or typed-statement-block body whose references carry typed
   `TccqAccess`/`TccqIndexExpr` affine access maps. A recycle access owns its
@@ -406,8 +422,8 @@ For the reset core, keep these rules explicit:
   error channel uses caller-owned output storage and `output_argument` result
   placement; no FFI path may convert or copy a returned buffer before checking
   status.
-- Operation families are elementwise (`TccqElementwiseSpec`), reduction
-  (`TccqReductionSpec`, whose optional finalizer transforms the folded
+- Expression operation families are elementwise (`TccqElementwiseSpec`),
+  reduction (`TccqReductionSpec`, whose optional finalizer transforms the folded
   accumulator — the mean family divides by the reduced count), and
   contraction (`TccqContractionSpec`, which owns a signature, a reducer, a
   combine operation, and the contracted operand dimensions — `%*%`,
@@ -425,6 +441,11 @@ For the reset core, keep these rules explicit:
   materialization happens only inside the nest's typed control path and cleanup
   tolerates an unselected, therefore unallocated, slot. Intermediates never
   change the callable ABI.
+- Sequential iteration operations use `TccqIterationSpec` and terminate in a
+  `TccqIterationPlan`, not a `TccqLoweredOperation` or `TccqLoopNest`. The
+  current plan has exactly one extent source and therefore requires a unary
+  iteration signature. A broader range or generator enters only when the plan
+  can retain every evaluated source and its element semantics.
 - Backend planning must make concrete products explicit through
   `TccqBackendProducts` and `TccqBackendArtifact`. Function interfaces,
   expression trees, storage plans, generated source, shared libraries, wrappers,

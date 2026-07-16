@@ -561,7 +561,18 @@ for_domain <- tccq_domain(
   axes = "for_axis",
   attrs = list(kind = "sequential_for")
 )
-for_iterable <- tccq_expression(
+for_source <- tccq_expression(
+  "formal_for",
+  "reference",
+  type = for_type,
+  op = "formal",
+  effect = tccq_effect(reads = TRUE),
+  reference = tccq_expression_reference(
+    "formal_for",
+    symbol = "x"
+  )
+)
+for_element <- tccq_expression(
   "formal_for",
   "reference",
   type = for_type,
@@ -577,6 +588,12 @@ for_iterable <- tccq_expression(
     )
   )
 )
+for_iteration <- tccq_iteration_plan(
+  for_source,
+  for_domain,
+  for_element,
+  tccq_type("double")
+)
 for_iterator <- tccq_cell("element", "cell_element", tccq_type("double"))
 for_iterator_target <- tccq_write_target(
   for_iterator@value_id,
@@ -587,8 +604,7 @@ for_iterator_target <- tccq_write_target(
 for_statement <- tccq_for(
   "statement_for",
   for_iterator_target,
-  for_iterable,
-  for_domain,
+  for_iteration,
   repeat_body,
   tccq_call_semantics(tccq_call(
     "for",
@@ -597,28 +613,24 @@ for_statement <- tccq_for(
 )
 expect_true(S7::S7_inherits(for_statement, TccqLoop))
 expect_true(S7::S7_inherits(for_statement, TccqFor))
-expect_identical(for_statement@domain, for_domain)
+expect_true(S7::S7_inherits(for_statement@iteration, TccqIterationPlan))
+expect_identical(for_statement@iteration@domain, for_domain)
 expect_identical(for_statement@iterator@binding, for_iterator)
 expect_true(for_statement@effect@reads)
 expect_true(for_statement@effect@writes)
 expect_true(tccq_completion(for_statement)@falls_through)
 
 mismatched_for_domain <- tryCatch(
-  tccq_for(
-    "statement_for_mismatched_domain",
-    for_iterator_target,
-    for_iterable,
+  tccq_iteration_plan(
+    for_source,
     tccq_domain(
       "other_domain_for",
       for_type@shape,
       axes = "other_for_axis",
       attrs = list(kind = "sequential_for")
     ),
-    repeat_body,
-    tccq_call_semantics(tccq_call(
-      "for",
-      expr = quote(for (element in x) break)
-    ))
+    for_element,
+    tccq_type("double")
   ),
   error = identity
 )

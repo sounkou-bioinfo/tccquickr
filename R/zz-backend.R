@@ -1929,7 +1929,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       if (identical(type@base, "double")) {
         return(if (identical(language, "fortran")) "real(c_double)" else "double")
       }
-      if (identical(type@base, "logical")) {
+      if (type@base %in% c("logical", "integer")) {
         return(if (identical(language, "fortran")) "integer(c_int)" else "int")
       }
       tccq_abort(
@@ -2192,7 +2192,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             if (S7::S7_inherits(statement, TccqFor)) {
               statement_index_names <<- c(
                 statement_index_names,
-                statement@domain@axes
+                statement@iteration@domain@axes
               )
             }
             walk_block(statement@body)
@@ -2861,9 +2861,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           return(invisible(NULL))
         }
         if (S7::S7_inherits(statement, TccqFor)) {
-          axis_name <- statement@domain@axes[[1L]]
+          iteration <- statement@iteration
+          axis_name <- iteration@domain@axes[[1L]]
           extent <- extent_text(
-            statement@domain@shape@dims[[1L]],
+            iteration@domain@shape@dims[[1L]],
             emit_context$extent_by_symbol
           )
           iterator_name <- emit_context$source_name_by_value_id[[
@@ -2877,10 +2878,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             axis_name
           ))
           depth <<- depth + 1L
+          element_text <- if (S7::S7_inherits(iteration@element, TccqExpression)) {
+            expression_text(iteration@element, emit_context)
+          } else {
+            index_term_text(iteration@element)
+          }
           push(sprintf(
             "%s = %s;",
             iterator_name,
-            expression_text(statement@iterable, emit_context)
+            element_text
           ))
           emit_statement_block(statement@body, result_target)
           depth <<- depth - 1L
@@ -3443,9 +3449,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           return(invisible(NULL))
         }
         if (S7::S7_inherits(statement, TccqFor)) {
-          axis_name <- statement@domain@axes[[1L]]
+          iteration <- statement@iteration
+          axis_name <- iteration@domain@axes[[1L]]
           extent <- extent_text(
-            statement@domain@shape@dims[[1L]],
+            iteration@domain@shape@dims[[1L]],
             emit_context$extent_by_symbol
           )
           iterator_name <- emit_context$source_name_by_value_id[[
@@ -3457,10 +3464,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             extent
           ))
           depth <<- depth + 1L
+          element_text <- if (S7::S7_inherits(iteration@element, TccqExpression)) {
+            expression_text(iteration@element, emit_context)
+          } else {
+            index_term_text(iteration@element)
+          }
           push(sprintf(
             "%s = %s",
             iterator_name,
-            expression_text(statement@iterable, emit_context)
+            element_text
           ))
           emit_statement_block(statement@body, result_target)
           depth <<- depth - 1L

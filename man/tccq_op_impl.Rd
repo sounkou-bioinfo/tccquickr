@@ -17,7 +17,8 @@ tccq_op_impl(
   render = NULL,
   elementwise = NULL,
   reduction = NULL,
-  contraction = NULL
+  contraction = NULL,
+  iteration = NULL
 )
 }
 \arguments{
@@ -47,6 +48,8 @@ tccq_op_impl(
 \item{reduction}{Optional reduction metadata.}
 
 \item{contraction}{Optional contraction metadata.}
+
+\item{iteration}{Optional iteration metadata.}
 }
 \description{
 Construct an operation implementation

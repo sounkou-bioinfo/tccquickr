@@ -1444,7 +1444,7 @@ tccq_lower_function <- function(
       snapshot <- new_plan(values = state$values, result = value_id)
       tccq_expression_tree(snapshot, value_id)
     }
-    take_semantics <- function(expr, call_name) {
+    take_semantics <- function(expr, call_name, consume = TRUE) {
       matches <- Filter(
         function(semantics) {
           identical(semantics@call@name, call_name) &&
@@ -1457,7 +1457,9 @@ tccq_lower_function <- function(
         return(NULL)
       }
       semantics <- matches[[1L]]
-      state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
+      if (isTRUE(consume)) {
+        state$consumed_call_ids <- c(state$consumed_call_ids, semantics@call@id)
+      }
       semantics
     }
     lower_cell_assignment <- function(expr) {
@@ -1731,74 +1733,196 @@ tccq_lower_function <- function(
           ))
         }
 
-        iterable_result <- lower_expression(expr[[3L]], state)
-        if (length(iterable_result$diagnostics) > 0L) {
-          return(iterable_result)
-        }
-        if (iterable_result$type@shape@rank != 1L) {
-          return(diagnostic_value(
-            "lowering.unsupported_for_iterable",
-            "The first typed `for` slice requires a rank-1 atomic iterable.",
-            expr[[3L]],
-            data = list(type = iterable_result$type)
-          ))
-        }
-        iterable_expression_result <- expression_for(iterable_result$value_id)
-        if (!iterable_expression_result@success) {
-          return(list(
-            value_id = NULL,
-            type = NULL,
-            diagnostics = iterable_expression_result@diagnostics
-          ))
-        }
-        iterable_expression <- iterable_expression_result@value
-        if (
-          !identical(iterable_expression@kind, "reference") ||
-            is.null(iterable_expression@reference) ||
-            length(iterable_expression@reference@slice_offsets) > 0L
-        ) {
-          return(diagnostic_value(
-            "lowering.unsupported_for_iterable_storage",
-            "The first typed `for` slice requires a direct stored-vector reference.",
-            expr[[3L]],
-            data = list(value_id = iterable_result$value_id)
-          ))
-        }
-
         statement_id <- next_statement_id()
         axis_name <- paste0(statement_id, "_axis")
-        domain <- tccq_domain(
-          paste0(statement_id, "_domain"),
-          iterable_result$type@shape,
-          axes = axis_name,
-          attrs = list(kind = "sequential_for")
-        )
-        iterable_reference <- iterable_expression@reference
-        iterable_expression <- tccq_expression(
-          id = iterable_expression@id,
-          kind = iterable_expression@kind,
-          value_id = iterable_expression@value_id,
-          op = iterable_expression@op,
-          type = iterable_expression@type,
-          effect = iterable_expression@effect,
-          reference = tccq_expression_reference(
-            iterable_reference@source_value_id,
-            symbol = iterable_reference@symbol,
-            binding = iterable_reference@binding,
-            access = tccq_access(
-              iterable_reference@source_value_id,
-              domain,
-              kind = "identity",
-              index_map = list(tccq_index_expr(axis_name))
+        iterable_expr <- expr[[3L]]
+        iteration <- NULL
+        iteration_value_id <- NULL
+        iteration_value_type <- NULL
+
+        if (is.call(iterable_expr)) {
+          iterable_call_name <- tccq_call_name(iterable_expr)
+          iteration_semantics <- take_semantics(
+            iterable_expr,
+            iterable_call_name,
+            consume = FALSE
+          )
+          if (!is.null(iteration_semantics)) {
+            iteration_resolution <- tccq_resolve_call(
+              registry,
+              iteration_semantics@call,
+              context
+            )
+            if (
+              iteration_resolution@success &&
+                S7::S7_inherits(
+                  iteration_resolution@value@iteration,
+                  TccqIterationSpec
+                )
+            ) {
+              iteration_spec <- iteration_resolution@value@iteration
+              iteration_arguments <- as.list(iterable_expr)[-1L]
+              if (!length(iteration_arguments) %in% iteration_spec@signature@arity) {
+                return(diagnostic_value(
+                  "lowering.invalid_iteration_arity",
+                  "The resolved iteration operation does not accept this argument count.",
+                  iterable_expr,
+                  data = list(
+                    operation = iteration_resolution@value@call@name,
+                    arity = length(iteration_arguments),
+                    supported = iteration_spec@signature@arity
+                  )
+                ))
+              }
+              extent_expr <- iteration_arguments[[iteration_spec@extent_arg]]
+              if (
+                !is.symbol(extent_expr) ||
+                  !as.character(extent_expr) %in% state$dim_symbols
+              ) {
+                return(diagnostic_value(
+                  "lowering.unsupported_iteration_extent",
+                  "Virtual iteration currently requires a declared dimension symbol as its extent.",
+                  iterable_expr,
+                  data = list(
+                    operation = iteration_resolution@value@call@name,
+                    extent = deparse1(extent_expr),
+                    declared_dimensions = state$dim_symbols
+                  )
+                ))
+              }
+              extent_result <- lower_expression(extent_expr, state)
+              if (length(extent_result$diagnostics) > 0L) {
+                return(extent_result)
+              }
+              iteration_type_result <- tccq_op_signature_result_type(
+                iteration_spec@signature,
+                list(extent_result$type)
+              )
+              if (!iteration_type_result@success) {
+                return(list(
+                  value_id = NULL,
+                  type = NULL,
+                  diagnostics = iteration_type_result@diagnostics
+                ))
+              }
+              source_expression_result <- expression_for(extent_result$value_id)
+              if (!source_expression_result@success) {
+                return(list(
+                  value_id = NULL,
+                  type = NULL,
+                  diagnostics = source_expression_result@diagnostics
+                ))
+              }
+              if (!S7::S7_inherits(
+                source_expression_result@value@reference,
+                TccqDimensionReference
+              )) {
+                return(diagnostic_value(
+                  "lowering.shadowed_iteration_extent",
+                  "The iteration extent resolves to an ordinary binding that shadows the declared dimension.",
+                  extent_expr,
+                  data = list(dimension = as.character(extent_expr))
+                ))
+              }
+              domain <- tccq_domain(
+                paste0(statement_id, "_domain"),
+                tccq_shape(tccq_dim_symbol(as.character(extent_expr))),
+                axes = axis_name,
+                attrs = list(kind = "sequential_for")
+              )
+              state$consumed_call_ids <- c(
+                state$consumed_call_ids,
+                iteration_semantics@call@id
+              )
+              iteration <- tccq_iteration_plan(
+                source_expression_result@value,
+                domain,
+                tccq_index_expr(axis_name, iteration_spec@start),
+                tccq_type(iteration_type_result@value@base),
+                resolved_op = iteration_resolution@value,
+                semantics = iteration_semantics
+              )
+              iteration_value_id <- extent_result$value_id
+              iteration_value_type <- iteration_type_result@value
+            }
+          }
+        }
+
+        if (is.null(iteration)) {
+          iterable_result <- lower_expression(iterable_expr, state)
+          if (length(iterable_result$diagnostics) > 0L) {
+            return(iterable_result)
+          }
+          if (iterable_result$type@shape@rank != 1L) {
+            return(diagnostic_value(
+              "lowering.unsupported_for_iterable",
+              "A stored `for` iterable must be a rank-1 atomic value.",
+              iterable_expr,
+              data = list(type = iterable_result$type)
+            ))
+          }
+          source_expression_result <- expression_for(iterable_result$value_id)
+          if (!source_expression_result@success) {
+            return(list(
+              value_id = NULL,
+              type = NULL,
+              diagnostics = source_expression_result@diagnostics
+            ))
+          }
+          source_expression <- source_expression_result@value
+          if (
+            !identical(source_expression@kind, "reference") ||
+              is.null(source_expression@reference) ||
+              length(source_expression@reference@slice_offsets) > 0L
+          ) {
+            return(diagnostic_value(
+              "lowering.unsupported_for_iterable_storage",
+              "Stored `for` iteration requires a direct vector reference.",
+              iterable_expr,
+              data = list(value_id = iterable_result$value_id)
+            ))
+          }
+          domain <- tccq_domain(
+            paste0(statement_id, "_domain"),
+            iterable_result$type@shape,
+            axes = axis_name,
+            attrs = list(kind = "sequential_for")
+          )
+          source_reference <- source_expression@reference
+          element_expression <- tccq_expression(
+            id = source_expression@id,
+            kind = source_expression@kind,
+            value_id = source_expression@value_id,
+            op = source_expression@op,
+            type = source_expression@type,
+            effect = source_expression@effect,
+            reference = tccq_expression_reference(
+              source_reference@source_value_id,
+              symbol = source_reference@symbol,
+              binding = source_reference@binding,
+              access = tccq_access(
+                source_reference@source_value_id,
+                domain,
+                kind = "identity",
+                index_map = list(tccq_index_expr(axis_name))
+              )
             )
           )
-        )
+          iteration <- tccq_iteration_plan(
+            source_expression,
+            domain,
+            element_expression,
+            tccq_type(iterable_result$type@base)
+          )
+          iteration_value_id <- iterable_result$value_id
+          iteration_value_type <- iterable_result$type
+        }
 
         state$cell_counter <- state$cell_counter + 1L
         iterator <- tccq_cell(
           iterator_name,
           sprintf("cell_%04d", state$cell_counter),
-          tccq_type(iterable_result$type@base)
+          iteration@element_type
         )
         iterator_target <- tccq_write_target(
           iterator@value_id,
@@ -1815,13 +1939,12 @@ tccq_lower_function <- function(
           return(body_result)
         }
         return(list(
-          value_id = iterable_result$value_id,
-          type = iterable_result$type,
+          value_id = iteration_value_id,
+          type = iteration_value_type,
           statement = tccq_for(
             statement_id,
             iterator_target,
-            iterable_expression,
-            domain,
+            iteration,
             body_result$block,
             semantics
           ),

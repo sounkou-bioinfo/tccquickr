@@ -67,8 +67,15 @@ remains a refusal when its uses imply incompatible paths.
 
 Sequential recurrence now has a separate honest representation. Abstract
 `TccqLoop` owns the typed body shared by concrete `TccqWhile` and `TccqRepeat`
-statements. `TccqFor` adds a scalar iteration cell and a typed rank-1 iterable
-whose `TccqDomain`/`TccqAccess` owns element traversal. Its iterator is
+statements. `TccqFor` adds a scalar iteration cell and one
+`TccqIterationPlan`. That plan evaluates its source once, owns a rank-1
+`TccqDomain`, and represents the current element either as a stored-vector
+`TccqExpression` with `TccqAccess` or as a virtual affine `TccqIndexExpr`.
+Virtual iteration is selected through typed operation metadata rather than a
+printer spelling. The first such implementation is `seq_len(n)` for a declared
+dimension `n`; its source is a `TccqDimensionReference`, so a scalar binding
+named `n` cannot masquerade as that extent. `TccqIterationSpec` owns its unary
+signature, extent argument, and first value. Its iterator is
 initialized inside the body but not after a potentially empty domain.
 Loop-carried variables become mutable `TccqCell` storage rather
 than fake SSA bindings or a special `TccqLoopNest` mode. `TccqLoopTransfer`
@@ -89,7 +96,8 @@ when the definition dominates every normally reachable read; definitions are
 not assumed after a loop that may execute zero times. Numeric
 comparisons preserve missing logical results, and every generated control test
 reports them through a typed callable error channel; labeled or nonlocal exits,
-scalar/range/list/computed `for` iterables, and array-carried state remain explicit gaps. A
+arbitrary scalar extents, range/list/computed `for` iterables, and array-carried
+state remain explicit gaps. A
 controlled array result
 uses caller-owned output storage, so C, Rtinycc, and Fortran inspect that error
 channel without first converting a returned buffer pointer.
@@ -114,7 +122,8 @@ The remaining north-star pressure is richer loop and evaluator structure.
 Viterbi and smaller probes around `switch`, richer `for` iterables, replacement
 calls, dispatch, promises, side effects, and interruption should fail with
 structured diagnostics until the compiler has typed facts for those concepts.
-The accepted direct-vector `for` slice does not yet cover scalar, range, list,
-or computed iterables.
+The accepted direct-vector and declared-extent unit-sequence `for` slices do
+not yet cover arbitrary scalar extents, general ranges, lists, or computed
+iterables.
 The goal is not to accept more R by fallback; it is to make each new accepted
 program deepen the shared representation consumed by every backend.

@@ -260,9 +260,16 @@ the next statement. A scalar cell may therefore be introduced by its
 first assignment inside a loop when that assignment dominates every
 normal-path read; unreachable writes never establish dominance, and loop
 writes are not assumed to run after a possibly empty loop. `TccqFor`
-adds a scalar iteration cell and a typed iterable expression whose
-`TccqDomain` and `TccqAccess` select each element. The current
-executable slice accepts direct rank-1 atomic iterables. The iterator is
+adds a scalar iteration cell and a `TccqIterationPlan` that separates
+one-time source evaluation, the one-dimensional `TccqDomain`, and
+selection of the current element. A stored rank-1 atomic vector selects
+through a neutral expression carrying `TccqAccess`. A virtual
+`seq_len(n)` selects through `TccqIndexExpr`, but only when `n` is a
+declared dimension whose non-negative integral extent is already an ABI
+fact. Its source is a `TccqDimensionReference`, distinct from an
+ordinary scalar formal or local that happens to use the same name. The
+registry declares that behavior with `TccqIterationSpec`; C, Fortran,
+and Rtinycc never recognize the `seq_len` spelling. The iterator is
 initialized on entry to the body but remains uninitialized after a
 possibly empty loop, so post-loop reads are refused until non-emptiness
 is proven. A nested procedural `if` is a `TccqIf` whose consequent and
@@ -273,9 +280,28 @@ The body is the structured form of `TccqProgramSchedule`, so there is
 still one top-level owner of order; the schedule constructor validates
 result identity, graph references, exact cell and local ownership,
 graph-consistent target types, and initialization dominance over
-normally completing paths. Scalar, range, list, and computed iterables,
-labeled or nonlocal transfer, and array-carried state remain structured
-refusals rather than emitter conventions.
+normally completing paths. Arbitrary scalar extents, general ranges,
+lists, computed iterables, labeled or nonlocal transfer, and
+array-carried state remain structured refusals rather than emitter
+conventions.
+
+``` r
+extent_sequence_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) total <- total + index
+  total
+}
+
+extent_sequence_plan <- tccq_plan_backend(
+  tccq_analyze(extent_sequence_sum, strict = TRUE)@value,
+  tccq_rtinycc_backend(),
+  tccq_backend_context(mode = "jit", target = "c")
+)
+extent_sequence <- extent_sequence_plan@value@products@attrs$callable
+identical(extent_sequence(numeric(5)), 15)
+#> [1] TRUE
+```
 
 **Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
 declared dimension symbols. A `TccqProgramSchedule` owns either
@@ -546,7 +572,8 @@ shapes, effects, regions, and plans; `s7contract` interfaces between
 phases; classed diagnostics instead of error strings; neutral expression
 and statement values; one `TccqLoopNest` abstraction for data-parallel
 iteration; and structured `TccqBlock`/`TccqIf`/`TccqLoop` values for
-sequential recurrence. Every source backend consumes the same neutral
+sequential recurrence, with `TccqIterationPlan` owning sequential source
+and element selection. Every source backend consumes the same neutral
 handoff. The full phase-by-phase story — call semantics, operation
 registries, lowering, loop nests, bridges, backend planning, fusion —
 lives in [docs/architecture.md](docs/architecture.md), with the root

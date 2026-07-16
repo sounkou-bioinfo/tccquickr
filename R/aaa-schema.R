@@ -2119,11 +2119,19 @@ tccq_program_schedule <- function(steps, result, values, body = NULL) {
           loop_entry_cells <- current_cells
           if (S7::S7_inherits(statement, TccqFor)) {
             validate_expression(
-              statement@iterable,
+              statement@iteration@source,
               current_cells,
               statement@id,
               normal_path
             )
+            if (S7::S7_inherits(statement@iteration@element, TccqExpression)) {
+              validate_expression(
+                statement@iteration@element,
+                current_cells,
+                statement@id,
+                normal_path
+              )
+            }
             validate_target(statement@iterator, statement@id, current_local_targets)
             loop_entry_cells <- union(
               loop_entry_cells,

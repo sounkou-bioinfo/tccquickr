@@ -4,16 +4,14 @@
 \alias{tccq_for}
 \title{Construct a neutral for statement}
 \usage{
-tccq_for(id, iterator, iterable, domain, body, semantics)
+tccq_for(id, iterator, iteration, body, semantics)
 }
 \arguments{
 \item{id}{Stable statement id.}
 
 \item{iterator}{Mutable scalar destination receiving each element.}
 
-\item{iterable}{Typed iterable expression carrying its domain access.}
-
-\item{domain}{Iteration domain evaluated by the loop.}
+\item{iteration}{Backend-neutral iteration plan.}
 
 \item{body}{Procedural loop body.}
 

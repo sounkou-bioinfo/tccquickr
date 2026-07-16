@@ -299,6 +299,51 @@ TccqContractionSpec <- S7::new_class(
   }
 )
 
+#' Iteration implementation metadata
+#'
+#' An iteration spec describes an operation whose result can be consumed as a
+#' virtual one-dimensional iteration space. The shared signature owns argument
+#' and result typing; `extent_arg` selects the argument proving the domain
+#' extent, while `start` defines the first affine induction value. The current
+#' form deliberately represents unit-stride sequences only.
+#'
+#' @param name Human-readable iteration operation name.
+#' @param signature Shared operation signature.
+#' @param extent_arg One-based argument position supplying the domain extent.
+#' @param start First integer value produced by the iteration.
+#' @export
+TccqIterationSpec <- S7::new_class(
+  "TccqIterationSpec",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    signature = TccqOpSignature,
+    extent_arg = S7::class_integer,
+    start = S7::class_integer
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
+      problems <- c(problems, "@name must be a single non-empty string")
+    }
+    if (
+      length(self@extent_arg) != 1L ||
+        is.na(self@extent_arg) ||
+        self@extent_arg < 1L ||
+        any(self@extent_arg > self@signature@arity)
+    ) {
+      problems <- c(problems, "@extent_arg must select an argument accepted by @signature")
+    }
+    if (length(self@start) != 1L || is.na(self@start)) {
+      problems <- c(problems, "@start must be one integer")
+    }
+    if (!identical(self@signature@arity, 1L) || !identical(self@extent_arg, 1L)) {
+      problems <- c(problems, "the current iteration contract must have exactly one extent argument")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Operation implementation descriptor
 #'
 #' @param op Operation or function name.
@@ -316,6 +361,7 @@ TccqContractionSpec <- S7::new_class(
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
+#' @param iteration Optional iteration metadata.
 #' @export
 TccqOpImpl <- S7::new_class(
   "TccqOpImpl",
@@ -333,7 +379,8 @@ TccqOpImpl <- S7::new_class(
     render = S7::new_union(NULL, S7::class_function),
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
-    contraction = S7::new_union(NULL, TccqContractionSpec)
+    contraction = S7::new_union(NULL, TccqContractionSpec),
+    iteration = S7::new_union(NULL, TccqIterationSpec)
   ),
   validator = function(self) {
     problems <- character()
@@ -366,6 +413,29 @@ TccqOpImpl <- S7::new_class(
     }
     if (!is.function(self@supports)) {
       problems <- c(problems, "@supports must be a predicate function")
+    }
+    family_count <- sum(c(
+      !is.null(self@elementwise),
+      !is.null(self@reduction),
+      !is.null(self@contraction),
+      !is.null(self@iteration)
+    ))
+    if (family_count > 1L) {
+      problems <- c(problems, "an operation implementation may declare at most one operation family")
+    }
+    if (!is.null(self@iteration)) {
+      invalid_iteration_effect <-
+        !isTRUE(self@pure) ||
+        isTRUE(self@uses_rapi) ||
+        isTRUE(self@boundary) ||
+        isTRUE(self@effect@writes) ||
+        isTRUE(self@effect@allocates) ||
+        isTRUE(self@effect@boundary) ||
+        isTRUE(self@effect@may_error) ||
+        isTRUE(self@effect@may_warn)
+      if (invalid_iteration_effect) {
+        problems <- c(problems, "virtual iteration implementations must be pure read-only operations")
+      }
     }
     if (length(problems) > 0L) problems
   }
@@ -426,6 +496,7 @@ TccqOpRegistry <- S7::new_class(
 #' @param reduction Optional reduction metadata supplied by the implementation.
 #' @param contraction Optional contraction metadata supplied by the
 #'   implementation.
+#' @param iteration Optional iteration metadata supplied by the implementation.
 #' @param attrs Structured resolution metadata.
 #' @export
 TccqResolvedOp <- S7::new_class(
@@ -444,6 +515,7 @@ TccqResolvedOp <- S7::new_class(
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
+    iteration = S7::new_union(NULL, TccqIterationSpec),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -1264,6 +1336,50 @@ tccq_contraction_spec <- function(
   )
 }
 
+#' Construct iteration implementation metadata
+#'
+#' @inheritParams TccqIterationSpec
+#' @export
+tccq_iteration_spec <- function(name, signature, extent_arg = 1L, start = 1L) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  if (
+    !is.numeric(extent_arg) ||
+      length(extent_arg) != 1L ||
+      is.na(extent_arg) ||
+      extent_arg != as.integer(extent_arg) ||
+      extent_arg < 1L
+  ) {
+    tccq_abort(
+      "schema.invalid_iteration_extent_arg",
+      "`extent_arg` must be one positive integer argument position.",
+      phase = "schema",
+      path = "iteration.extent_arg",
+      data = list(extent_arg = extent_arg)
+    )
+  }
+  if (
+    !is.numeric(start) ||
+      length(start) != 1L ||
+      is.na(start) ||
+      start != as.integer(start)
+  ) {
+    tccq_abort(
+      "schema.invalid_iteration_start",
+      "`start` must be one integer.",
+      phase = "schema",
+      path = "iteration.start",
+      data = list(start = start)
+    )
+  }
+  TccqIterationSpec(
+    name = name,
+    signature = signature,
+    extent_arg = as.integer(extent_arg),
+    start = as.integer(start)
+  )
+}
+
 #' Return a reducer identity literal
 #'
 #' @param spec Reduction metadata.
@@ -1977,6 +2093,7 @@ tccq_op_render_context <- function(language, backend_id, attrs = list()) {
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
+#' @param iteration Optional iteration metadata.
 #' @export
 tccq_op_impl <- function(
   op,
@@ -1991,7 +2108,8 @@ tccq_op_impl <- function(
   render = NULL,
   elementwise = NULL,
   reduction = NULL,
-  contraction = NULL
+  contraction = NULL,
+  iteration = NULL
 ) {
   .tccq_check_character_scalar(op, "op")
   .tccq_check_character_scalar(target, "target")
@@ -2029,6 +2147,28 @@ tccq_op_impl <- function(
   .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
   .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
+  .tccq_check_optional_s7(iteration, TccqIterationSpec, "TccqIterationSpec", "iteration")
+  if (
+    !is.null(iteration) &&
+      (
+        !isTRUE(pure) ||
+          isTRUE(uses_rapi) ||
+          isTRUE(boundary) ||
+          isTRUE(effect@writes) ||
+          isTRUE(effect@allocates) ||
+          isTRUE(effect@boundary) ||
+          isTRUE(effect@may_error) ||
+          isTRUE(effect@may_warn)
+      )
+  ) {
+    tccq_abort(
+      "schema.invalid_iteration_implementation",
+      "Virtual iteration implementations must be pure read-only operations.",
+      phase = "schema",
+      path = "op.iteration",
+      data = list(op = op, effect = effect)
+    )
+  }
 
   TccqOpImpl(
     op = op,
@@ -2043,7 +2183,8 @@ tccq_op_impl <- function(
     render = render,
     elementwise = elementwise,
     reduction = reduction,
-    contraction = contraction
+    contraction = contraction,
+    iteration = iteration
   )
 }
 
@@ -2100,6 +2241,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
     elementwise = implementation@elementwise,
     reduction = implementation@reduction,
     contraction = implementation@contraction,
+    iteration = implementation@iteration,
     attrs = attrs
   )
 }
@@ -2743,6 +2885,31 @@ tccq_default_op_registry <- function() {
     ),
     attrs = list(reduction_axes = 2L, kept_axes = 1L, axis_kind = "rows")
   )
+  seq_len_iteration <- tccq_iteration_spec(
+    "seq_len",
+    signature = tccq_op_signature(
+      "seq_len",
+      1L,
+      result_type = function(input_types) {
+        input_type <- input_types[[1L]]
+        if (
+          input_type@shape@rank != 0L ||
+            !input_type@base %in% c("integer", "double")
+        ) {
+          tccq_abort(
+            "ops.invalid_sequence_extent_type",
+            "`seq_len` iteration requires one scalar integer or double extent.",
+            phase = "ops",
+            path = "iteration.extent",
+            data = list(type = input_type)
+          )
+        }
+        tccq_type("integer", tccq_shape(tccq_dim_unknown()))
+      }
+    ),
+    extent_arg = 1L,
+    start = 1L
+  )
   language_ops <- c(
     "{", "(", "<-", "<<-", "->", "->>", "=",
     "if", "for", "while", "repeat", "break", "next", "switch", "function",
@@ -2764,6 +2931,13 @@ tccq_default_op_registry <- function() {
       )
     }),
     list(
+      tccq_op_impl(
+        "seq_len",
+        target = "native",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE),
+        iteration = seq_len_iteration
+      ),
       tccq_op_impl(
         "sum",
         target = "pure_c",

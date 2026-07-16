@@ -105,6 +105,47 @@ expect_false(tccq_registry_supports(
   tccq_op_context(target = "pure_c")
 ))
 
+resolved_seq_len <- tccq_resolve_call(
+  default_registry,
+  tccq_call("seq_len", expr = quote(seq_len(n))),
+  tccq_op_context()
+)
+expect_true(resolved_seq_len@success)
+expect_equal(resolved_seq_len@value@target, "native")
+expect_true(S7::S7_inherits(
+  resolved_seq_len@value@iteration,
+  TccqIterationSpec
+))
+expect_equal(resolved_seq_len@value@iteration@signature@arity, 1L)
+expect_equal(resolved_seq_len@value@iteration@extent_arg, 1L)
+expect_equal(resolved_seq_len@value@iteration@start, 1L)
+invalid_iteration_impl <- tryCatch(
+  tccq_op_impl(
+    "invalid_iteration",
+    target = "neutral",
+    pure = FALSE,
+    iteration = resolved_seq_len@value@iteration
+  ),
+  tccq_error = identity
+)
+expect_true(inherits(invalid_iteration_impl, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(invalid_iteration_impl)@code,
+  "schema.invalid_iteration_implementation"
+)
+bad_iteration_signature <- tryCatch(
+  tccq_iteration_spec(
+    "bad_iteration",
+    tccq_op_signature(
+      "bad_iteration",
+      c(1L, 2L),
+      result_type = function(input_types) input_types[[1L]]
+    )
+  ),
+  error = identity
+)
+expect_true(inherits(bad_iteration_signature, "error"))
+
 bad_elementwise_arity <- tryCatch(
   tccq_elementwise_spec(
     "bad",

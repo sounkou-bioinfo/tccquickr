@@ -10,8 +10,7 @@ TccqFor(
   body = TccqBlock(),
   semantics = TccqCallSemantics(),
   iterator = TccqWriteTarget(),
-  iterable = TccqExpression(),
-  domain = TccqDomain()
+  iteration = TccqIterationPlan()
 )
 }
 \arguments{
@@ -25,13 +24,11 @@ TccqFor(
 
 \item{iterator}{Mutable scalar destination receiving each element.}
 
-\item{iterable}{Typed iterable expression carrying its domain access.}
-
-\item{domain}{Iteration domain evaluated by the loop.}
+\item{iteration}{Backend-neutral iteration plan.}
 }
 \description{
-A for loop evaluates one typed iterable and assigns each selected element to
-its iteration cell before evaluating the body. The iteration domain and
-access are explicit so source backends do not reconstruct traversal from R
-syntax. The current concrete slice accepts rank-1 atomic iterables.
+A for loop evaluates one typed iteration plan and assigns each selected
+element to its iteration cell before evaluating the body. Source evaluation,
+element selection, and iteration domain are explicit so source backends do
+not reconstruct traversal from R syntax.
 }

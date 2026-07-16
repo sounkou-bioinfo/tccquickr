@@ -56,6 +56,38 @@ TccqExpressionReference <- S7::new_class(
   }
 )
 
+#' Typed declared-dimension reference
+#'
+#' A dimension reference identifies the scalar ABI extent corresponding to one
+#' declared symbolic dimension. It is distinct from an ordinary scalar binding
+#' with the same source spelling.
+#'
+#' @inheritParams TccqExpressionReference
+#' @param dimension Declared symbolic dimension supplied by the reference.
+#' @export
+TccqDimensionReference <- S7::new_class(
+  "TccqDimensionReference",
+  package = "tccquickr",
+  parent = TccqExpressionReference,
+  properties = list(dimension = TccqDim),
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@dimension@kind, "symbol")) {
+      problems <- c(problems, "@dimension must be symbolic")
+    }
+    if (!identical(self@symbol, self@dimension@label)) {
+      problems <- c(problems, "@symbol must name @dimension")
+    }
+    if (!is.null(self@binding) || length(self@slice_offsets) > 0L) {
+      problems <- c(problems, "dimension references cannot carry binding or slice facts")
+    }
+    if (!is.null(self@access) && !identical(self@access@kind, "scalar")) {
+      problems <- c(problems, "dimension references may carry only scalar access")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Backend-neutral expression tree
 #'
 #' `TccqExpression` is the small tree form consumed by source printers. It is
@@ -224,6 +256,23 @@ tccq_expression_reference <- function(
   )
 }
 
+#' Construct a typed declared-dimension reference
+#'
+#' @inheritParams TccqDimensionReference
+#' @export
+tccq_dimension_reference <- function(source_value_id, dimension) {
+  .tccq_check_character_scalar(source_value_id, "source_value_id")
+  .tccq_check_s7(dimension, TccqDim, "TccqDim", "dimension")
+  TccqDimensionReference(
+    source_value_id = source_value_id,
+    symbol = dimension@label,
+    binding = NULL,
+    slice_offsets = integer(),
+    access = NULL,
+    dimension = dimension
+  )
+}
+
 #' Construct a backend-neutral expression
 #'
 #' @param id Stable expression id.
@@ -350,7 +399,7 @@ S7::method(tccq_expression_tree, TccqValueGraph) <- function(graph, value_id = N
       return(NULL)
     }
 
-    if (value@op %in% c("formal", "dim_symbol")) {
+    if (identical(value@op, "formal")) {
       return(tccq_expression(
         id = current_value_id,
         kind = "reference",
@@ -361,6 +410,20 @@ S7::method(tccq_expression_tree, TccqValueGraph) <- function(graph, value_id = N
         reference = tccq_expression_reference(
           current_value_id,
           symbol = value@attrs$symbol
+        )
+      ))
+    }
+    if (identical(value@op, "dim_symbol")) {
+      return(tccq_expression(
+        id = current_value_id,
+        kind = "reference",
+        value_id = current_value_id,
+        op = value@op,
+        type = value@type,
+        effect = value@effect,
+        reference = tccq_dimension_reference(
+          current_value_id,
+          tccq_dim_symbol(value@attrs$symbol)
         )
       ))
     }
@@ -1101,17 +1164,173 @@ TccqRepeat <- S7::new_class(
   }
 )
 
+#' Backend-neutral iteration plan
+#'
+#' An iteration plan separates one-time source evaluation from selection of the
+#' current element. Stored-vector iteration carries a typed element expression
+#' with an access map. Virtual unit sequences carry an affine index expression
+#' and the resolved operation implementation that defines the sequence.
+#'
+#' @param source Expression evaluated once to establish iteration.
+#' @param domain One-dimensional iteration domain.
+#' @param element Current element expression or affine induction value.
+#' @param element_type Scalar type assigned to the iteration cell.
+#' @param resolved_op Resolved operation for virtual iteration, or `NULL` for
+#'   stored-value iteration.
+#' @param semantics Evaluator facts for the virtual iteration call, or `NULL`.
+#' @param effect Effect summary for source evaluation and element selection.
+#' @export
+TccqIterationPlan <- S7::new_class(
+  "TccqIterationPlan",
+  package = "tccquickr",
+  properties = list(
+    source = TccqExpression,
+    domain = TccqDomain,
+    element = S7::new_union(TccqExpression, TccqIndexExpr),
+    element_type = TccqType,
+    resolved_op = S7::new_union(NULL, TccqResolvedOp),
+    semantics = S7::new_union(NULL, TccqCallSemantics),
+    effect = TccqEffect
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (self@domain@shape@rank != 1L) {
+      problems <- c(problems, "@domain must be one-dimensional")
+    }
+    if (self@element_type@shape@rank != 0L) {
+      problems <- c(problems, "@element_type must be scalar")
+    }
+
+    element_is_expression <- S7::S7_inherits(self@element, TccqExpression)
+    element_is_induction <- S7::S7_inherits(self@element, TccqIndexExpr)
+    if (element_is_expression) {
+      access <- if (is.null(self@element@reference)) {
+        NULL
+      } else {
+        self@element@reference@access
+      }
+      source_has_direct_reference <-
+        identical(self@source@kind, "reference") &&
+        !is.null(self@source@reference) &&
+        is.null(self@source@reference@access) &&
+        length(self@source@reference@slice_offsets) == 0L
+      if (!source_has_direct_reference) {
+        problems <- c(problems, "stored iteration source must be one direct reference")
+      }
+      if (
+        self@source@type@shape@rank != 1L ||
+          !identical(self@domain@shape, self@source@type@shape)
+      ) {
+        problems <- c(problems, "stored iteration source and domain must share one rank-1 shape")
+      }
+      if (
+        !identical(self@element@type, self@source@type) ||
+          !identical(self@element_type@base, self@source@type@base)
+      ) {
+        problems <- c(problems, "stored iteration element facts must match the source base type")
+      }
+      if (
+        !S7::S7_inherits(access, TccqAccess) ||
+          !identical(access@domain, self@domain) ||
+          !identical(access@kind, "identity")
+      ) {
+        problems <- c(problems, "stored iteration elements must carry identity access over @domain")
+      } else {
+        exact_identity <- length(access@index_map) == 1L &&
+          length(self@domain@axes) == 1L &&
+          identical(access@index_map[[1L]]@axis, self@domain@axes[[1L]]) &&
+          identical(access@index_map[[1L]]@offset, 0L) &&
+          identical(access@value_id, self@source@value_id)
+        if (!exact_identity) {
+          problems <- c(problems, "stored iteration access must select the current source element")
+        }
+      }
+      if (!is.null(self@resolved_op) || !is.null(self@semantics)) {
+        problems <- c(problems, "stored iteration must not carry virtual-operation facts")
+      }
+    }
+    if (element_is_induction) {
+      source_dimension <- if (length(self@domain@shape@dims) == 1L) {
+        self@domain@shape@dims[[1L]]
+      } else {
+        NULL
+      }
+      source_is_extent_reference <-
+        identical(self@source@kind, "reference") &&
+        S7::S7_inherits(self@source@reference, TccqDimensionReference) &&
+        is.null(self@source@reference@access) &&
+        S7::S7_inherits(source_dimension, TccqDim) &&
+        identical(source_dimension, self@source@reference@dimension)
+      if (self@source@type@shape@rank != 0L) {
+        problems <- c(problems, "virtual iteration source must be scalar")
+      }
+      if (!source_is_extent_reference) {
+        problems <- c(problems, "virtual iteration source must match its symbolic domain extent")
+      }
+      if (!self@element_type@base %in% c("integer", "double")) {
+        problems <- c(problems, "affine induction values must be integer or double scalars")
+      }
+      if (
+        length(self@domain@axes) != 1L ||
+          !identical(self@element@axis, self@domain@axes[[1L]]) ||
+          is.null(self@resolved_op) ||
+          !S7::S7_inherits(self@resolved_op@iteration, TccqIterationSpec) ||
+          is.null(self@semantics)
+      ) {
+        problems <- c(problems, "virtual iteration requires aligned domain, implementation, and evaluator facts")
+      } else {
+        if (!identical(self@element@offset, self@resolved_op@iteration@start)) {
+          problems <- c(problems, "affine induction offset must match the iteration implementation start")
+        }
+        if (!identical(self@resolved_op@call@id, self@semantics@call@id)) {
+          problems <- c(problems, "virtual iteration call and evaluator facts must have the same id")
+        }
+        result_type <- tccq_op_signature_result_type(
+          self@resolved_op@iteration@signature,
+          list(self@source@type)
+        )
+        if (
+          !result_type@success ||
+            result_type@value@shape@rank != 1L ||
+            !identical(result_type@value@base, self@element_type@base)
+        ) {
+          problems <- c(problems, "virtual iteration element type must satisfy its operation signature")
+        }
+        if (
+          !isTRUE(self@resolved_op@pure) ||
+            isTRUE(self@resolved_op@boundary) ||
+            !self@semantics@forcing_policy %in% c("eager", "lazy") ||
+            isTRUE(self@semantics@control) ||
+            isTRUE(self@semantics@replacement)
+        ) {
+          problems <- c(problems, "virtual iteration must be a pure ordinary non-boundary call")
+        }
+      }
+    }
+    expected_effect <- self@source@effect
+    if (element_is_expression) {
+      expected_effect <- tccq_effect_union(expected_effect, self@element@effect)
+    }
+    if (!is.null(self@resolved_op)) {
+      expected_effect <- tccq_effect_union(expected_effect, self@resolved_op@effect)
+    }
+    if (!identical(self@effect, expected_effect)) {
+      problems <- c(problems, "@effect must include source, element, and iteration-operation effects")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Neutral for statement
 #'
-#' A for loop evaluates one typed iterable and assigns each selected element to
-#' its iteration cell before evaluating the body. The iteration domain and
-#' access are explicit so source backends do not reconstruct traversal from R
-#' syntax. The current concrete slice accepts rank-1 atomic iterables.
+#' A for loop evaluates one typed iteration plan and assigns each selected
+#' element to its iteration cell before evaluating the body. Source evaluation,
+#' element selection, and iteration domain are explicit so source backends do
+#' not reconstruct traversal from R syntax.
 #'
 #' @inheritParams TccqLoop
 #' @param iterator Mutable scalar destination receiving each element.
-#' @param iterable Typed iterable expression carrying its domain access.
-#' @param domain Iteration domain evaluated by the loop.
+#' @param iteration Backend-neutral iteration plan.
 #' @export
 TccqFor <- S7::new_class(
   "TccqFor",
@@ -1119,8 +1338,7 @@ TccqFor <- S7::new_class(
   parent = TccqLoop,
   properties = list(
     iterator = TccqWriteTarget,
-    iterable = TccqExpression,
-    domain = TccqDomain
+    iteration = TccqIterationPlan
   ),
   validator = function(self) {
     problems <- character()
@@ -1134,50 +1352,20 @@ TccqFor <- S7::new_class(
     ) {
       problems <- c(problems, "@iterator must be a mutable scalar cell target")
     }
-    if (self@iterable@type@shape@rank != 1L) {
-      problems <- c(problems, "@iterable must currently be a rank-1 value")
-    }
-    if (!identical(self@domain@shape, self@iterable@type@shape)) {
-      problems <- c(problems, "@domain shape must match the iterable shape")
-    }
-    if (!identical(self@iterator@type@base, self@iterable@type@base)) {
-      problems <- c(problems, "@iterator and @iterable must have the same base type")
-    }
-    access <- if (is.null(self@iterable@reference)) {
-      NULL
-    } else {
-      self@iterable@reference@access
-    }
-    if (
-      !S7::S7_inherits(access, TccqAccess) ||
-        !identical(access@domain, self@domain) ||
-        !identical(access@kind, "identity")
-    ) {
-      problems <- c(problems, "@iterable must carry an identity access over @domain")
-    }
-    if (
-      S7::S7_inherits(access, TccqAccess) &&
-        self@domain@shape@rank == 1L &&
-        length(self@domain@axes) == 1L
-    ) {
-      exact_identity <- length(access@index_map) == 1L &&
-        identical(access@index_map[[1L]]@axis, self@domain@axes[[1L]]) &&
-        identical(access@index_map[[1L]]@offset, 0L)
-      if (!exact_identity) {
-        problems <- c(problems, "@iterable identity access must select the current domain element")
-      }
+    if (!identical(self@iterator@type, self@iteration@element_type)) {
+      problems <- c(problems, "@iterator type must match the iteration element type")
     }
     expected_effect <- Reduce(
       tccq_effect_union,
       list(
-        self@iterable@effect,
+        self@iteration@effect,
         self@body@effect,
         tccq_effect(writes = TRUE)
       ),
       init = tccq_effect()
     )
     if (!identical(self@effect, expected_effect)) {
-      problems <- c(problems, "@effect must include iterable evaluation, iterator writes, and body effects")
+      problems <- c(problems, "@effect must include iteration, iterator writes, and body effects")
     }
     if (length(problems) > 0L) problems
   }
@@ -1393,29 +1581,74 @@ tccq_repeat <- function(id, body, semantics) {
   TccqRepeat(id = id, effect = body@effect, body = body, semantics = semantics)
 }
 
+#' Construct a backend-neutral iteration plan
+#'
+#' @inheritParams TccqIterationPlan
+#' @export
+tccq_iteration_plan <- function(
+  source,
+  domain,
+  element,
+  element_type,
+  resolved_op = NULL,
+  semantics = NULL
+) {
+  .tccq_check_s7(source, TccqExpression, "TccqExpression", "source")
+  .tccq_check_s7(domain, TccqDomain, "TccqDomain", "domain")
+  if (
+    !S7::S7_inherits(element, TccqExpression) &&
+      !S7::S7_inherits(element, TccqIndexExpr)
+  ) {
+    tccq_abort(
+      "schema.invalid_iteration_element",
+      "`element` must be a <TccqExpression> or <TccqIndexExpr> value.",
+      phase = "schema",
+      path = "iteration.element",
+      data = list(element = element)
+    )
+  }
+  .tccq_check_s7(element_type, TccqType, "TccqType", "element_type")
+  .tccq_check_optional_s7(resolved_op, TccqResolvedOp, "TccqResolvedOp", "resolved_op")
+  .tccq_check_optional_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
+  effect <- source@effect
+  if (S7::S7_inherits(element, TccqExpression)) {
+    effect <- tccq_effect_union(effect, element@effect)
+  }
+  if (!is.null(resolved_op)) {
+    effect <- tccq_effect_union(effect, resolved_op@effect)
+  }
+  TccqIterationPlan(
+    source = source,
+    domain = domain,
+    element = element,
+    element_type = element_type,
+    resolved_op = resolved_op,
+    semantics = semantics,
+    effect = effect
+  )
+}
+
 #' Construct a neutral for statement
 #'
 #' @inheritParams TccqFor
 #' @export
-tccq_for <- function(id, iterator, iterable, domain, body, semantics) {
+tccq_for <- function(id, iterator, iteration, body, semantics) {
   .tccq_check_character_scalar(id, "id")
   .tccq_check_s7(iterator, TccqWriteTarget, "TccqWriteTarget", "iterator")
-  .tccq_check_s7(iterable, TccqExpression, "TccqExpression", "iterable")
-  .tccq_check_s7(domain, TccqDomain, "TccqDomain", "domain")
+  .tccq_check_s7(iteration, TccqIterationPlan, "TccqIterationPlan", "iteration")
   .tccq_check_s7(body, TccqBlock, "TccqBlock", "body")
   .tccq_check_s7(semantics, TccqCallSemantics, "TccqCallSemantics", "semantics")
   TccqFor(
     id = id,
     effect = Reduce(
       tccq_effect_union,
-      list(iterable@effect, body@effect, tccq_effect(writes = TRUE)),
+      list(iteration@effect, body@effect, tccq_effect(writes = TRUE)),
       init = tccq_effect()
     ),
     body = body,
     semantics = semantics,
     iterator = iterator,
-    iterable = iterable,
-    domain = domain
+    iteration = iteration
   )
 }
 

@@ -1350,10 +1350,41 @@ vector_for_statement <- Filter(
 )[[1L]]
 expect_identical(
   backend_interface(vector_for_c)@index_names,
-  vector_for_statement@domain@axes
+  vector_for_statement@iteration@domain@axes
 )
 expect_true(grepl("for (int statement_", backend_source(vector_for_c), fixed = TRUE))
 expect_true(grepl("do statement_", backend_source(vector_for_fortran), fixed = TRUE))
+
+extent_sequence_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) {
+    total <- total + index
+  }
+  total
+}
+extent_sequence_program <- tccq_analyze(extent_sequence_sum, strict = TRUE)@value
+extent_sequence_c <- tccq_plan_backend(
+  extent_sequence_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+extent_sequence_fortran <- tccq_plan_backend(
+  extent_sequence_program,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(extent_sequence_c@success)
+expect_true(extent_sequence_fortran@success)
+extent_sequence_statement <- Filter(
+  function(statement) S7::S7_inherits(statement, TccqFor),
+  backend_products(extent_sequence_c)@body@statements
+)[[1L]]
+expect_true(S7::S7_inherits(
+  extent_sequence_statement@iteration@element,
+  TccqIndexExpr
+))
+expect_equal(extent_sequence_statement@iterator@type@base, "integer")
 
 completion_sensitive_sum <- function(x) {
   declare(type(x = double(n)))
@@ -3881,6 +3912,45 @@ if (can_build_shared_library("fortran")) {
   )
   expect_true(vector_for_fortran_shared@success)
   check_vector_for(backend_callable(vector_for_fortran_shared))
+}
+
+extent_sequence_inputs <- list(numeric(), 1, numeric(5))
+extent_sequence_expected <- c(0, 1, 15)
+check_extent_sequence <- function(callable) {
+  expect_equal(
+    vapply(extent_sequence_inputs, callable, numeric(1)),
+    extent_sequence_expected
+  )
+}
+
+if (rtinycc_jit_available) {
+  extent_sequence_jit <- tccq_plan_backend(
+    extent_sequence_program,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(extent_sequence_jit@success)
+  check_extent_sequence(backend_callable(extent_sequence_jit))
+}
+
+if (can_build_shared_library("c")) {
+  extent_sequence_c_shared <- tccq_plan_backend(
+    extent_sequence_program,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(extent_sequence_c_shared@success)
+  check_extent_sequence(backend_callable(extent_sequence_c_shared))
+}
+
+if (can_build_shared_library("fortran")) {
+  extent_sequence_fortran_shared <- tccq_plan_backend(
+    extent_sequence_program,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(extent_sequence_fortran_shared@success)
+  check_extent_sequence(backend_callable(extent_sequence_fortran_shared))
 }
 
 completion_sensitive_inputs <- list(
