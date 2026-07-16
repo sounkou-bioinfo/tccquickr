@@ -500,3 +500,78 @@ expect_true(tccq_registry_supports(
 expect_false(opaque_impl@uses_rapi)
 expect_false(opaque_impl@boundary)
 expect_equal(opaque_impl@target, "opaque")
+
+sigmoid_body <- tccq_op_body(function(value) 1 / (1 + exp(-value)))
+expect_true(S7::S7_inherits(sigmoid_body, TccqOpBody))
+expect_equal(sigmoid_body@parameters, "value")
+expect_equal(
+  vapply(sigmoid_body@call_index@calls, function(call) call@name, character(1)),
+  c("/", "(", "+", "exp", "-")
+)
+
+body_with_default <- tryCatch(
+  tccq_op_body(function(value = 0) value),
+  tccq_error = identity
+)
+expect_true(inherits(body_with_default, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(body_with_default)@code,
+  "schema.invalid_op_body_formals"
+)
+body_with_control <- tryCatch(
+  tccq_op_body(function(value) if (value) 1 else 0),
+  tccq_error = identity
+)
+expect_true(inherits(body_with_control, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(body_with_control)@code,
+  "schema.unsupported_op_body_semantics"
+)
+body_with_special_forcing <- tryCatch(
+  tccq_op_body(function(left, right) left && right),
+  tccq_error = identity
+)
+expect_true(inherits(body_with_special_forcing, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(body_with_special_forcing)@code,
+  "schema.unsupported_op_body_semantics"
+)
+
+sigmoid_spec <- tccq_elementwise_spec(
+  "sigmoid",
+  1L,
+  result_type = function(input_types, result_shape) {
+    tccq_type("double", result_shape)
+  }
+)
+sigmoid_impl <- tccq_op_impl(
+  "sigmoid",
+  target = "neutral",
+  region_kind = "kernel",
+  effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+  body = sigmoid_body,
+  elementwise = sigmoid_spec
+)
+expect_true(s7contract::has_trait(sigmoid_impl, TccqOpImplementation))
+resolved_sigmoid <- tccq_resolve_call(
+  tccq_op_registry_add(default_registry, sigmoid_impl),
+  tccq_call("sigmoid"),
+  tccq_op_context()
+)
+expect_true(resolved_sigmoid@success)
+expect_identical(resolved_sigmoid@value@body, sigmoid_body)
+
+invalid_body_target <- tryCatch(
+  tccq_op_impl(
+    "sigmoid",
+    target = "pure_c",
+    body = sigmoid_body,
+    elementwise = sigmoid_spec
+  ),
+  tccq_error = identity
+)
+expect_true(inherits(invalid_body_target, "tccq_error"))
+expect_equal(
+  tccq_condition_diagnostic(invalid_body_target)@code,
+  "schema.invalid_op_body_implementation"
+)

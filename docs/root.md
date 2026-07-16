@@ -15,6 +15,16 @@ resolved implementation used by source printers. A recycling `TccqAccess` owns
 its `TccqShape` consumer order directly; access metadata is not a secondary
 shape protocol.
 
+Composite operation definitions now enter the same handoff instead of adding a
+new backend convention. `TccqOpBody` owns one typed call index and one
+parameterized R expression. Lowering expands it through the registry, checks
+its signature result and declared effect envelope, and returns the resulting
+primitive value graph. C, Rtinycc, and Fortran therefore compile the same
+expanded expression and never recognize the composite operation's spelling.
+Bodies are currently pure elementwise expressions without control,
+replacement, special forcing, free-symbol capture, defaults, or `...`; richer
+body structure must first acquire a typed middle-end representation.
+
 The current useful center is the typed loop-nest path. Elementwise maps,
 reductions, axis reductions, contractions, intermediate materialization,
 dimension symbols, and rank-mixed recycling are represented before printing.

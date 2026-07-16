@@ -105,7 +105,27 @@ storage, and backend planning consume that typed payload instead of
 rediscovering semantics from `TccqValue@op` or a handful of loose attributes.
 Operation implementations may also expose a source renderer through
 `tccq_op_render()`. That renderer is an implementation capability, not a
-backend-local switch over operation strings.
+backend-local switch over operation strings. It is the terminal capability for
+an operation that remains a leaf in the neutral expression tree.
+
+A pure composite elementwise implementation can instead carry `TccqOpBody`.
+The body owns ordered parameters, one parsed R expression, and its typed
+`TccqCallIndex`. It has no source renderer and its implementation target is
+`neutral`. Lowering binds each parameter to an already-lowered input value and
+recursively lowers the body through the active operation registry. Exact call
+tags bind first and remaining arguments bind positionally; partial or duplicate
+tags are structured refusals rather than silently different call semantics. The body
+must produce the exact result type computed by its `TccqOpSignature`, and the
+effects of the expanded primitive values must be covered by the implementation
+effect contract. Recursive expansion, an unavailable body operation, a type
+mismatch, or an undeclared effect returns a classed lowering diagnostic. A
+successful expansion returns the primitive result value directly, so the
+composite operation name never enters `TccqExpression`, fusion, loop planning,
+or a backend printer. This is operation composition in the typed middle end,
+not source substitution and not evaluation of an arbitrary R closure. Body
+symbols resolve only against body parameters; they cannot capture a caller
+formal, local, cell, or dimension. Control, replacement, and special-forcing
+calls remain outside this body contract.
 
 `TccqOpSignature` is the shared operation contract for arity, result-domain
 policy, and result typing. It is deliberately smaller than a full type system,
@@ -122,8 +142,8 @@ Elementwise calls follow operation metadata too. A call lowers as elementwise
 only when the resolved operation carries a `TccqElementwiseSpec`, which carries
 a `TccqOpSignature`. The default registry provides a small numeric elementwise
 surface for arithmetic, unary negation, powers, `sqrt`, and `exp`, but another
-registry can add a source-rendered call such as `square(x)` without changing the
-lowerer or printers.
+registry can add a source-rendered leaf such as `square(x)` or a neutral
+composite such as `1 / (1 + exp(-x))` without changing either source printer.
 
 Reducers follow the same rule. A reducer is not recognized because the lowerer
 knows the text `sum`; a call lowers as a reduction only when the resolved

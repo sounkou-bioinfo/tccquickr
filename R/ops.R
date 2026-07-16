@@ -344,6 +344,81 @@ TccqIterationSpec <- S7::new_class(
   }
 )
 
+#' Backend-neutral operation body
+#'
+#' An operation body is one R expression whose symbols are bound by exact call
+#' tags and then positionally through `@parameters`. Its call index preserves
+#' the evaluator facts observed when the body was declared. Lowering expands
+#' the body into ordinary typed values before fusion, loop-nest planning, or
+#' backend rendering.
+#'
+#' @param parameters Ordered operation parameter names.
+#' @param expression Unevaluated R expression implementing the operation.
+#' @param call_index Typed calls and evaluator facts for `expression`.
+#' @export
+TccqOpBody <- S7::new_class(
+  "TccqOpBody",
+  package = "tccquickr",
+  properties = list(
+    parameters = S7::class_character,
+    expression = S7::new_union(S7::class_language, S7::class_atomic),
+    call_index = TccqCallIndex
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@parameters) == 0L ||
+        anyNA(self@parameters) ||
+        any(!nzchar(self@parameters)) ||
+        anyDuplicated(self@parameters)
+    ) {
+      problems <- c(problems, "@parameters must be unique non-empty names")
+    }
+    if ("..." %in% self@parameters) {
+      problems <- c(problems, "operation bodies cannot have a `...` parameter")
+    }
+    if (is.atomic(self@expression) && length(self@expression) != 1L) {
+      problems <- c(problems, "atomic operation bodies must be scalar")
+    }
+
+    observed_calls <- tccq_collect_calls(self@expression)
+    calls_align <- length(observed_calls) == length(self@call_index@calls) && all(vapply(
+      seq_along(observed_calls),
+      function(position) {
+        observed <- observed_calls[[position]]
+        indexed <- self@call_index@calls[[position]]
+        identical(observed@name, indexed@name) &&
+          identical(observed@expr, indexed@expr) &&
+          identical(observed@kind, indexed@kind) &&
+          identical(observed@arity, indexed@arity) &&
+          identical(observed@argument_names, indexed@argument_names)
+      },
+      logical(1)
+    ))
+    if (!calls_align) {
+      problems <- c(problems, "@call_index must describe @expression one-to-one")
+    }
+    if (any(vapply(
+      self@call_index@semantics,
+      function(semantics) {
+        isTRUE(semantics@control) ||
+          isTRUE(semantics@replacement) ||
+          identical(semantics@forcing_policy, "special")
+      },
+      logical(1)
+    ))) {
+      problems <- c(
+        problems,
+        paste0(
+          "the current neutral operation body supports expressions without ",
+          "control, replacement, or special-forcing calls"
+        )
+      )
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
 #' Operation implementation descriptor
 #'
 #' @param op Operation or function name.
@@ -358,6 +433,7 @@ TccqIterationSpec <- S7::new_class(
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
 #' @param render Optional source renderer receiving operand strings and a
 #'   `TccqOpRenderContext`.
+#' @param body Optional backend-neutral operation body.
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
@@ -377,6 +453,7 @@ TccqOpImpl <- S7::new_class(
     effect = TccqEffect,
     supports = S7::class_function,
     render = S7::new_union(NULL, S7::class_function),
+    body = S7::new_union(NULL, TccqOpBody),
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
@@ -413,6 +490,28 @@ TccqOpImpl <- S7::new_class(
     }
     if (!is.function(self@supports)) {
       problems <- c(problems, "@supports must be a predicate function")
+    }
+    if (!is.null(self@body)) {
+      body_has_invalid_implementation <-
+        !identical(self@target, "neutral") ||
+        !isTRUE(self@pure) ||
+        isTRUE(self@uses_rapi) ||
+        isTRUE(self@boundary) ||
+        isTRUE(self@effect@writes) ||
+        isTRUE(self@effect@allocates) ||
+        isTRUE(self@effect@boundary) ||
+        !is.null(self@render) ||
+        !S7::S7_inherits(self@elementwise, TccqElementwiseSpec)
+      if (body_has_invalid_implementation) {
+        problems <- c(
+          problems,
+          "neutral operation bodies require a pure, renderer-free elementwise implementation"
+        )
+      } else if (
+        !identical(self@elementwise@signature@arity, as.integer(length(self@body@parameters)))
+      ) {
+        problems <- c(problems, "neutral operation body parameters must match the elementwise arity")
+      }
     }
     family_count <- sum(c(
       !is.null(self@elementwise),
@@ -497,6 +596,7 @@ TccqOpRegistry <- S7::new_class(
 #' @param contraction Optional contraction metadata supplied by the
 #'   implementation.
 #' @param iteration Optional iteration metadata supplied by the implementation.
+#' @param body Optional backend-neutral body supplied by the implementation.
 #' @param attrs Structured resolution metadata.
 #' @export
 TccqResolvedOp <- S7::new_class(
@@ -512,6 +612,7 @@ TccqResolvedOp <- S7::new_class(
     boundary = S7::class_logical,
     pure = S7::class_logical,
     effect = TccqEffect,
+    body = S7::new_union(NULL, TccqOpBody),
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
@@ -547,6 +648,29 @@ TccqResolvedOp <- S7::new_class(
       if (length(field_value) != 1L || is.na(field_value)) {
         problems <- c(problems, sprintf("@%s must be a single TRUE/FALSE value", field_name))
       }
+    }
+    implementation_matches_call <- self@implementation@op %in% c(
+      self@call@name,
+      TCCQ_ANY_OP
+    )
+    if (!implementation_matches_call) {
+      problems <- c(problems, "@implementation must handle @call")
+    }
+    implementation_snapshot_matches <-
+      identical(self@target, self@implementation@target) &&
+      identical(self@region_kind, self@implementation@region_kind) &&
+      identical(self@memory_space, self@implementation@memory_space) &&
+      identical(self@uses_rapi, self@implementation@uses_rapi) &&
+      identical(self@boundary, self@implementation@boundary) &&
+      identical(self@pure, self@implementation@pure) &&
+      identical(self@effect, self@implementation@effect) &&
+      identical(self@body, self@implementation@body) &&
+      identical(self@elementwise, self@implementation@elementwise) &&
+      identical(self@reduction, self@implementation@reduction) &&
+      identical(self@contraction, self@implementation@contraction) &&
+      identical(self@iteration, self@implementation@iteration)
+    if (!implementation_snapshot_matches) {
+      problems <- c(problems, "resolved implementation fields must match @implementation")
     }
     if (length(problems) > 0L) problems
   }
@@ -2077,6 +2201,113 @@ tccq_op_render_context <- function(language, backend_id, attrs = list()) {
   )
 }
 
+#' Construct a backend-neutral operation body
+#'
+#' `fn` supplies only ordered parameter names and one implementation expression;
+#' parameter types come from the operation signature at each expansion site.
+#' Exact call tags bind first and remaining arguments bind positionally. Partial
+#' tags, defaults, and `...` are excluded because their complete R argument and
+#' promise semantics are not represented by this expression-body contract.
+#'
+#' @param fn Function with simple formals and one implementation expression.
+#' @export
+tccq_op_body <- function(fn) {
+  if (!is.function(fn)) {
+    tccq_abort(
+      "schema.invalid_op_body",
+      "`fn` must be a function.",
+      phase = "schema",
+      path = "op_body.fn",
+      data = list(actual = typeof(fn))
+    )
+  }
+
+  formal_values <- as.list(formals(fn))
+  parameters <- names(formal_values)
+  simple_formals <- length(parameters) > 0L &&
+    !anyNA(parameters) &&
+    all(nzchar(parameters)) &&
+    !anyDuplicated(parameters) &&
+    !"..." %in% parameters &&
+    all(vapply(
+      formal_values,
+      function(default) identical(default, quote(expr = )),
+      logical(1)
+    ))
+  if (!simple_formals) {
+    tccq_abort(
+      "schema.invalid_op_body_formals",
+      "An operation body needs unique simple formals without defaults or `...`.",
+      phase = "schema",
+      path = "op_body.parameters",
+      data = list(parameters = parameters)
+    )
+  }
+
+  implementation_forms <- if (
+    is.call(body(fn)) && identical(tccq_call_name(body(fn)), "{")
+  ) {
+    as.list(body(fn))[-1L]
+  } else {
+    list(body(fn))
+  }
+  if (length(implementation_forms) != 1L) {
+    tccq_abort(
+      "schema.invalid_op_body_expression_count",
+      "An operation body must contain exactly one expression.",
+      phase = "schema",
+      path = "op_body.expression",
+      data = list(expressions = length(implementation_forms))
+    )
+  }
+  expression <- implementation_forms[[1L]]
+  if (!is.language(expression) && !(is.atomic(expression) && length(expression) == 1L)) {
+    tccq_abort(
+      "schema.invalid_op_body_expression",
+      "An operation body must be one language expression or scalar literal.",
+      phase = "schema",
+      path = "op_body.expression",
+      data = list(actual = typeof(expression), length = length(expression))
+    )
+  }
+
+  call_index <- tccq_collect_call_index(
+    expression,
+    env = environment(fn),
+    attrs = list(origin = "operation_body")
+  )
+  evaluator_sensitive_calls <- Filter(
+    function(semantics) {
+      isTRUE(semantics@control) ||
+        isTRUE(semantics@replacement) ||
+        identical(semantics@forcing_policy, "special")
+    },
+    call_index@semantics
+  )
+  if (length(evaluator_sensitive_calls) > 0L) {
+    tccq_abort(
+      "schema.unsupported_op_body_semantics",
+      paste0(
+        "The current neutral operation body cannot contain control, replacement, ",
+        "or special-forcing calls."
+      ),
+      phase = "schema",
+      path = "op_body.call_index",
+      data = list(calls = vapply(
+        evaluator_sensitive_calls,
+        function(semantics) semantics@call@name,
+        character(1)
+      ))
+    )
+  }
+
+  TccqOpBody(
+    parameters = parameters,
+    expression = expression,
+    call_index = call_index
+  )
+}
+
 #' Construct an operation implementation
 #'
 #' @param op Operation or function name.
@@ -2090,6 +2321,7 @@ tccq_op_render_context <- function(language, backend_id, attrs = list()) {
 #' @param supports Predicate receiving a `TccqCall` and `TccqOpContext`.
 #' @param render Optional source renderer receiving operand strings and a
 #'   `TccqOpRenderContext`.
+#' @param body Optional backend-neutral operation body.
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
@@ -2106,6 +2338,7 @@ tccq_op_impl <- function(
   effect = NULL,
   supports = function(call, context) TRUE,
   render = NULL,
+  body = NULL,
   elementwise = NULL,
   reduction = NULL,
   contraction = NULL,
@@ -2144,10 +2377,46 @@ tccq_op_impl <- function(
       path = "op.render"
     )
   }
+  .tccq_check_optional_s7(body, TccqOpBody, "TccqOpBody", "body")
   .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
   .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
   .tccq_check_optional_s7(iteration, TccqIterationSpec, "TccqIterationSpec", "iteration")
+  if (!is.null(body)) {
+    body_has_invalid_implementation <-
+      !identical(target, "neutral") ||
+      !isTRUE(pure) ||
+      isTRUE(uses_rapi) ||
+      isTRUE(boundary) ||
+      isTRUE(effect@writes) ||
+      isTRUE(effect@allocates) ||
+      isTRUE(effect@boundary) ||
+      !is.null(render) ||
+      !S7::S7_inherits(elementwise, TccqElementwiseSpec)
+    body_arity_matches <- S7::S7_inherits(elementwise, TccqElementwiseSpec) &&
+      identical(elementwise@signature@arity, as.integer(length(body@parameters)))
+    if (body_has_invalid_implementation || !body_arity_matches) {
+      tccq_abort(
+        "schema.invalid_op_body_implementation",
+        paste0(
+          "A neutral operation body requires a pure, renderer-free elementwise ",
+          "implementation whose single arity matches its parameters."
+        ),
+        phase = "schema",
+        path = "op.body",
+        data = list(
+          op = op,
+          target = target,
+          parameters = body@parameters,
+          arity = if (S7::S7_inherits(elementwise, TccqElementwiseSpec)) {
+            elementwise@signature@arity
+          } else {
+            integer()
+          }
+        )
+      )
+    }
+  }
   if (
     !is.null(iteration) &&
       (
@@ -2181,6 +2450,7 @@ tccq_op_impl <- function(
     effect = effect,
     supports = supports,
     render = render,
+    body = body,
     elementwise = elementwise,
     reduction = reduction,
     contraction = contraction,
@@ -2238,6 +2508,7 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
     boundary = implementation@boundary,
     pure = implementation@pure,
     effect = implementation@effect,
+    body = implementation@body,
     elementwise = implementation@elementwise,
     reduction = implementation@reduction,
     contraction = implementation@contraction,

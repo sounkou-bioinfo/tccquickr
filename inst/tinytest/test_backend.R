@@ -512,6 +512,95 @@ expect_true(grepl(
   fixed = TRUE
 ))
 
+neutral_sigmoid_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "neutral_sigmoid",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+    body = tccq_op_body(function(value) 1 / (1 + exp(-value))),
+    elementwise = tccq_elementwise_spec(
+      "neutral_sigmoid",
+      1L,
+      result_type = function(input_types, result_shape) {
+        tccq_type("double", result_shape)
+      }
+    )
+  )
+)
+neutral_sigmoid <- function(x) {
+  declare(type(x = double(n)))
+  neutral_sigmoid(x)
+}
+neutral_sigmoid_program <- tccq_analyze(
+  neutral_sigmoid,
+  registry = neutral_sigmoid_registry
+)
+expect_true(neutral_sigmoid_program@success)
+expect_false(any(vapply(
+  neutral_sigmoid_program@value@values,
+  function(value) identical(value@op, "neutral_sigmoid"),
+  logical(1)
+)))
+
+neutral_sigmoid_c_plan <- tccq_plan_backend(
+  neutral_sigmoid_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+neutral_sigmoid_fortran_plan <- tccq_plan_backend(
+  neutral_sigmoid_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(neutral_sigmoid_c_plan@success)
+expect_true(neutral_sigmoid_fortran_plan@success)
+expect_equal(backend_products(neutral_sigmoid_c_plan)@body@op, "/")
+expect_equal(backend_products(neutral_sigmoid_fortran_plan)@body@op, "/")
+
+neutral_sigmoid_input <- c(-8, -2, 0, 2, 8)
+neutral_sigmoid_expected <- stats::plogis(neutral_sigmoid_input)
+if (rtinycc_jit_available) {
+  neutral_sigmoid_jit <- tccq_plan_backend(
+    neutral_sigmoid_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(neutral_sigmoid_jit@success)
+  expect_equal(
+    backend_callable(neutral_sigmoid_jit)(neutral_sigmoid_input),
+    neutral_sigmoid_expected,
+    tolerance = 1e-12
+  )
+}
+if (can_build_shared_library("c")) {
+  neutral_sigmoid_c_shared <- tccq_plan_backend(
+    neutral_sigmoid_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(neutral_sigmoid_c_shared@success)
+  expect_equal(
+    backend_callable(neutral_sigmoid_c_shared)(neutral_sigmoid_input),
+    neutral_sigmoid_expected,
+    tolerance = 1e-12
+  )
+}
+if (can_build_shared_library("fortran")) {
+  neutral_sigmoid_fortran_shared <- tccq_plan_backend(
+    neutral_sigmoid_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(neutral_sigmoid_fortran_shared@success)
+  expect_equal(
+    backend_callable(neutral_sigmoid_fortran_shared)(neutral_sigmoid_input),
+    neutral_sigmoid_expected,
+    tolerance = 1e-12
+  )
+}
+
 unhandled_values <- vector_program@value@values
 unhandled_result <- unhandled_values[[vector_program@value@result]]
 unhandled_values[[vector_program@value@result]] <- tccq_value(

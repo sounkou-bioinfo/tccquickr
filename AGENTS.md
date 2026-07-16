@@ -355,6 +355,16 @@ For the reset core, keep these rules explicit:
   family, and optional reducer facts. Later fusion, access, legality, storage,
   and backend passes should consume that payload instead of rediscovering
   behavior from operation names, value ranks, or backend-local predicates.
+- Pure composite elementwise implementations use `TccqOpBody`: ordered
+  parameters, one parsed expression, and its `TccqCallIndex`. Lowering must
+  expand the body through the active operation registry, verify its exact
+  signature result type and declared effect envelope, and return the primitive
+  value graph before expression-tree construction. A body is not source text,
+  a closure-evaluation escape hatch, or a printer capability; no backend may
+  recognize the composite operation name. Control, replacement, defaults, and
+  `...` remain refused until they have a typed body representation. Body
+  symbols resolve only to body parameters: special forcing and capture of
+  caller formals, locals, cells, or dimensions are structured refusals.
 - Backend support is generic. Use `TccqBackendSpec`, `TccqBackend`,
   `TccqBackendContext`, `TccqBackendPlan`, `TccqBackendPlanSet`, and explicit
   bridge metadata. `Rtinycc` is one backend descriptor for a

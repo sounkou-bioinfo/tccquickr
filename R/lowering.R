@@ -70,6 +70,8 @@ tccq_lower_function <- function(
     state$neutral_block_counter <- 0L
     state$statement_index <- 0L
     state$consumed_call_ids <- character()
+    state$op_body_bindings <- list()
+    state$op_body_implementation_stack <- list()
     state$dim_symbols <- unique(unlist(lapply(bindings, function(binding) {
       labels <- vapply(binding@type@shape@dims, function(dim) dim@label, character(1))
       labels[nzchar(labels)]
@@ -104,6 +106,25 @@ tccq_lower_function <- function(
     sprintf("value_%04d", state$value_counter)
   }
 
+  value_effect <- function(state, value_id, visited = character()) {
+    if (value_id %in% visited) {
+      return(list())
+    }
+    value <- state$values[[value_id]]
+    if (is.null(value) || S7::S7_inherits(value, TccqBindingReference)) {
+      return(if (is.null(value)) list() else list(value@effect))
+    }
+    c(
+      list(value@effect),
+      unlist(lapply(
+        value@inputs,
+        value_effect,
+        state = state,
+        visited = c(visited, value_id)
+      ), recursive = FALSE)
+    )
+  }
+
   lower_statement <- function(expr, state) {
     state$statement_index <- state$statement_index + 1L
     state$current_local_uses <- list()
@@ -120,26 +141,9 @@ tccq_lower_function <- function(
       return(result)
     }
 
-    reachable_effects <- function(value_id, visited = character()) {
-      if (value_id %in% visited) {
-        return(list())
-      }
-      value <- state$values[[value_id]]
-      if (S7::S7_inherits(value, TccqBindingReference)) {
-        return(list(value@effect))
-      }
-      c(
-        list(value@effect),
-        unlist(lapply(
-          value@inputs,
-          reachable_effects,
-          visited = c(visited, value_id)
-        ), recursive = FALSE)
-      )
-    }
     evaluation_effect <- Reduce(
       tccq_effect_union,
-      reachable_effects(result$value_id),
+      value_effect(state, result$value_id),
       init = tccq_effect()
     )
     state$schedule_steps[[length(state$schedule_steps) + 1L]] <- tccq_evaluation_step(
@@ -377,32 +381,13 @@ tccq_lower_function <- function(
     }
 
     value_id <- next_value_id(state)
-    reachable_effects <- function(value_id, visited = character()) {
-      if (value_id %in% visited) {
-        return(list())
-      }
-      value <- state$values[[value_id]]
-      if (is.null(value)) {
-        return(list())
-      }
-      if (S7::S7_inherits(value, TccqBindingReference)) {
-        return(list(value@effect))
-      }
-      c(
-        list(value@effect),
-        unlist(lapply(
-          value@inputs,
-          reachable_effects,
-          visited = c(visited, value_id)
-        ), recursive = FALSE)
-      )
-    }
     branch_effect <- Reduce(
       tccq_effect_union,
       c(
         unlist(lapply(
           c(condition$value_id, consequent$value_id, alternative$value_id),
-          reachable_effects
+          value_effect,
+          state = state
         ), recursive = FALSE),
         list(tccq_effect(may_error = TRUE))
       ),
@@ -425,6 +410,27 @@ tccq_lower_function <- function(
 
   lower_symbol <- function(expr, state) {
     symbol_name <- as.character(expr)
+    if (length(state$op_body_bindings) > 0L) {
+      operation_bindings <- state$op_body_bindings[[length(state$op_body_bindings)]]
+      operation_value_id <- operation_bindings[[symbol_name]]
+      if (!is.null(operation_value_id)) {
+        value <- state$values[[operation_value_id]]
+        return(list(
+          value_id = operation_value_id,
+          type = value@type,
+          diagnostics = list()
+        ))
+      }
+      return(diagnostic_value(
+        "lowering.unbound_op_body_symbol",
+        sprintf("Symbol `%s` is not a parameter of the neutral operation body.", symbol_name),
+        expr,
+        data = list(
+          symbol = symbol_name,
+          parameters = names(operation_bindings)
+        )
+      ))
+    }
     cell <- state$cells[[symbol_name]]
     if (S7::S7_inherits(cell, TccqCell)) {
       reference_id <- next_value_id(state)
@@ -513,6 +519,134 @@ tccq_lower_function <- function(
     list(value_id = value_id, type = literal@type, diagnostics = list())
   }
 
+  lower_op_body <- function(resolved_operation, input_ids, result_type, expr, state) {
+    operation_name <- resolved_operation@call@name
+    implementation_is_active <- any(vapply(
+      state$op_body_implementation_stack,
+      function(active_implementation) {
+        identical(active_implementation, resolved_operation@implementation)
+      },
+      logical(1)
+    ))
+    if (implementation_is_active) {
+      return(diagnostic_value(
+        "lowering.recursive_op_body",
+        sprintf("Neutral operation body `%s` recursively expands itself.", operation_name),
+        expr,
+        data = list(
+          op = operation_name,
+          expansion_stack = c(
+            vapply(
+              state$op_body_implementation_stack,
+              function(implementation) implementation@op,
+              character(1)
+            ),
+            operation_name
+          )
+        )
+      ))
+    }
+
+    operation_body <- resolved_operation@body
+    argument_tags <- resolved_operation@call@argument_names
+    tagged_arguments <- nzchar(argument_tags)
+    tagged_parameter_positions <- match(
+      argument_tags[tagged_arguments],
+      operation_body@parameters
+    )
+    tags_match_exactly <- !anyNA(tagged_parameter_positions) &&
+      !anyDuplicated(tagged_parameter_positions)
+    if (!tags_match_exactly) {
+      return(diagnostic_value(
+        "lowering.unsupported_op_body_argument_matching",
+        paste0(
+          "Neutral operation bodies currently require exact, unique argument ",
+          "tags; unmatched arguments are bound positionally."
+        ),
+        expr,
+        data = list(
+          op = operation_name,
+          parameters = operation_body@parameters,
+          argument_tags = argument_tags
+        )
+      ))
+    }
+    parameter_bindings <- vector("list", length(operation_body@parameters))
+    names(parameter_bindings) <- operation_body@parameters
+    parameter_bindings[tagged_parameter_positions] <- input_ids[tagged_arguments]
+    positional_parameter_positions <- which(vapply(parameter_bindings, is.null, logical(1)))
+    parameter_bindings[positional_parameter_positions] <- input_ids[!tagged_arguments]
+
+    binding_depth <- length(state$op_body_bindings)
+    expansion_depth <- length(state$op_body_implementation_stack)
+    existing_value_ids <- names(state$values)
+    state$op_body_bindings[[binding_depth + 1L]] <- parameter_bindings
+    state$op_body_implementation_stack[[expansion_depth + 1L]] <-
+      resolved_operation@implementation
+    on.exit({
+      state$op_body_bindings <- state$op_body_bindings[seq_len(binding_depth)]
+      state$op_body_implementation_stack <-
+        state$op_body_implementation_stack[seq_len(expansion_depth)]
+    }, add = TRUE)
+
+    expanded <- lower_expression(operation_body@expression, state)
+    if (length(expanded$diagnostics) > 0L) {
+      return(expanded)
+    }
+    if (!identical(expanded$type, result_type)) {
+      return(diagnostic_value(
+        "lowering.op_body_result_type_mismatch",
+        sprintf("Neutral operation body `%s` does not produce its declared result type.", operation_name),
+        expr,
+        data = list(
+          op = operation_name,
+          declared_type = result_type,
+          body_type = expanded$type
+        )
+      ))
+    }
+
+    expanded_value_ids <- setdiff(names(state$values), existing_value_ids)
+    expanded_effect <- Reduce(
+      tccq_effect_union,
+      lapply(expanded_value_ids, function(value_id) state$values[[value_id]]@effect),
+      init = tccq_effect()
+    )
+    if (expanded$value_id %in% unlist(parameter_bindings, use.names = FALSE)) {
+      expanded_effect <- tccq_effect_union(
+        expanded_effect,
+        tccq_effect(reads = TRUE)
+      )
+    }
+    expanded_effects <- c(
+      reads = expanded_effect@reads,
+      writes = expanded_effect@writes,
+      allocates = expanded_effect@allocates,
+      boundary = expanded_effect@boundary,
+      may_error = expanded_effect@may_error,
+      may_warn = expanded_effect@may_warn
+    )
+    declared_effects <- c(
+      reads = resolved_operation@effect@reads,
+      writes = resolved_operation@effect@writes,
+      allocates = resolved_operation@effect@allocates,
+      boundary = resolved_operation@effect@boundary,
+      may_error = resolved_operation@effect@may_error,
+      may_warn = resolved_operation@effect@may_warn
+    )
+    undeclared_effects <- names(expanded_effects)[expanded_effects & !declared_effects]
+    if (length(undeclared_effects) > 0L) {
+      return(diagnostic_value(
+        "lowering.op_body_effect_mismatch",
+        sprintf("Neutral operation body `%s` has effects omitted by its contract.", operation_name),
+        expr,
+        data = list(op = operation_name, undeclared_effects = undeclared_effects)
+      ))
+    }
+
+    expanded
+  }
+
   lower_elementwise <- function(resolved_operation, args, expr, state) {
     op <- resolved_operation@call@name
     elementwise_spec <- resolved_operation@elementwise
@@ -550,6 +684,15 @@ tccq_lower_function <- function(
     result_type <- tccq_elementwise_result_type(elementwise_spec, input_types)
     if (!result_type@success) {
       return(list(value_id = NULL, type = NULL, diagnostics = result_type@diagnostics))
+    }
+    if (S7::S7_inherits(resolved_operation@body, TccqOpBody)) {
+      return(lower_op_body(
+        resolved_operation,
+        input_ids,
+        result_type@value,
+        expr,
+        state
+      ))
     }
 
     value_id <- next_value_id(state)

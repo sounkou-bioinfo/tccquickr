@@ -1213,3 +1213,250 @@ expect_true(any(vapply(
   function(x) identical(x@code, "frontend.unimplemented_call"),
   logical(1)
 )))
+
+neutral_double_spec <- tccq_elementwise_spec(
+  "neutral_double",
+  1L,
+  result_type = function(input_types, result_shape) {
+    tccq_type("double", result_shape)
+  }
+)
+neutral_sigmoid_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "neutral_sigmoid",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+    body = tccq_op_body(function(value) 1 / (1 + exp(-value))),
+    elementwise = neutral_double_spec
+  )
+)
+neutral_sigmoid <- function(x) {
+  declare(type(x = double(n)))
+  neutral_sigmoid(x)
+}
+neutral_sigmoid_result <- tccq_analyze(
+  neutral_sigmoid,
+  registry = neutral_sigmoid_registry
+)
+expect_true(neutral_sigmoid_result@success)
+expect_true(neutral_sigmoid_result@value@attrs$lowered)
+neutral_value_ops <- vapply(
+  neutral_sigmoid_result@value@values,
+  function(value) value@op,
+  character(1)
+)
+expect_false("neutral_sigmoid" %in% neutral_value_ops)
+expect_true(all(c("-", "exp", "+", "/") %in% neutral_value_ops))
+
+neutral_difference_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "neutral_difference",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+    body = tccq_op_body(function(left, right) left - right),
+    elementwise = tccq_elementwise_spec(
+      "neutral_difference",
+      2L,
+      result_type = function(input_types, result_shape) {
+        tccq_type("double", result_shape)
+      }
+    )
+  )
+)
+tagged_neutral_difference <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  neutral_difference(right = y, left = x)
+}
+tagged_neutral_difference_result <- tccq_analyze(
+  tagged_neutral_difference,
+  registry = neutral_difference_registry
+)
+expect_true(tagged_neutral_difference_result@success)
+tagged_difference_value <- tagged_neutral_difference_result@value@values[[
+  tagged_neutral_difference_result@value@result
+]]
+expect_equal(tagged_difference_value@op, "-")
+expect_equal(tagged_difference_value@inputs, list("formal_0001", "formal_0002"))
+
+partial_tag_neutral_difference <- function(x, y) {
+  declare(type(x = double(n), y = double(n)))
+  neutral_difference(ri = y, left = x)
+}
+partial_tag_neutral_difference_result <- tccq_analyze(
+  partial_tag_neutral_difference,
+  registry = neutral_difference_registry
+)
+expect_false(partial_tag_neutral_difference_result@success)
+expect_true(any(vapply(
+  partial_tag_neutral_difference_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.unsupported_op_body_argument_matching")
+  },
+  logical(1)
+)))
+
+underdeclared_effect_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "neutral_sigmoid",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE),
+    body = tccq_op_body(function(value) 1 / (1 + exp(-value))),
+    elementwise = neutral_double_spec
+  )
+)
+underdeclared_effect_result <- tccq_analyze(
+  neutral_sigmoid,
+  registry = underdeclared_effect_registry
+)
+expect_false(underdeclared_effect_result@success)
+expect_true(any(vapply(
+  underdeclared_effect_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.op_body_effect_mismatch") &&
+      identical(diagnostic@data$undeclared_effects, "may_warn")
+  },
+  logical(1)
+)))
+
+underdeclared_identity_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "underdeclared_identity",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(),
+    body = tccq_op_body(function(value) value),
+    elementwise = neutral_double_spec
+  )
+)
+underdeclared_identity_program <- function(x) {
+  declare(type(x = double(n)))
+  underdeclared_identity(x)
+}
+underdeclared_identity_result <- tccq_analyze(
+  underdeclared_identity_program,
+  registry = underdeclared_identity_registry
+)
+expect_false(underdeclared_identity_result@success)
+expect_true(any(vapply(
+  underdeclared_identity_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.op_body_effect_mismatch") &&
+      identical(diagnostic@data$undeclared_effects, "reads")
+  },
+  logical(1)
+)))
+
+capturing_body_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "capturing_body",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+    body = tccq_op_body(function(value) value + bias),
+    elementwise = neutral_double_spec
+  )
+)
+capturing_body_program <- function(x, bias) {
+  declare(type(x = double(n), bias = double()))
+  capturing_body(x)
+}
+capturing_body_result <- tccq_analyze(
+  capturing_body_program,
+  registry = capturing_body_registry
+)
+expect_false(capturing_body_result@success)
+expect_true(any(vapply(
+  capturing_body_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.unbound_op_body_symbol") &&
+      identical(diagnostic@data$symbol, "bias")
+  },
+  logical(1)
+)))
+
+wrong_result_type_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "wrong_result_type",
+    target = "neutral",
+    region_kind = "kernel",
+    body = tccq_op_body(function(value) 1),
+    elementwise = neutral_double_spec
+  )
+)
+wrong_result_type_program <- function(x) {
+  declare(type(x = double(n)))
+  wrong_result_type(x)
+}
+wrong_result_type_result <- tccq_analyze(
+  wrong_result_type_program,
+  registry = wrong_result_type_registry
+)
+expect_false(wrong_result_type_result@success)
+expect_true(any(vapply(
+  wrong_result_type_result@diagnostics,
+  function(diagnostic) {
+    identical(diagnostic@code, "lowering.op_body_result_type_mismatch")
+  },
+  logical(1)
+)))
+
+recursive_neutral_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "recursive_neutral",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE),
+    body = tccq_op_body(function(value) recursive_neutral(value)),
+    elementwise = neutral_double_spec
+  )
+)
+recursive_neutral_program <- function(x) {
+  declare(type(x = double(n)))
+  recursive_neutral(x)
+}
+recursive_neutral_result <- tccq_analyze(
+  recursive_neutral_program,
+  registry = recursive_neutral_registry
+)
+expect_false(recursive_neutral_result@success)
+expect_true(any(vapply(
+  recursive_neutral_result@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "lowering.recursive_op_body"),
+  logical(1)
+)))
+
+missing_body_dependency_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "missing_body_dependency",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE),
+    body = tccq_op_body(function(value) unavailable_primitive(value)),
+    elementwise = neutral_double_spec
+  )
+)
+missing_body_dependency_program <- function(x) {
+  declare(type(x = double(n)))
+  missing_body_dependency(x)
+}
+missing_body_dependency_result <- tccq_analyze(
+  missing_body_dependency_program,
+  registry = missing_body_dependency_registry
+)
+expect_false(missing_body_dependency_result@success)
+expect_true(any(vapply(
+  missing_body_dependency_result@diagnostics,
+  function(diagnostic) identical(diagnostic@code, "lowering.unimplemented_operation"),
+  logical(1)
+)))

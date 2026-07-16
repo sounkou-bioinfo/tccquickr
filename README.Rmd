@@ -146,10 +146,53 @@ ordered classed diagnostics instead of sentinel pointers.
 scalar broadcast over any rank. Scalar numeric `<`, `<=`, `>`, `>=`, `==`, and
 `!=` produce typed logical values for control conditions; their current
 implementation deliberately rejects array operands. Registries can add
-rendered operations without touching the printers. Every neutral operation
-expression owns its complete
+leaf renderers without touching the printers. A composite operation instead
+uses `TccqOpBody`: one parameterized R expression that lowering expands through
+the same registry into ordinary typed values. Expansion checks the signature's
+result type and verifies that the primitive effects fit inside the body's
+declared effect contract. A body can refer only to its parameters, literals,
+and calls resolved by the registry; free symbols and special-forcing calls are
+structured refusals. The composite name is gone before expression trees,
+fusion, loop nests, or source backends see the program. Every neutral operation
+expression then owns its complete
 `TccqLoweredOperation` and typed effect; it does not duplicate the selected
 implementation or hide pass facts in expression attributes.
+
+```{r neutral-operation-body}
+sigmoid_registry <- tccq_op_registry_add(
+  tccq_default_op_registry(),
+  tccq_op_impl(
+    "sigmoid",
+    target = "neutral",
+    region_kind = "kernel",
+    effect = tccq_effect(reads = TRUE, may_warn = TRUE),
+    body = tccq_op_body(function(value) 1 / (1 + exp(-value))),
+    elementwise = tccq_elementwise_spec(
+      "sigmoid",
+      1L,
+      result_type = function(input_types, result_shape) {
+        tccq_type("double", result_shape)
+      }
+    )
+  )
+)
+
+sigmoid_kernel <- function(x) {
+  declare(type(x = double(n)))
+  sigmoid(x)
+}
+
+sigmoid_program <- tccq_analyze(sigmoid_kernel, registry = sigmoid_registry)
+sigmoid_plans <- list(
+  c = tccq_plan_backend(sigmoid_program@value, tccq_c_backend()),
+  fortran = tccq_plan_backend(sigmoid_program@value, tccq_fortran_backend())
+)
+unname(vapply(
+  sigmoid_plans,
+  function(plan) plan@value@products@body@op,
+  character(1)
+))
+```
 
 **Reductions and contractions.** `sum` and `mean` fold full rank-N domains;
 `colSums`, `rowSums`, `colMeans`, and `rowMeans` fold selected axes. Custom
