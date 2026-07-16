@@ -130,7 +130,7 @@ expect_equal(reduction_operation@reduction@name, "sum")
 expect_true(S7::S7_inherits(reduction_operation@reduction, TccqReductionSpec))
 expect_true(S7::S7_inherits(reduction_operation@signature, TccqOpSignature))
 expect_true(S7::S7_inherits(reduction_operation@domain_policy, TccqDomainPolicy))
-expect_true(S7::S7_inherits(reduction_operation@identity, TccqLiteral))
+expect_true(S7::S7_inherits(reduction_operation@reduction, TccqFoldReductionSpec))
 
 reduction_fusion <- map_reduce_result@value@regions[[1L]]@fusion_groups[[1L]]
 expect_equal(reduction_fusion@kind, "map_reduce")
@@ -1101,7 +1101,7 @@ fold_add_registry <- tccq_op_registry_add(
     reduction = tccq_reduction_spec(
       "fold_add",
       identity = function(type) tccq_literal_finite(0, type = type),
-      combine = function(accumulator, value, context) sprintf("%s + %s", accumulator, value)
+      combine_op = "+"
     )
   )
 )

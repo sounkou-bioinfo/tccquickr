@@ -7,7 +7,7 @@
 TccqContractionSpec(
   name = character(0),
   signature = TccqOpSignature(),
-  reducer = TccqReductionSpec(),
+  reducer = TccqFoldReductionSpec(),
   combine_op = character(0),
   attrs = list()
 )

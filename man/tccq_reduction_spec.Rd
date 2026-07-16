@@ -7,8 +7,8 @@
 tccq_reduction_spec(
   name,
   identity,
-  combine,
-  finalize = NULL,
+  combine_op,
+  finalize_op = "",
   associative = TRUE,
   commutative = TRUE,
   attrs = list(),
@@ -20,12 +20,11 @@ tccq_reduction_spec(
 
 \item{identity}{Function from result \code{TccqType} to identity \code{TccqLiteral}.}
 
-\item{combine}{Function from accumulator/source strings and render context
-to a target-source combine expression.}
+\item{combine_op}{Registered operation combining the accumulator and current
+value.}
 
-\item{finalize}{Optional function from accumulator/count source strings and
-render context to the stored-value source string (e.g. \code{mean} divides the
-folded accumulator by the reduced element count).}
+\item{finalize_op}{Optional registered operation applied to the completed
+accumulator and reduced element count.}
 
 \item{associative}{Whether the reducer is associative.}
 

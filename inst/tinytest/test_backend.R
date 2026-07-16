@@ -889,7 +889,6 @@ reduction_c_source <- backend_source(reduction_c_source_plan)
 reduction_c_interface <- backend_interface(reduction_c_source_plan)
 expect_true(grepl("double accumulator_0001 = 0.0;", reduction_c_source, fixed = TRUE))
 expect_true(grepl("for (int axis_0001 = 0; axis_0001 < extent_n;", reduction_c_source, fixed = TRUE))
-expect_true(grepl("accumulator_0001 = accumulator_0001 + ", reduction_c_source, fixed = TRUE))
 expect_true(grepl("int extent_n", reduction_c_source, fixed = TRUE))
 expect_true(S7::S7_inherits(
   reduction_c_interface,
@@ -899,7 +898,7 @@ expect_equal(reduction_c_interface@kind, "loop_nest")
 expect_equal(reduction_c_interface@result_placement, "return")
 reduction_c_accumulator_id <- backend_products(
   reduction_c_source_plan
-)@loop_nest@accumulator@value_id
+)@loop_nest@reduction@state@components[[1L]]@target@value_id
 expect_equal(
   vapply(reduction_c_interface@locals, function(binding) binding@source_name, character(1))[[match(
     reduction_c_accumulator_id,
@@ -934,12 +933,132 @@ expect_true(grepl("function", reduction_fortran_source, fixed = TRUE))
 expect_true(grepl("integer(c_int), value :: extent_n", reduction_fortran_source, fixed = TRUE))
 expect_true(grepl("accumulator_0001 = 0.0_c_double", reduction_fortran_source, fixed = TRUE))
 expect_true(grepl("do axis_0001 = 0, extent_n - 1", reduction_fortran_source, fixed = TRUE))
-expect_true(grepl("accumulator_0001 = accumulator_0001 + ", reduction_fortran_source, fixed = TRUE))
 expect_true(grepl("output = accumulator_0001", reduction_fortran_source, fixed = TRUE))
 expect_equal(reduction_fortran_interface@abi, "fortran_bind_c")
 expect_equal(reduction_fortran_interface@result_placement, "return")
 expect_equal(reduction_fortran_interface@result_name, "output")
 expect_equal(length(reduction_fortran_source_plan@value@bridges), 3L)
+
+argument_maximum <- function(x) {
+  declare(type(x = double(n)))
+  which.max(x)
+}
+
+argument_maximum_program <- tccq_analyze(argument_maximum)
+expect_true(argument_maximum_program@success)
+argument_maximum_nests <- tccq_program_loop_nests(argument_maximum_program@value)
+expect_true(argument_maximum_nests@success)
+expect_equal(length(argument_maximum_nests@value), 1L)
+argument_maximum_nest <- argument_maximum_nests@value[[1L]]
+expect_true(S7::S7_inherits(argument_maximum_nest@reduction, TccqReductionPlan))
+expect_true(S7::S7_inherits(argument_maximum_nest@reduction@spec, TccqArgReductionSpec))
+expect_true(S7::S7_inherits(argument_maximum_nest@reduction@state, TccqReductionState))
+expect_equal(
+  vapply(
+    argument_maximum_nest@reduction@state@components,
+    function(component) component@name,
+    character(1)
+  ),
+  c("seen", "best_value", "best_index")
+)
+expect_equal(argument_maximum_nest@reduction@condition@op, "&")
+expect_true(all(vapply(
+  argument_maximum_nest@reduction@updates,
+  S7::S7_inherits,
+  logical(1),
+  class = TccqAssignment
+)))
+expect_equal(argument_maximum_nest@reduction@value@type@base, "integer")
+expect_equal(argument_maximum_nest@reduction@valid@type@base, "logical")
+expect_equal(argument_maximum_nest@storage@type@base, "integer")
+
+argument_maximum_c <- tccq_plan_backend(
+  argument_maximum_program@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+argument_maximum_fortran <- tccq_plan_backend(
+  argument_maximum_program@value,
+  tccq_fortran_backend(),
+  tccq_backend_context(mode = "source", target = "fortran")
+)
+expect_true(argument_maximum_c@success)
+expect_true(argument_maximum_fortran@success)
+expect_equal(
+  vapply(
+    backend_interface(argument_maximum_c)@locals,
+    function(binding) binding@source_name,
+    character(1)
+  ),
+  c("seen_0001", "best_value_0001", "best_index_0001")
+)
+expect_equal(
+  sort(vapply(
+    backend_interface(argument_maximum_c)@error_channel@diagnostics,
+    function(diagnostic) diagnostic@code,
+    character(1)
+  )),
+  sort(c("runtime.invalid_logical_condition", "runtime.reduction_has_no_value"))
+)
+
+argument_maximum_input <- c(2, 8, 8, NA_real_, NaN, 7)
+if (rtinycc_jit_available) {
+  argument_maximum_jit <- tccq_plan_backend(
+    argument_maximum_program@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  expect_true(argument_maximum_jit@success)
+  expect_identical(backend_callable(argument_maximum_jit)(argument_maximum_input), 2L)
+  no_maximum <- tryCatch(
+    backend_callable(argument_maximum_jit)(c(NA_real_, NaN)),
+    error = identity
+  )
+  expect_true(inherits(no_maximum, "runtime.reduction_has_no_value"))
+  expect_equal(tccq_condition_diagnostic(no_maximum)@code, "runtime.reduction_has_no_value")
+}
+if (can_build_shared_library("c")) {
+  argument_maximum_c_shared <- tccq_plan_backend(
+    argument_maximum_program@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "shared_library", target = "c")
+  )
+  expect_true(argument_maximum_c_shared@success)
+  expect_identical(
+    backend_callable(argument_maximum_c_shared)(argument_maximum_input),
+    2L
+  )
+  no_c_maximum <- tryCatch(
+    backend_callable(argument_maximum_c_shared)(c(NA_real_, NaN)),
+    error = identity
+  )
+  expect_true(inherits(no_c_maximum, "runtime.reduction_has_no_value"))
+  expect_equal(
+    tccq_condition_diagnostic(no_c_maximum)@code,
+    "runtime.reduction_has_no_value"
+  )
+}
+if (can_build_shared_library("fortran")) {
+  argument_maximum_fortran_shared <- tccq_plan_backend(
+    argument_maximum_program@value,
+    tccq_fortran_backend(),
+    tccq_backend_context(mode = "shared_library", target = "fortran")
+  )
+  expect_true(argument_maximum_fortran_shared@success)
+  expect_identical(
+    backend_callable(argument_maximum_fortran_shared)(argument_maximum_input),
+    2L
+  )
+  no_fortran_maximum <- tryCatch(
+    backend_callable(argument_maximum_fortran_shared)(c(NA_real_, NaN)),
+    error = identity
+  )
+  expect_true(inherits(no_fortran_maximum, "runtime.reduction_has_no_value"))
+  expect_equal(
+    tccq_condition_diagnostic(no_fortran_maximum)@code,
+    "runtime.reduction_has_no_value"
+  )
+}
 
 matrix_reduce <- function(x, y) {
   declare(type(x = double(n, p), y = double(n, p)))
@@ -1028,7 +1147,7 @@ expect_equal(
 expect_equal(column_axis_c_interface@result_count_name, "result_count_0001")
 column_axis_accumulator_id <- backend_products(
   column_axis_c_source_plan
-)@loop_nest@accumulator@value_id
+)@loop_nest@reduction@state@components[[1L]]@target@value_id
 expect_equal(
   vapply(column_axis_c_interface@locals, function(binding) binding@source_name, character(1))[[match(
     column_axis_accumulator_id,
@@ -1185,7 +1304,7 @@ fold_add_registry <- tccq_op_registry_add(
     reduction = tccq_reduction_spec(
       "fold_add",
       identity = function(type) tccq_literal_finite(0, type = type),
-      combine = function(accumulator, value, context) sprintf("%s + %s", accumulator, value)
+      combine_op = "+"
     )
   )
 )
@@ -1196,13 +1315,18 @@ custom_reduce <- function(x) {
 custom_reduction_program <- tccq_analyze(custom_reduce, registry = fold_add_registry)
 expect_true(custom_reduction_program@success)
 expect_true(custom_reduction_program@value@attrs$lowered)
+custom_reduction_nests <- tccq_program_loop_nests(custom_reduction_program@value)
+expect_true(custom_reduction_nests@success)
+custom_reduction_plan <- custom_reduction_nests@value[[1L]]@reduction
+expect_true(S7::S7_inherits(custom_reduction_plan, TccqReductionPlan))
+expect_equal(custom_reduction_plan@spec@combine_op, "+")
+expect_equal(custom_reduction_plan@updates[[1L]]@value@op, "+")
 custom_c_source_plan <- tccq_plan_backend(
   custom_reduction_program@value,
   tccq_c_backend(),
   tccq_backend_context(mode = "source", target = "c")
 )
 expect_true(custom_c_source_plan@success)
-expect_true(grepl("accumulator_0001 = accumulator_0001 + ", backend_source(custom_c_source_plan), fixed = TRUE))
 
 if (rtinycc_jit_available) {
   reduction_jit_plan <- tccq_plan_backend(
@@ -2197,7 +2321,7 @@ expect_identical(
 )
 expect_equal(conditional_reduction_body@result@type@shape@rank, 1L)
 expect_equal(conditional_reduction_body@result@storage_type@shape@rank, 0L)
-expect_equal(conditional_reduction_nests@value[[1L]]@reducer@name, "sum")
+expect_equal(conditional_reduction_nests@value[[1L]]@reduction@spec@name, "sum")
 expect_true(S7::S7_inherits(
   conditional_axis_reduction_nests@value[[1L]]@body,
   TccqValueBlock
@@ -2918,7 +3042,7 @@ expect_equal(
   vapply(matrix_vector_nest@value@axes, function(axis) axis@role, character(1)),
   c("map", "reduce")
 )
-expect_equal(matrix_vector_nest@value@reducer@name, "sum")
+expect_equal(matrix_vector_nest@value@reduction@spec@name, "sum")
 
 matrix_vector_c_plan <- tccq_plan_backend(
   matrix_vector_program@value,
@@ -3083,7 +3207,8 @@ expect_true(normalize_nests@success)
 expect_equal(length(normalize_nests@value), 2L)
 normalize_intermediate <- normalize_nests@value[[1L]]
 normalize_final <- normalize_nests@value[[2L]]
-expect_true(S7::S7_inherits(normalize_intermediate@reducer, TccqReductionSpec))
+expect_true(S7::S7_inherits(normalize_intermediate@reduction, TccqReductionPlan))
+expect_true(S7::S7_inherits(normalize_intermediate@reduction@spec, TccqReductionSpec))
 expect_true(all(vapply(
   normalize_intermediate@axes,
   function(axis) identical(axis@role, "reduce"),
@@ -3092,8 +3217,12 @@ expect_true(all(vapply(
 expect_true(S7::S7_inherits(normalize_intermediate@storage, TccqStorageSlot))
 expect_equal(normalize_intermediate@storage@role, "temporary")
 expect_true(normalize_intermediate@storage@materialized)
-expect_true(S7::S7_inherits(normalize_intermediate@accumulator, TccqWriteTarget))
-expect_null(normalize_final@reducer)
+expect_true(S7::S7_inherits(normalize_intermediate@reduction@state, TccqReductionState))
+expect_true(S7::S7_inherits(
+  normalize_intermediate@reduction@state@components[[1L]],
+  TccqReductionStateComponent
+))
+expect_null(normalize_final@reduction)
 
 # The singular planner refuses multi-nest programs with a classed diagnostic.
 normalize_single <- tccq_program_loop_nest(normalize_program@value)

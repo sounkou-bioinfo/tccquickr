@@ -23,6 +23,7 @@ TCCQ_SUMMARY_GROUP_CALL_NAMES <- c("all", "any", "sum", "prod", "min", "max", "r
 
 TCCQ_OP_RENDER_LANGUAGES <- c("c", "fortran")
 TCCQ_LOWERED_OPERATION_FAMILIES <- c("elementwise", "reduction", "contraction")
+TCCQ_REDUCTION_EMPTY_POLICIES <- c("identity", "error")
 
 TCCQ_S3_PRIMITIVE_GENERIC_NAMES <- get0(
   ".S3PrimitiveGenerics",
@@ -211,34 +212,29 @@ TccqElementwiseSpec <- S7::new_class(
 #' Reduction implementation metadata
 #'
 #' A reduction spec is attached to an operation implementation when calls to
-#' that implementation can lower to a fold-like region. The lowerer and source
-#' printers consume this object instead of recognizing reducer names directly.
+#' that implementation can lower to a typed reduction state. Concrete
+#' subclasses define that state and its transition; the lowerer and source
+#' printers consume the shared protocol instead of recognizing reducer names.
 #'
 #' @param name Human-readable reduction name.
 #' @param signature Shared operation signature.
-#' @param identity Function from result `TccqType` to identity `TccqLiteral`.
-#' @param finalize Optional function from accumulator/count source strings and
-#'   render context to the stored-value source string (e.g. `mean` divides the
-#'   folded accumulator by the reduced element count).
-#' @param combine Function from accumulator/source strings and render context
-#'   to a target-source combine expression.
 #' @param associative Whether the reducer is associative under its declared
 #'   semantics.
 #' @param commutative Whether the reducer is commutative under its declared
 #'   semantics.
+#' @param empty_policy Behavior when no value contributes to the reduction.
 #' @param attrs Structured reduction metadata.
 #' @export
 TccqReductionSpec <- S7::new_class(
   "TccqReductionSpec",
   package = "tccquickr",
+  abstract = TRUE,
   properties = list(
     name = S7::class_character,
     signature = TccqOpSignature,
-    identity = S7::class_function,
-    combine = S7::class_function,
-    finalize = S7::new_union(NULL, S7::class_function),
     associative = S7::class_logical,
     commutative = S7::class_logical,
+    empty_policy = S7::class_character,
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -246,17 +242,95 @@ TccqReductionSpec <- S7::new_class(
     if (length(self@name) != 1L || is.na(self@name) || !nzchar(self@name)) {
       problems <- c(problems, "@name must be a single non-empty string")
     }
-    if (!is.function(self@identity)) {
-      problems <- c(problems, "@identity must be a function")
-    }
-    if (!is.function(self@combine)) {
-      problems <- c(problems, "@combine must be a function")
-    }
     if (length(self@associative) != 1L || is.na(self@associative)) {
       problems <- c(problems, "@associative must be a single TRUE/FALSE value")
     }
     if (length(self@commutative) != 1L || is.na(self@commutative)) {
       problems <- c(problems, "@commutative must be a single TRUE/FALSE value")
+    }
+    if (
+      length(self@empty_policy) != 1L ||
+        is.na(self@empty_policy) ||
+        !self@empty_policy %in% TCCQ_REDUCTION_EMPTY_POLICIES
+    ) {
+      problems <- c(problems, "@empty_policy must be a supported reduction empty policy")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Scalar fold reduction metadata
+#'
+#' A fold reduction has one accumulator identity, one combine operation, and
+#' an optional finalizer. Its neutral loop state has exactly one component.
+#'
+#' @inheritParams TccqReductionSpec
+#' @param identity Function from result `TccqType` to identity `TccqLiteral`.
+#' @param combine_op Registered elementwise operation combining the accumulator
+#'   and current value.
+#' @param finalize_op Optional registered elementwise operation combining the
+#'   completed accumulator and reduced element count.
+#' @export
+TccqFoldReductionSpec <- S7::new_class(
+  "TccqFoldReductionSpec",
+  package = "tccquickr",
+  parent = TccqReductionSpec,
+  properties = list(
+    identity = S7::class_function,
+    combine_op = S7::class_character,
+    finalize_op = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (!is.function(self@identity)) {
+      problems <- c(problems, "@identity must be a function")
+    }
+    if (length(self@combine_op) != 1L || is.na(self@combine_op) || !nzchar(self@combine_op)) {
+      problems <- c(problems, "@combine_op must be one non-empty operation name")
+    }
+    if (length(self@finalize_op) > 1L || anyNA(self@finalize_op)) {
+      problems <- c(problems, "@finalize_op must be empty or one non-missing operation name")
+    }
+    if (!identical(self@empty_policy, "identity")) {
+      problems <- c(problems, "fold reductions must use the identity empty policy")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Argument-selection reduction metadata
+#'
+#' An argument reduction tracks whether a value was seen, the selected value,
+#' and its one-based index. The first concrete form supports R-compatible
+#' maximum selection while ignoring missing double values.
+#'
+#' @inheritParams TccqReductionSpec
+#' @param direction Value-selection direction.
+#' @param missing Missing-value policy.
+#' @param ties Tie-selection policy.
+#' @export
+TccqArgReductionSpec <- S7::new_class(
+  "TccqArgReductionSpec",
+  package = "tccquickr",
+  parent = TccqReductionSpec,
+  properties = list(
+    direction = S7::class_character,
+    missing = S7::class_character,
+    ties = S7::class_character
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (!identical(self@direction, "max")) {
+      problems <- c(problems, "@direction must currently be `max`")
+    }
+    if (!identical(self@missing, "ignore")) {
+      problems <- c(problems, "@missing must currently be `ignore`")
+    }
+    if (!identical(self@ties, "first")) {
+      problems <- c(problems, "@ties must currently be `first`")
+    }
+    if (!identical(self@empty_policy, "error")) {
+      problems <- c(problems, "argument reductions must use the error empty policy")
     }
     if (length(problems) > 0L) problems
   }
@@ -283,7 +357,7 @@ TccqContractionSpec <- S7::new_class(
   properties = list(
     name = S7::class_character,
     signature = TccqOpSignature,
-    reducer = TccqReductionSpec,
+    reducer = TccqFoldReductionSpec,
     combine_op = S7::class_character,
     attrs = S7::class_list
   ),
@@ -690,7 +764,6 @@ TccqResolvedOp <- S7::new_class(
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
-#' @param identity Optional reduction identity literal.
 #' @param attrs Structured metadata.
 #' @export
 TccqLoweredOperation <- S7::new_class(
@@ -704,7 +777,6 @@ TccqLoweredOperation <- S7::new_class(
     elementwise = S7::new_union(NULL, TccqElementwiseSpec),
     reduction = S7::new_union(NULL, TccqReductionSpec),
     contraction = S7::new_union(NULL, TccqContractionSpec),
-    identity = S7::new_union(NULL, TccqLiteral),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -720,7 +792,7 @@ TccqLoweredOperation <- S7::new_class(
       if (!S7::S7_inherits(self@elementwise, TccqElementwiseSpec)) {
         problems <- c(problems, "elementwise lowered operations must carry elementwise metadata")
       }
-      if (!is.null(self@reduction) || !is.null(self@identity) || !is.null(self@contraction)) {
+      if (!is.null(self@reduction) || !is.null(self@contraction)) {
         problems <- c(problems, "elementwise lowered operations cannot carry reducer metadata")
       }
       if (!S7::S7_inherits(self@resolved_op@elementwise, TccqElementwiseSpec)) {
@@ -730,9 +802,6 @@ TccqLoweredOperation <- S7::new_class(
     if (identical(self@family, "reduction")) {
       if (!S7::S7_inherits(self@reduction, TccqReductionSpec)) {
         problems <- c(problems, "reduction lowered operations must carry reduction metadata")
-      }
-      if (!S7::S7_inherits(self@identity, TccqLiteral)) {
-        problems <- c(problems, "reduction lowered operations must carry an identity literal")
       }
       if (!is.null(self@elementwise) || !is.null(self@contraction)) {
         problems <- c(problems, "reduction lowered operations cannot carry other family metadata")
@@ -744,9 +813,6 @@ TccqLoweredOperation <- S7::new_class(
     if (identical(self@family, "contraction")) {
       if (!S7::S7_inherits(self@contraction, TccqContractionSpec)) {
         problems <- c(problems, "contraction lowered operations must carry contraction metadata")
-      }
-      if (!S7::S7_inherits(self@identity, TccqLiteral)) {
-        problems <- c(problems, "contraction lowered operations must carry an identity literal")
       }
       if (!is.null(self@elementwise) || !is.null(self@reduction)) {
         problems <- c(problems, "contraction lowered operations cannot carry other family metadata")
@@ -1351,11 +1417,10 @@ S7::method(tccq_elementwise_result_type, TccqElementwiseSpec) <- function(spec, 
 #'
 #' @param name Human-readable reduction name.
 #' @param identity Function from result `TccqType` to identity `TccqLiteral`.
-#' @param finalize Optional function from accumulator/count source strings and
-#'   render context to the stored-value source string (e.g. `mean` divides the
-#'   folded accumulator by the reduced element count).
-#' @param combine Function from accumulator/source strings and render context
-#'   to a target-source combine expression.
+#' @param finalize_op Optional registered operation applied to the completed
+#'   accumulator and reduced element count.
+#' @param combine_op Registered operation combining the accumulator and current
+#'   value.
 #' @param associative Whether the reducer is associative.
 #' @param commutative Whether the reducer is commutative.
 #' @param attrs Structured reduction metadata.
@@ -1365,8 +1430,8 @@ S7::method(tccq_elementwise_result_type, TccqElementwiseSpec) <- function(spec, 
 tccq_reduction_spec <- function(
   name,
   identity,
-  combine,
-  finalize = NULL,
+  combine_op,
+  finalize_op = "",
   associative = TRUE,
   commutative = TRUE,
   attrs = list(),
@@ -1381,22 +1446,8 @@ tccq_reduction_spec <- function(
       path = "reduction.identity"
     )
   }
-  if (!is.function(combine)) {
-    tccq_abort(
-      "schema.invalid_reduction_combine",
-      "`combine` must be a function.",
-      phase = "schema",
-      path = "reduction.combine"
-    )
-  }
-  if (!is.null(finalize) && !is.function(finalize)) {
-    tccq_abort(
-      "schema.invalid_reduction_finalize",
-      "`finalize` must be NULL or a function.",
-      phase = "schema",
-      path = "reduction.finalize"
-    )
-  }
+  .tccq_check_character_scalar(combine_op, "combine_op")
+  .tccq_check_character_or_empty(finalize_op, "finalize_op")
   .tccq_check_logical_scalar(associative, "associative")
   .tccq_check_logical_scalar(commutative, "commutative")
   .tccq_check_list(attrs, "attrs")
@@ -1418,15 +1469,53 @@ tccq_reduction_spec <- function(
     .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
   }
 
-  TccqReductionSpec(
+  TccqFoldReductionSpec(
     name = name,
     signature = signature,
-    identity = identity,
-    combine = combine,
-    finalize = finalize,
     associative = associative,
     commutative = commutative,
-    attrs = attrs
+    empty_policy = "identity",
+    attrs = attrs,
+    identity = identity,
+    combine_op = combine_op,
+    finalize_op = finalize_op
+  )
+}
+
+#' Construct argument-selection reduction metadata
+#'
+#' @param name Human-readable reduction name.
+#' @param signature Shared operation signature.
+#' @param direction Value-selection direction.
+#' @param missing Missing-value policy.
+#' @param ties Tie-selection policy.
+#' @param attrs Structured reduction metadata.
+#' @export
+tccq_arg_reduction_spec <- function(
+  name,
+  signature,
+  direction = "max",
+  missing = "ignore",
+  ties = "first",
+  attrs = list()
+) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
+  .tccq_check_character_scalar(direction, "direction")
+  .tccq_check_character_scalar(missing, "missing")
+  .tccq_check_character_scalar(ties, "ties")
+  .tccq_check_list(attrs, "attrs")
+
+  TccqArgReductionSpec(
+    name = name,
+    signature = signature,
+    associative = FALSE,
+    commutative = FALSE,
+    empty_policy = "error",
+    attrs = attrs,
+    direction = direction,
+    missing = missing,
+    ties = ties
   )
 }
 
@@ -1447,7 +1536,7 @@ tccq_contraction_spec <- function(
 ) {
   .tccq_check_character_scalar(name, "name")
   .tccq_check_s7(signature, TccqOpSignature, "TccqOpSignature", "signature")
-  .tccq_check_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
+  .tccq_check_s7(reducer, TccqFoldReductionSpec, "TccqFoldReductionSpec", "reducer")
   .tccq_check_character_scalar(combine_op, "combine_op")
   .tccq_check_list(attrs, "attrs")
 
@@ -1515,7 +1604,7 @@ tccq_reduction_identity <- S7::new_generic(
   function(spec, type) S7::S7_dispatch()
 )
 
-S7::method(tccq_reduction_identity, TccqReductionSpec) <- function(spec, type) {
+S7::method(tccq_reduction_identity, TccqFoldReductionSpec) <- function(spec, type) {
   .tccq_check_s7(type, TccqType, "TccqType", "type")
   identity <- tryCatch(
     spec@identity(type),
@@ -1546,119 +1635,6 @@ S7::method(tccq_reduction_identity, TccqReductionSpec) <- function(spec, type) {
     return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
   }
   tccq_result(success = TRUE, value = identity)
-}
-
-#' Render a reduction combine expression
-#'
-#' @param spec Reduction metadata.
-#' @param accumulator Accumulator source expression.
-#' @param value Current element source expression.
-#' @param context Operation rendering context.
-#' @export
-tccq_reduction_combine <- S7::new_generic(
-  "tccq_reduction_combine",
-  dispatch_args = "spec",
-  function(spec, accumulator, value, context) S7::S7_dispatch()
-)
-
-S7::method(tccq_reduction_combine, TccqReductionSpec) <- function(spec, accumulator, value, context) {
-  if (!is.character(accumulator) || length(accumulator) != 1L || is.na(accumulator) || !nzchar(accumulator)) {
-    diagnostic <- tccq_diagnostic(
-      "ops.invalid_reduction_accumulator",
-      "Reduction accumulators must be one non-empty source string.",
-      phase = "ops",
-      path = "reduction.accumulator",
-      data = list(reducer = spec@name, accumulator = accumulator)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  if (!is.character(value) || length(value) != 1L || is.na(value) || !nzchar(value)) {
-    diagnostic <- tccq_diagnostic(
-      "ops.invalid_reduction_value",
-      "Reduction values must be one non-empty source string.",
-      phase = "ops",
-      path = "reduction.value",
-      data = list(reducer = spec@name, value = value)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  .tccq_check_s7(context, TccqOpRenderContext, "TccqOpRenderContext", "context")
-  combined <- tryCatch(
-    spec@combine(accumulator, value, context),
-    error = identity
-  )
-  if (inherits(combined, "error")) {
-    diagnostic <- tccq_diagnostic(
-      "ops.reduction_combine_failed",
-      conditionMessage(combined),
-      phase = "ops",
-      path = "reduction.combine",
-      data = list(reducer = spec@name, language = context@language)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  if (!is.character(combined) || length(combined) != 1L || is.na(combined) || !nzchar(combined)) {
-    diagnostic <- tccq_diagnostic(
-      "ops.invalid_reduction_combine",
-      "Reduction combine functions must return one non-empty source string.",
-      phase = "ops",
-      path = "reduction.combine",
-      data = list(reducer = spec@name, language = context@language)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  tccq_result(success = TRUE, value = combined)
-}
-
-#' Render a reducer's finalization expression
-#'
-#' Some reducers transform the folded accumulator once after the reduce loops
-#' close — `mean` and `colMeans` divide by the reduced element count. The
-#' finalizer receives the accumulator source string, the reduced-count source
-#' string, and the render context, and returns the stored-value source string.
-#' Reducers without a finalizer return the accumulator unchanged.
-#'
-#' @param spec Reduction metadata.
-#' @param accumulator Accumulator source string.
-#' @param count Reduced element-count source string.
-#' @param context Render context.
-#' @export
-tccq_reduction_finalize <- S7::new_generic(
-  "tccq_reduction_finalize",
-  dispatch_args = "spec",
-  function(spec, accumulator, count, context) S7::S7_dispatch()
-)
-
-S7::method(tccq_reduction_finalize, TccqReductionSpec) <- function(spec, accumulator, count, context) {
-  if (is.null(spec@finalize)) {
-    return(tccq_result(success = TRUE, value = accumulator))
-  }
-  .tccq_check_s7(context, TccqOpRenderContext, "TccqOpRenderContext", "context")
-  finalized <- tryCatch(
-    spec@finalize(accumulator, count, context),
-    error = identity
-  )
-  if (inherits(finalized, "error")) {
-    diagnostic <- tccq_diagnostic(
-      "ops.reduction_finalize_failed",
-      conditionMessage(finalized),
-      phase = "ops",
-      path = "reduction.finalize",
-      data = list(reducer = spec@name, language = context@language)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  if (!is.character(finalized) || length(finalized) != 1L || is.na(finalized) || !nzchar(finalized)) {
-    diagnostic <- tccq_diagnostic(
-      "ops.invalid_reduction_finalize",
-      "Reduction finalize functions must return one non-empty source string.",
-      phase = "ops",
-      path = "reduction.finalize",
-      data = list(reducer = spec@name, language = context@language)
-    )
-    return(tccq_result(success = FALSE, diagnostics = list(diagnostic)))
-  }
-  tccq_result(success = TRUE, value = finalized)
 }
 
 #' Operation implementation trait
@@ -2525,7 +2501,6 @@ tccq_resolved_op <- function(call, implementation, attrs = list()) {
 #' @param elementwise Optional elementwise metadata.
 #' @param reduction Optional reduction metadata.
 #' @param contraction Optional contraction metadata.
-#' @param identity Optional reduction identity literal.
 #' @param attrs Structured metadata.
 #' @export
 tccq_lowered_operation <- function(
@@ -2535,7 +2510,6 @@ tccq_lowered_operation <- function(
   elementwise = NULL,
   reduction = NULL,
   contraction = NULL,
-  identity = NULL,
   attrs = list()
 ) {
   .tccq_check_character_scalar(family, "family")
@@ -2553,7 +2527,6 @@ tccq_lowered_operation <- function(
   .tccq_check_optional_s7(elementwise, TccqElementwiseSpec, "TccqElementwiseSpec", "elementwise")
   .tccq_check_optional_s7(reduction, TccqReductionSpec, "TccqReductionSpec", "reduction")
   .tccq_check_optional_s7(contraction, TccqContractionSpec, "TccqContractionSpec", "contraction")
-  .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
   .tccq_check_list(attrs, "attrs")
 
   if (identical(family, "elementwise")) {
@@ -2567,7 +2540,7 @@ tccq_lowered_operation <- function(
         data = list(op = resolved_op@call@name)
       )
     }
-    if (!is.null(reduction) || !is.null(identity)) {
+    if (!is.null(reduction)) {
       tccq_abort(
         "schema.invalid_lowered_operation_payload",
         "Elementwise lowered operations cannot carry reducer metadata.",
@@ -2587,15 +2560,6 @@ tccq_lowered_operation <- function(
         "Reduction lowered operations must carry reduction metadata.",
         phase = "schema",
         path = "lowered_operation.reduction",
-        data = list(op = resolved_op@call@name)
-      )
-    }
-    if (!S7::S7_inherits(identity, TccqLiteral)) {
-      tccq_abort(
-        "schema.lowered_operation_identity_required",
-        "Reduction lowered operations must carry an identity literal.",
-        phase = "schema",
-        path = "lowered_operation.identity",
         data = list(op = resolved_op@call@name)
       )
     }
@@ -2622,15 +2586,6 @@ tccq_lowered_operation <- function(
         data = list(op = resolved_op@call@name)
       )
     }
-    if (!S7::S7_inherits(identity, TccqLiteral)) {
-      tccq_abort(
-        "schema.lowered_operation_identity_required",
-        "Contraction lowered operations must carry an identity literal.",
-        phase = "schema",
-        path = "lowered_operation.identity",
-        data = list(op = resolved_op@call@name)
-      )
-    }
     signature <- signature %||% contraction@signature
   }
 
@@ -2642,7 +2597,6 @@ tccq_lowered_operation <- function(
     elementwise = elementwise,
     reduction = reduction,
     contraction = contraction,
-    identity = identity,
     attrs = attrs
   )
 }
@@ -2811,6 +2765,71 @@ tccq_default_op_registry <- function() {
     ">=" = comparison_renderer(">="),
     "==" = comparison_renderer("=="),
     "!=" = comparison_renderer("!=", "/="),
+    "!" = function(operands, context) {
+      if (identical(context@language, "fortran")) {
+        return(sprintf(
+          "merge(tccq_na_logical, merge(1_c_int, 0_c_int, %s == 0_c_int), %s == tccq_na_logical)",
+          operands[[1L]],
+          operands[[1L]]
+        ))
+      }
+      sprintf(
+        "((%s == TCCQ_NA_LOGICAL) ? TCCQ_NA_LOGICAL : (%s == 0 ? 1 : 0))",
+        operands[[1L]],
+        operands[[1L]]
+      )
+    },
+    "&" = function(operands, context) {
+      if (identical(context@language, "fortran")) {
+        return(sprintf(
+          paste0(
+            "merge(0_c_int, merge(tccq_na_logical, 1_c_int, ",
+            "%s == tccq_na_logical .or. %s == tccq_na_logical), ",
+            "%s == 0_c_int .or. %s == 0_c_int)"
+          ),
+          operands[[1L]], operands[[2L]], operands[[1L]], operands[[2L]]
+        ))
+      }
+      sprintf(
+        paste0(
+          "((%s == 0 || %s == 0) ? 0 : ",
+          "((%s == TCCQ_NA_LOGICAL || %s == TCCQ_NA_LOGICAL) ? TCCQ_NA_LOGICAL : 1))"
+        ),
+        operands[[1L]], operands[[2L]], operands[[1L]], operands[[2L]]
+      )
+    },
+    "|" = function(operands, context) {
+      if (identical(context@language, "fortran")) {
+        return(sprintf(
+          paste0(
+            "merge(1_c_int, merge(tccq_na_logical, 0_c_int, ",
+            "%s == tccq_na_logical .or. %s == tccq_na_logical), ",
+            "(%s /= tccq_na_logical .and. %s /= 0_c_int) .or. ",
+            "(%s /= tccq_na_logical .and. %s /= 0_c_int))"
+          ),
+          operands[[1L]], operands[[2L]],
+          operands[[1L]], operands[[1L]], operands[[2L]], operands[[2L]]
+        ))
+      }
+      sprintf(
+        paste0(
+          "(((%s != TCCQ_NA_LOGICAL && %s != 0) || ",
+          "(%s != TCCQ_NA_LOGICAL && %s != 0)) ? 1 : ",
+          "((%s == TCCQ_NA_LOGICAL || %s == TCCQ_NA_LOGICAL) ? TCCQ_NA_LOGICAL : 0))"
+        ),
+        operands[[1L]], operands[[1L]], operands[[2L]], operands[[2L]],
+        operands[[1L]], operands[[2L]]
+      )
+    },
+    "is.na" = function(operands, context) {
+      if (identical(context@language, "fortran")) {
+        return(sprintf(
+          "merge(1_c_int, 0_c_int, ieee_is_nan(real(%s, c_double)))",
+          operands[[1L]]
+        ))
+      }
+      sprintf("(isnan((double)(%s)) ? 1 : 0)", operands[[1L]])
+    },
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
   )
@@ -2869,6 +2888,30 @@ tccq_default_op_registry <- function() {
         phase = "ops",
         path = "comparison.type",
         data = list(base = unsupported_bases)
+      )
+    }
+    tccq_type("logical", result_shape)
+  }
+  logical_result_type <- function(input_types, result_shape) {
+    if (any(vapply(input_types, function(type) !identical(type@base, "logical"), logical(1)))) {
+      tccq_abort(
+        "ops.unsupported_logical_type",
+        "Logical operations require logical inputs.",
+        phase = "ops",
+        path = "logical.type",
+        data = list(types = input_types)
+      )
+    }
+    tccq_type("logical", result_shape)
+  }
+  missing_result_type <- function(input_types, result_shape) {
+    if (length(input_types) != 1L || !identical(input_types[[1L]]@base, "double")) {
+      tccq_abort(
+        "ops.unsupported_missing_type",
+        "The current missing-value predicate requires one double input.",
+        phase = "ops",
+        path = "missing.type",
+        data = list(types = input_types)
       )
     }
     tccq_type("logical", result_shape)
@@ -2940,6 +2983,30 @@ tccq_default_op_registry <- function() {
       numeric_comparison_result_type,
       domain_policy = scalar_numeric_comparison_domain
     ),
+    "!" = tccq_elementwise_spec(
+      "!",
+      1L,
+      logical_result_type,
+      domain_policy = elementwise_domain_policy
+    ),
+    "&" = tccq_elementwise_spec(
+      "&",
+      2L,
+      logical_result_type,
+      domain_policy = elementwise_domain_policy
+    ),
+    "|" = tccq_elementwise_spec(
+      "|",
+      2L,
+      logical_result_type,
+      domain_policy = elementwise_domain_policy
+    ),
+    "is.na" = tccq_elementwise_spec(
+      "is.na",
+      1L,
+      missing_result_type,
+      domain_policy = elementwise_domain_policy
+    ),
     sqrt = tccq_elementwise_spec(
       "sqrt",
       1L,
@@ -2965,6 +3032,10 @@ tccq_default_op_registry <- function() {
     ">=" = tccq_effect(reads = TRUE),
     "==" = tccq_effect(reads = TRUE),
     "!=" = tccq_effect(reads = TRUE),
+    "!" = tccq_effect(reads = TRUE),
+    "&" = tccq_effect(reads = TRUE),
+    "|" = tccq_effect(reads = TRUE),
+    "is.na" = tccq_effect(reads = TRUE),
     sqrt = tccq_effect(reads = TRUE, may_warn = TRUE),
     exp = tccq_effect(reads = TRUE)
   )
@@ -2980,9 +3051,6 @@ tccq_default_op_registry <- function() {
     }
     identity_value <- if (identical(type@base, "integer")) 0L else 0
     tccq_literal_finite(identity_value, type = type)
-  }
-  sum_combine <- function(accumulator, value, context) {
-    sprintf("%s + %s", accumulator, value)
   }
   numeric_axis_reduction_type <- function(input_types, result_shape) {
     input_type <- input_types[[1L]]
@@ -3018,22 +3086,19 @@ tccq_default_op_registry <- function() {
   base_sum_reduction <- tccq_reduction_spec(
     "sum",
     identity = sum_identity,
-    combine = sum_combine
+    combine_op = "+"
   )
-  mean_finalize <- function(accumulator, count, context) {
-    sprintf("(%s / %s)", accumulator, count)
-  }
   base_mean_reduction <- tccq_reduction_spec(
     "mean",
     identity = sum_identity,
-    combine = sum_combine,
-    finalize = mean_finalize
+    combine_op = "+",
+    finalize_op = "/"
   )
   column_mean_reduction <- tccq_reduction_spec(
     "mean",
     identity = sum_identity,
-    combine = sum_combine,
-    finalize = mean_finalize,
+    combine_op = "+",
+    finalize_op = "/",
     signature = tccq_op_signature(
       "colMeans",
       1L,
@@ -3045,8 +3110,8 @@ tccq_default_op_registry <- function() {
   row_mean_reduction <- tccq_reduction_spec(
     "mean",
     identity = sum_identity,
-    combine = sum_combine,
-    finalize = mean_finalize,
+    combine_op = "+",
+    finalize_op = "/",
     signature = tccq_op_signature(
       "rowMeans",
       1L,
@@ -3135,7 +3200,7 @@ tccq_default_op_registry <- function() {
   column_sum_reduction <- tccq_reduction_spec(
     "sum",
     identity = sum_identity,
-    combine = sum_combine,
+    combine_op = "+",
     signature = tccq_op_signature(
       "colSums",
       1L,
@@ -3147,7 +3212,7 @@ tccq_default_op_registry <- function() {
   row_sum_reduction <- tccq_reduction_spec(
     "sum",
     identity = sum_identity,
-    combine = sum_combine,
+    combine_op = "+",
     signature = tccq_op_signature(
       "rowSums",
       1L,
@@ -3155,6 +3220,31 @@ tccq_default_op_registry <- function() {
       domain_policy = axis_reduction_domain_policy("axis_reduce_rows", kept_axis = 1L)
     ),
     attrs = list(reduction_axes = 2L, kept_axes = 1L, axis_kind = "rows")
+  )
+  which_max_signature <- tccq_op_signature(
+    "which.max",
+    1L,
+    result_type = function(input_types, result_shape) {
+      input_type <- input_types[[1L]]
+      if (input_type@shape@rank != 1L || !identical(input_type@base, "double")) {
+        tccq_abort(
+          "ops.unsupported_argument_reduction_type",
+          "`which.max` currently requires one rank-1 double input.",
+          phase = "ops",
+          path = "argument_reduction.type",
+          data = list(type = input_type)
+        )
+      }
+      tccq_type("integer", result_shape)
+    },
+    domain_policy = tccq_domain_policy(
+      "argument_reduction_scalar_result",
+      result_shape = function(input_types) tccq_shape()
+    )
+  )
+  which_max_reduction <- tccq_arg_reduction_spec(
+    "which.max",
+    signature = which_max_signature
   )
   seq_len_iteration <- tccq_iteration_spec(
     "seq_len",
@@ -3250,6 +3340,13 @@ tccq_default_op_registry <- function() {
         region_kind = "kernel",
         effect = tccq_effect(reads = TRUE),
         reduction = row_mean_reduction
+      ),
+      tccq_op_impl(
+        "which.max",
+        target = "native",
+        region_kind = "kernel",
+        effect = tccq_effect(reads = TRUE, may_error = TRUE),
+        reduction = which_max_reduction
       ),
       tccq_op_impl(
         "%*%",

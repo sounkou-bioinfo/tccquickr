@@ -100,7 +100,7 @@ what is missing from the compiler model; it does not mean the call is not R.
 observed call, selected `TccqOpImpl`, target, region kind, memory space, purity,
 boundary status, R C API usage, and effect. `TccqLoweredOperation` is the next
 payload: it keeps the lowered family, resolved operation, signature, domain
-policy, and optional reducer identity together on the operation value. Fusion,
+policy, and optional reducer specification together on the operation value. Fusion,
 storage, and backend planning consume that typed payload instead of
 rediscovering semantics from `TccqValue@op` or a handful of loose attributes.
 Operation implementations may also expose a source renderer through
@@ -148,11 +148,15 @@ composite such as `1 / (1 + exp(-x))` without changing either source printer.
 Reducers follow the same rule. A reducer is not recognized because the lowerer
 knows the text `sum`; a call lowers as a reduction only when the resolved
 operation carries a `TccqReductionSpec`. That spec carries a `TccqOpSignature`
-for the call shape, result-domain policy, and result type, then adds the
-identity literal and accumulator combine expression needed by source printers.
-The default registry models base `sum` as one such implementation, and another
-registry can model a different fold surface through the same contract without
-changing the lowerer or the C and Fortran printers.
+for the call shape, result-domain policy, and result type. Concrete reducer
+subtypes define neutral state rather than assuming every reduction is a scalar
+monoid fold. `TccqFoldReductionSpec` owns identity, combine, and optional
+finalize behavior for sums and means. `TccqArgReductionSpec` owns selection
+policy for `which.max`; loop planning realizes it as `TccqReductionState`
+components for seen, selected value, and selected index. One
+`TccqReductionPlan` closes the spec, state, optional transition condition,
+typed updates, result projection, and validity expression. C and Fortran render
+that same plan.
 
 Contractions are the third operation family. A call lowers as a contraction
 only when the resolved operation carries a `TccqContractionSpec`, which owns
@@ -166,7 +170,8 @@ axis-order fact in the nest plan, never a materialized transpose, so all
 three are instances of the same loop-nest plan as maps and reductions.
 Reducers may additionally carry a finalizer applied to the folded accumulator
 once the reduce loops close — `mean`, `colMeans`, and `rowMeans` divide by
-the reduced element count — rendered through `tccq_reduction_finalize()`.
+the reduced element count through an ordinary registered division expression
+in `TccqReductionPlan`.
 
 ## Current lowering boundary
 
@@ -280,17 +285,17 @@ exist.
 Source printers consume an ordered sequence of `TccqLoopNest` values built
 from the lowered program: backend-neutral with-loops in the SAC lineage,
 intermediates first, the result nest last. Each nest carries ordered
-`TccqLoopAxis` values (`map` axes produce output positions, `reduce` axes fold
-into an accumulator), a value-expression or typed-statement-block body whose
+`TccqLoopAxis` values (`map` axes produce output positions, `reduce` axes advance
+reduction state), a value-expression or typed-statement-block body whose
 references carry `TccqExpressionReference` payloads. That payload separates the
 expression value id from its logical source value id and owns its optional
 symbol, lexical binding, slice offsets, and typed `TccqAccess` map of affine
 `TccqIndexExpr` values. It does not identify physical storage; that remains a
 `TccqStorageAllocation`. `TccqAccess` is also closed: a recycle access owns the
 typed consumer shape whose axis order is linearized, while every other access
-has no consumer shape. Each nest also carries an optional reducer with its
-identity and an output access; intermediate nests additionally name the scalar
-or temporary buffer their result materializes. `TccqExpression` has no open
+has no consumer shape. Each nest also carries an optional closed
+`TccqReductionPlan` and an output access; intermediate nests additionally name
+the scalar or temporary buffer their result materializes. `TccqExpression` has no open
 metadata channel: every expression carries a typed effect, and an operation
 expression carries the full `TccqLoweredOperation` that owns its resolution,
 signature, domain policy, family, and reducer or contraction facts. Printers

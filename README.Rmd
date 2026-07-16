@@ -95,8 +95,8 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 ```
 
 Programs are no longer limited to one loop nest. A scalar reduction feeding
-later work becomes its own all-reduce nest. Its reducer folds through a typed
-scalar accumulator, then writes a distinct typed materialized scalar slot that
+later work becomes its own all-reduce nest. Its reducer advances typed neutral
+state, then projects a distinct typed materialized scalar slot that
 the final nest reads. The backend interface assigns source names to both values;
 the loop nest contains no target names or generic metadata bag. This SAC-style
 composition is visible in the emitted source:
@@ -196,9 +196,16 @@ unname(vapply(
 ))
 ```
 
-**Reductions and contractions.** `sum` and `mean` fold full rank-N domains;
-`colSums`, `rowSums`, `colMeans`, and `rowMeans` fold selected axes. Custom
-reducers use `TccqReductionSpec`, including an optional accumulator finalizer.
+**Reductions and contractions.** `TccqReductionSpec` is the common reducer
+protocol rather than a promise that every reduction has one scalar accumulator.
+`TccqFoldReductionSpec` gives `sum`, `mean`, `colSums`, `rowSums`, `colMeans`,
+and `rowMeans` one identity/combine/finalize state component. `which.max` uses
+`TccqArgReductionSpec` and a typed `TccqReductionState` containing a seen flag,
+selected value, and one-based selected index. The loop planner owns that state;
+C, TinyCC, and Fortran only render its typed transition and result projection.
+The current scalar ABI cannot represent R's `integer(0)` result, so an empty or
+all-missing input reports the classed `runtime.reduction_has_no_value`
+diagnostic instead of inventing an index.
 `%*%`, `crossprod`, and `tcrossprod` use a typed
 `TccqContractionSpec`, so contracted dimensions and transposition remain axis
 facts rather than target-source conventions.
@@ -329,8 +336,8 @@ otherwise — so `x / sum(x)`, `colSums(x) + 1`, `(x %*% w) + y`, and
 `cs <- colSums(x); cs / sum(cs)` compile as ordered nest sequences. A value
 consumed twice materializes once. Every nest carries the typed storage slot
 that receives its result, and every reducer carries a separate typed scalar
-accumulator target. `TccqBackendFunctionInterface` binds generated names to
-those values for C, TinyCC, and Fortran.
+state. `TccqBackendFunctionInterface` binds generated names to each state
+component for C, TinyCC, and Fortran.
 
 A materialized temporary slot owns a `TccqStorageAllocation`. Two same-typed
 buffer slots share that physical identity only when schedule-derived, complete
@@ -417,6 +424,10 @@ probes <- list(
     z <- (x - mu) / sigma
     eta <- z %*% w
     1 / (1 + exp(-eta))
+  },
+  argument_maximum = function(x) {
+    declare(type(x = double(n)))
+    which.max(x)
   },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
@@ -505,7 +516,7 @@ probes <- list(
 probe_status <- function(fn) {
   compiled <- tccq_compile(fn, strict = FALSE)
   if (compiled@success) {
-    return("compiles through C, Fortran, and TinyCC JIT")
+    return("compiles through at least one configured backend")
   }
   diagnostic <- compiled@diagnostics[[1L]]
   sprintf("`%s`", diagnostic@code)

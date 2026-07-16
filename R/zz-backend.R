@@ -1906,15 +1906,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         ))
       }
-      unsupported_values <- Filter(function(value) {
+      unsupported_formals <- Filter(function(value) {
         type <- value@type
         !identical(type@base, "double") &&
           !(identical(type@base, "logical") && type@shape@rank == 0L)
-      }, c(list(result), formals))
+      }, formals)
+      result_type <- result@type
+      result_is_supported <- identical(result_type@base, "double") ||
+        (result_type@shape@rank == 0L && result_type@base %in% c("logical", "integer"))
+      unsupported_values <- c(unsupported_formals, if (result_is_supported) list() else list(result))
       if (length(unsupported_values) > 0L) {
         return(tccq_diagnostic(
           "backend.unsupported_type",
-          "Source backends currently support double values and scalar logical values.",
+          "Source backends currently support double values, scalar logical inputs, and scalar logical or integer results.",
           phase = "backend",
           path = sprintf("backend.%s.type", backend@id),
           data = list(
@@ -2106,6 +2110,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       if (identical(expression@kind, "literal")) {
         return(literal_text(expression@literal, emit_context$language))
       }
+      if (identical(expression@kind, "element")) {
+        return(expression_text(expression@inputs[[1L]], emit_context))
+      }
       if (identical(expression@kind, "branch")) {
         tccq_abort(
           "backend.branch_requires_statement_context",
@@ -2161,15 +2168,15 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           role = "parameter"
         )
       }, parameter_names, formals))
-      accumulator_targets <- Filter(
-        function(target) !is.null(target),
-        lapply(nests, function(nest) nest@accumulator)
-      )
+      state_components <- unlist(lapply(nests, function(nest) {
+        if (is.null(nest@reduction)) list() else nest@reduction@state@components
+      }), recursive = FALSE)
+      state_targets <- lapply(state_components, function(component) component@target)
       local_targets <- list()
       local_value_ids <- character()
-      for (accumulator_target in accumulator_targets) {
-        local_targets[[length(local_targets) + 1L]] <- accumulator_target
-        local_value_ids <- c(local_value_ids, accumulator_target@value_id)
+      for (state_target in state_targets) {
+        local_targets[[length(local_targets) + 1L]] <- state_target
+        local_value_ids <- c(local_value_ids, state_target@value_id)
       }
       statement_index_names <- character()
       structured_body_has_condition <- FALSE
@@ -2208,10 +2215,21 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       if (structured_body) {
         walk_block(body)
       }
-      accumulator_names <- c_identifier("accumulator", seq_along(accumulator_targets))
-      statement_local_count <- length(local_targets) - length(accumulator_targets)
+      state_component_names <- vapply(
+        state_components,
+        function(component) component@name,
+        character(1)
+      )
+      state_component_occurrences <- integer(length(state_component_names))
+      for (position in seq_along(state_component_names)) {
+        state_component_occurrences[[position]] <- sum(
+          state_component_names[seq_len(position)] == state_component_names[[position]]
+        )
+      }
+      state_names <- sprintf("%s_%04d", state_component_names, state_component_occurrences)
+      statement_local_count <- length(local_targets) - length(state_targets)
       local_names <- c(
-        accumulator_names,
+        state_names,
         c_identifier("local", seq_len(statement_local_count))
       )
       locals <- unname(Map(function(source_name, target) {
@@ -2276,7 +2294,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       has_condition <- any(vapply(
         nests,
         function(nest) {
-            length(nest@guards) > 0L
+          length(nest@guards) > 0L ||
+            (!is.null(nest@reduction) && !is.null(nest@reduction@condition))
         },
         logical(1)
       )) || structured_body_has_condition
@@ -2290,6 +2309,19 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ))
       } else {
         list()
+      }
+      has_empty_reduction_error <- any(vapply(nests, function(nest) {
+        !is.null(nest@reduction) &&
+          identical(nest@reduction@spec@empty_policy, "error")
+      }, logical(1)))
+      if (has_empty_reduction_error) {
+        runtime_diagnostics <- c(runtime_diagnostics, list(tccq_diagnostic(
+          "runtime.reduction_has_no_value",
+          "A generated reduction had no selectable value.",
+          phase = "runtime",
+          path = "callable.reduction",
+          data = list(program = program@name, backend = backend@id)
+        )))
       }
       if (
         has_condition &&
@@ -2311,7 +2343,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       result_needs_local <- structured_body || (
         S7::S7_inherits(result_nest@body, TccqValueBlock) &&
-          is.null(result_nest@reducer)
+          is.null(result_nest@reduction)
       )
       tccq_backend_function_interface(
         symbol = symbol,
@@ -2355,6 +2387,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       value_ids <- vapply(value_bindings, function(binding) binding@value_id, character(1))
       source_names <- vapply(value_bindings, function(binding) binding@source_name, character(1))
       source_name_by_value_id <- as.list(stats::setNames(source_names, value_ids))
+      source_name_by_value_id[interface@index_names] <- as.list(interface@index_names)
+      dimension_value_ids <- sprintf(
+        "dimension.%s",
+        vapply(interface@extents, function(binding) binding@symbol, character(1))
+      )
+      source_name_by_value_id[dimension_value_ids] <- as.list(vapply(
+        interface@extents,
+        function(binding) binding@source_name,
+        character(1)
+      ))
       for (allocation_binding in interface@allocations) {
         allocation_value_ids <- vapply(
           allocation_binding@slots,
@@ -2369,6 +2411,14 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       storage_type_by_value_id <- lapply(
         stats::setNames(formals, vapply(formals, function(value) value@id, character(1))),
         function(value) value@type
+      )
+      storage_type_by_value_id[interface@index_names] <- rep(
+        list(tccq_type("integer")),
+        length(interface@index_names)
+      )
+      storage_type_by_value_id[dimension_value_ids] <- rep(
+        list(tccq_type("integer")),
+        length(dimension_value_ids)
       )
       local_value_ids <- vapply(interface@locals, function(binding) binding@value_id, character(1))
       storage_type_by_value_id[local_value_ids] <- lapply(
@@ -2411,7 +2461,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         return(if (isTRUE(literal@value)) "1" else "0")
       }
       if (identical(literal@type@base, "integer")) {
-        return(sprintf("%d", as.integer(literal@value)))
+        suffix <- if (identical(language, "fortran")) "_c_int" else ""
+        return(sprintf("%d%s", as.integer(literal@value), suffix))
       }
       value <- formatC(as.numeric(literal@value), digits = 17L, format = "fg")
       if (identical(literal@type@base, "double") && !grepl("[.eE]", value)) {
@@ -2423,31 +2474,9 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       value
     }
 
-    reduction_identity_text <- function(reduction_spec, result_type, language) {
-      identity_result <- tccq_reduction_identity(reduction_spec, result_type)
-      if (!identity_result@success) {
-        tccq_abort_diagnostic(identity_result@diagnostics[[1L]])
-      }
-      literal_text(identity_result@value, language)
-    }
-
     loop_plan <- function(interface, nest, emit_context) {
       map_axes <- Filter(function(axis) identical(axis@role, "map"), nest@axes)
       reduce_axes <- Filter(function(axis) identical(axis@role, "reduce"), nest@axes)
-      accumulator_name <- if (is.null(nest@accumulator)) {
-        ""
-      } else {
-        emit_context$source_name_by_value_id[[nest@accumulator@value_id]]
-      }
-      if (!is.null(nest@reducer) && (is.null(accumulator_name) || !nzchar(accumulator_name))) {
-        tccq_abort(
-          "backend.unbound_accumulator",
-          "A reduction loop nest has no generated accumulator name.",
-          phase = "backend",
-          path = sprintf("backend.%s.accumulator", backend@id),
-          data = list(backend = backend@id, nest = nest@id)
-        )
-      }
       materialization_name <- if (identical(nest@storage@role, "temporary")) {
         emit_context$source_name_by_value_id[[nest@storage@value_id]]
       } else {
@@ -2472,7 +2501,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       body_requires_statements <- S7::S7_inherits(nest@body, TccqValueBlock)
       body_text <- if (!body_requires_statements) {
         expression_text(nest@body, emit_context)
-      } else if (!is.null(nest@reducer)) {
+      } else if (!is.null(nest@reduction)) {
         if (!identical(nest@body@result@kind, "local")) {
           tccq_abort(
             "backend.reducer_block_result_not_local",
@@ -2501,43 +2530,31 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         ""
       }
       value_text <- body_text
-      identity_text <- ""
-      combine_text <- ""
-      if (!is.null(nest@reducer)) {
-        render_context <- tccq_op_render_context(
-          language = emit_context$language,
-          backend_id = backend@id,
-          attrs = list(reducer = nest@reducer@name)
+      if (!is.null(nest@reduction)) {
+        state_source_names <- emit_context$source_name_by_value_id
+        state_target_ids <- vapply(
+          nest@reduction@state@components,
+          function(component) component@target@value_id,
+          character(1)
         )
-        identity_text <- literal_text(nest@identity, emit_context$language)
-        combine_result <- tccq_reduction_combine(
-          nest@reducer,
-          accumulator_name,
-          body_text,
-          render_context
-        )
-        if (!combine_result@success) {
-          tccq_abort_diagnostic(combine_result@diagnostics[[1L]])
+        unbound_state_targets <- state_target_ids[vapply(
+          state_target_ids,
+          function(value_id) {
+            source_name <- state_source_names[[value_id]]
+            is.null(source_name) || !nzchar(source_name)
+          },
+          logical(1)
+        )]
+        if (length(unbound_state_targets) > 0L) {
+          tccq_abort(
+            "backend.unbound_reduction_state",
+            "A reduction-state component has no generated source name.",
+            phase = "backend",
+            path = sprintf("backend.%s.reduction_state", backend@id),
+            data = list(backend = backend@id, nest = nest@id, targets = unbound_state_targets)
+          )
         }
-        combine_text <- combine_result@value
-        count_text <- paste(
-          vapply(
-            reduce_axes,
-            function(axis) extent_text(axis@extent, emit_context$extent_by_symbol),
-            character(1)
-          ),
-          collapse = " * "
-        )
-        finalize_result <- tccq_reduction_finalize(
-          nest@reducer,
-          accumulator_name,
-          count_text,
-          render_context
-        )
-        if (!finalize_result@success) {
-          tccq_abort_diagnostic(finalize_result@diagnostics[[1L]])
-        }
-        value_text <- finalize_result@value
+        value_text <- expression_text(nest@reduction@value, emit_context)
       }
       output_index <- if (!is.null(nest@output)) {
         linear_index_text(
@@ -2551,13 +2568,10 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       list(
         map_axes = map_axes,
         reduce_axes = reduce_axes,
-        accumulator_name = accumulator_name,
-        accumulator_type = if (is.null(nest@accumulator)) NULL else nest@accumulator@storage_type,
+        reduction = nest@reduction,
         materialization_name = materialization_name,
         body_text = body_text,
         value_text = value_text,
-        identity_text = identity_text,
-        combine_text = combine_text,
         output_index = output_index,
         body = nest@body,
         body_requires_statements = body_requires_statements,
@@ -2709,6 +2723,76 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             character(1)
           )
         )
+      }
+      reduction_failure_status <- if (is.null(interface@error_channel)) {
+        NA_integer_
+      } else {
+        match(
+          "runtime.reduction_has_no_value",
+          vapply(
+            interface@error_channel@diagnostics,
+            function(diagnostic) diagnostic@code,
+            character(1)
+          )
+        )
+      }
+      emit_state_initialization <- function(reduction_plan) {
+        for (component in reduction_plan$reduction@state@components) {
+          source_name <- emit_context$source_name_by_value_id[[component@target@value_id]]
+          push(sprintf(
+            "%s %s = %s;",
+            source_scalar_type(component@target@storage_type, "c"),
+            source_name,
+            literal_text(component@identity, "c")
+          ))
+        }
+      }
+      emit_state_step <- function(reduction_plan) {
+        condition <- reduction_plan$reduction@condition
+        if (!is.null(condition)) {
+          push("{")
+          depth <<- depth + 1L
+          emit_condition_value(condition)
+          push("if (condition_value != 0) {")
+          depth <<- depth + 1L
+        }
+        for (assignment in reduction_plan$reduction@updates) {
+          source_name <- emit_context$source_name_by_value_id[[assignment@target@value_id]]
+          push(sprintf(
+            "%s = %s;",
+            source_name,
+            expression_text(assignment@value, emit_context)
+          ))
+        }
+        if (!is.null(condition)) {
+          depth <<- depth - 1L
+          push("}")
+          depth <<- depth - 1L
+          push("}")
+        }
+      }
+      emit_reduction_validity <- function(reduction_plan) {
+        validity <- reduction_plan$reduction@valid
+        if (is.null(validity)) {
+          return(invisible(NULL))
+        }
+        if (is.na(reduction_failure_status)) {
+          tccq_abort(
+            "backend.missing_error_channel",
+            "A fallible reduction requires a callable error channel.",
+            phase = "backend",
+            path = sprintf("backend.%s.error_channel", backend@id)
+          )
+        }
+        push(sprintf("if (!(%s)) {", expression_text(validity, emit_context)))
+        push(sprintf(
+          "*%s = %d;",
+          interface@error_channel@source_name,
+          reduction_failure_status
+        ), depth + 1L)
+        push("goto tccq_runtime_failure;", depth + 1L)
+        push("}")
+        invisible(NULL)
       }
       emit_condition_value <- function(condition) {
         if (is.na(condition_failure_status)) {
@@ -2980,13 +3064,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
-        if (!is.null(intermediate@reducer)) {
-          push(sprintf(
-            "%s %s = %s;",
-            source_scalar_type(intermediate_plan$accumulator_type, "c"),
-            intermediate_plan$accumulator_name,
-            intermediate_plan$identity_text
-          ))
+        if (!is.null(intermediate@reduction)) {
+          emit_state_initialization(intermediate_plan)
           for (axis in intermediate_plan$reduce_axes) {
             open_loop(axis)
           }
@@ -2995,23 +3074,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
               intermediate_plan$body,
               result_target = "",
               after_statements = function() {
-                push(sprintf(
-                  "%s = %s;",
-                  intermediate_plan$accumulator_name,
-                  intermediate_plan$combine_text
-                ))
+                emit_state_step(intermediate_plan)
               }
             )
           } else {
-            push(sprintf(
-              "%s = %s;",
-              intermediate_plan$accumulator_name,
-              intermediate_plan$combine_text
-            ))
+            emit_state_step(intermediate_plan)
           }
           for (axis in intermediate_plan$reduce_axes) {
             close_loop(axis)
           }
+          emit_reduction_validity(intermediate_plan)
         }
         materialization_target <- if (materializes_buffer) {
           sprintf(
@@ -3022,7 +3094,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           intermediate_plan$materialization_name
         }
-        if (is.null(intermediate@reducer) && intermediate_plan$body_requires_statements) {
+        if (is.null(intermediate@reduction) && intermediate_plan$body_requires_statements) {
           emit_statement_block(intermediate_plan$body, materialization_target)
         } else {
           push(sprintf(
@@ -3039,13 +3111,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       for (axis in plan$map_axes) {
         open_loop(axis)
       }
-      if (!is.null(result_nest@reducer)) {
-        push(sprintf(
-          "%s %s = %s;",
-          source_scalar_type(plan$accumulator_type, "c"),
-          plan$accumulator_name,
-          plan$identity_text
-        ))
+      if (!is.null(result_nest@reduction)) {
+        emit_state_initialization(plan)
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
@@ -3054,19 +3121,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             plan$body,
             result_target = "",
             after_statements = function() {
-              push(sprintf("%s = %s;", plan$accumulator_name, plan$combine_text))
+              emit_state_step(plan)
             }
           )
         } else {
-          push(sprintf("%s = %s;", plan$accumulator_name, plan$combine_text))
+          emit_state_step(plan)
         }
         for (axis in plan$reduce_axes) {
           close_loop(axis)
         }
+        emit_reduction_validity(plan)
       }
       if (returns_buffer) {
         output_target <- sprintf("%s[%s]", interface@result_name, plan$output_index)
-        if (!is.null(result_nest@reducer)) {
+        if (!is.null(result_nest@reduction)) {
           push(sprintf("%s = %s;", output_target, plan$value_text))
         } else if (plan$body_requires_statements) {
           emit_statement_block(plan$body, output_target)
@@ -3082,7 +3150,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       }
       if (returns_buffer) {
         push(if (output_argument) "return;" else sprintf("return %s;", interface@result_name))
-      } else if (!is.null(result_nest@reducer)) {
+      } else if (!is.null(result_nest@reduction)) {
         push(sprintf("return %s;", plan$value_text))
       } else if (plan$body_requires_statements) {
         push(sprintf("%s %s;", source_scalar_type(result@type, "c"), interface@result_name))
@@ -3205,22 +3273,26 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             interface@result_name
           )
         },
-        if (!structured_body && !is.null(result_nest@reducer)) {
-          sprintf(
-            "  %s :: %s",
-            source_scalar_type(plan$accumulator_type, "fortran"),
-            plan$accumulator_name
-          )
+        if (!structured_body && !is.null(result_nest@reduction)) {
+          unlist(lapply(plan$reduction@state@components, function(component) {
+            sprintf(
+              "  %s :: %s",
+              source_scalar_type(component@target@storage_type, "fortran"),
+              emit_context$source_name_by_value_id[[component@target@value_id]]
+            )
+          }), use.names = FALSE)
         },
         unlist(Map(function(intermediate, intermediate_plan) {
-          if (is.null(intermediate@reducer)) {
+          if (is.null(intermediate@reduction)) {
             return(character())
           }
-          sprintf(
-            "  %s :: %s",
-            source_scalar_type(intermediate_plan$accumulator_type, "fortran"),
-            intermediate_plan$accumulator_name
-          )
+          unlist(lapply(intermediate_plan$reduction@state@components, function(component) {
+            sprintf(
+              "  %s :: %s",
+              source_scalar_type(component@target@storage_type, "fortran"),
+              emit_context$source_name_by_value_id[[component@target@value_id]]
+            )
+          }), use.names = FALSE)
         }, intermediate_nests, intermediate_plans)),
         unlist(Map(function(intermediate, intermediate_plan, first_use) {
           if (!isTRUE(first_use)) {
@@ -3269,6 +3341,87 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           )
         )
       }
+      reduction_failure_status <- if (is.null(interface@error_channel)) {
+        NA_integer_
+      } else {
+        match(
+          "runtime.reduction_has_no_value",
+          vapply(
+            interface@error_channel@diagnostics,
+            function(diagnostic) diagnostic@code,
+            character(1)
+          )
+        )
+      }
+      emit_state_initialization <- function(reduction_plan) {
+        for (component in reduction_plan$reduction@state@components) {
+          source_name <- emit_context$source_name_by_value_id[[component@target@value_id]]
+          push(sprintf(
+            "%s = %s",
+            source_name,
+            literal_text(component@identity, "fortran")
+          ))
+        }
+      }
+      emit_state_step <- function(reduction_plan) {
+        condition <- reduction_plan$reduction@condition
+        if (!is.null(condition)) {
+          push("block")
+          depth <<- depth + 1L
+          push("integer(c_int) :: condition_value")
+          emit_condition_value(condition)
+          push("if (condition_value /= 0_c_int) then")
+          depth <<- depth + 1L
+        }
+        for (assignment in reduction_plan$reduction@updates) {
+          source_name <- emit_context$source_name_by_value_id[[assignment@target@value_id]]
+          push(sprintf(
+            "%s = %s",
+            source_name,
+            expression_text(assignment@value, emit_context)
+          ))
+        }
+        if (!is.null(condition)) {
+          depth <<- depth - 1L
+          push("end if")
+          depth <<- depth - 1L
+          push("end block")
+        }
+      }
+      emit_reduction_validity <- function(reduction_plan) {
+        validity <- reduction_plan$reduction@valid
+        if (is.null(validity)) {
+          return(invisible(NULL))
+        }
+        if (is.na(reduction_failure_status)) {
+          tccq_abort(
+            "backend.missing_error_channel",
+            "A fallible reduction requires a callable error channel.",
+            phase = "backend",
+            path = sprintf("backend.%s.error_channel", backend@id)
+          )
+        }
+        push(sprintf(
+          "if ((%s) == 0_c_int) then",
+          expression_text(validity, emit_context)
+        ))
+        push(sprintf(
+          "%s = %d_c_int",
+          status_name,
+          reduction_failure_status
+        ), depth + 1L)
+        if (!returns_buffer) {
+          zero <- if (result@type@base %in% c("logical", "integer")) {
+            "0_c_int"
+          } else {
+            "0.0_c_double"
+          }
+          push(sprintf("%s = %s", interface@result_name, zero), depth + 1L)
+        }
+        push("return", depth + 1L)
+        push("end if")
+        invisible(NULL)
+      }
       emit_condition_value <- function(condition) {
         if (is.na(condition_failure_status)) {
           tccq_abort(
@@ -3289,7 +3442,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           push(sprintf(
             "%s = %s",
             interface@result_name,
-            if (identical(result@type@base, "logical")) "0_c_int" else "0.0_c_double"
+            if (result@type@base %in% c("logical", "integer")) "0_c_int" else "0.0_c_double"
           ), depth + 1L)
         }
         push("return", depth + 1L)
@@ -3510,12 +3663,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         for (axis in intermediate_plan$map_axes) {
           open_loop(axis)
         }
-        if (!is.null(intermediate@reducer)) {
-          push(sprintf(
-            "%s = %s",
-            intermediate_plan$accumulator_name,
-            intermediate_plan$identity_text
-          ))
+        if (!is.null(intermediate@reduction)) {
+          emit_state_initialization(intermediate_plan)
           for (axis in intermediate_plan$reduce_axes) {
             open_loop(axis)
           }
@@ -3524,23 +3673,16 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
               intermediate_plan$body,
               result_target = "",
               after_statements = function() {
-                push(sprintf(
-                  "%s = %s",
-                  intermediate_plan$accumulator_name,
-                  intermediate_plan$combine_text
-                ))
+                emit_state_step(intermediate_plan)
               }
             )
           } else {
-            push(sprintf(
-              "%s = %s",
-              intermediate_plan$accumulator_name,
-              intermediate_plan$combine_text
-            ))
+            emit_state_step(intermediate_plan)
           }
           for (axis in intermediate_plan$reduce_axes) {
             close_loop(axis)
           }
+          emit_reduction_validity(intermediate_plan)
         }
         materialization_target <- if (materializes_buffer) {
           sprintf(
@@ -3551,7 +3693,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         } else {
           intermediate_plan$materialization_name
         }
-        if (is.null(intermediate@reducer) && intermediate_plan$body_requires_statements) {
+        if (is.null(intermediate@reduction) && intermediate_plan$body_requires_statements) {
           emit_statement_block(intermediate_plan$body, materialization_target)
         } else {
           push(sprintf(
@@ -3568,8 +3710,8 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
       for (axis in plan$map_axes) {
         open_loop(axis)
       }
-      if (!is.null(result_nest@reducer)) {
-        push(sprintf("%s = %s", plan$accumulator_name, plan$identity_text))
+      if (!is.null(result_nest@reduction)) {
+        emit_state_initialization(plan)
         for (axis in plan$reduce_axes) {
           open_loop(axis)
         }
@@ -3578,19 +3720,20 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
             plan$body,
             result_target = "",
             after_statements = function() {
-              push(sprintf("%s = %s", plan$accumulator_name, plan$combine_text))
+              emit_state_step(plan)
             }
           )
         } else {
-          push(sprintf("%s = %s", plan$accumulator_name, plan$combine_text))
+          emit_state_step(plan)
         }
         for (axis in plan$reduce_axes) {
           close_loop(axis)
         }
+        emit_reduction_validity(plan)
       }
       if (returns_buffer) {
         output_target <- sprintf("%s(%s + 1)", interface@result_name, plan$output_index)
-        if (!is.null(result_nest@reducer)) {
+        if (!is.null(result_nest@reduction)) {
           push(sprintf("%s = %s", output_target, plan$value_text))
         } else if (plan$body_requires_statements) {
           emit_statement_block(plan$body, output_target)
@@ -3617,7 +3760,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         }
       }
       if (!returns_buffer) {
-        if (!is.null(result_nest@reducer)) {
+        if (!is.null(result_nest@reduction)) {
           push(sprintf("%s = %s", interface@result_name, plan$value_text))
         } else if (plan$body_requires_statements) {
           emit_statement_block(plan$body, interface@result_name)
@@ -3949,11 +4092,12 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
         lines <- c(lines, "  UNPROTECT(protect_count);", "  return output_sexp;")
       } else {
         scalar_result_type <- source_scalar_type(result@type, "c")
-        scalar_constructor <- if (identical(result@type@base, "logical")) {
-          "Rf_ScalarLogical"
-        } else {
+        scalar_constructor <- switch(
+          result@type@base,
+          logical = "Rf_ScalarLogical",
+          integer = "Rf_ScalarInteger",
           "Rf_ScalarReal"
-        }
+        )
         lines <- c(
           lines,
           sprintf(
@@ -4010,7 +4154,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           ffi_return <- list(type = "numeric_array", length_arg = result_count_position, free = TRUE)
         }
       } else {
-        ffi_return <- if (identical(result@type@base, "logical")) "i32" else "f64"
+        ffi_return <- if (result@type@base %in% c("logical", "integer")) "i32" else "f64"
       }
       if (!is.null(interface@error_channel)) {
         ffi_arg_types <- c(ffi_arg_types, list("integer_array"))

@@ -303,18 +303,29 @@ expect_true(S7::S7_inherits(sum_identity@value, TccqLiteral))
 expect_equal(sum_identity@value@value, 0)
 lowered_sum <- tccq_lowered_operation(
   "reduction",
-  resolved_sum@value,
-  identity = sum_identity@value
+  resolved_sum@value
 )
 expect_true(S7::S7_inherits(lowered_sum, TccqLoweredOperation))
 expect_equal(lowered_sum@family, "reduction")
 expect_true(S7::S7_inherits(lowered_sum@reduction, TccqReductionSpec))
-expect_true(S7::S7_inherits(lowered_sum@identity, TccqLiteral))
-bad_lowered_sum <- tryCatch(
-  tccq_lowered_operation("reduction", resolved_sum@value),
-  error = identity
+expect_true(S7::S7_inherits(lowered_sum@reduction, TccqFoldReductionSpec))
+
+resolved_which_max <- tccq_resolve_call(
+  default_registry,
+  tccq_call("which.max"),
+  tccq_op_context()
 )
-expect_true(inherits(bad_lowered_sum, "tccq_error"))
+expect_true(resolved_which_max@success)
+expect_equal(resolved_which_max@value@target, "native")
+expect_true(S7::S7_inherits(resolved_which_max@value@reduction, TccqArgReductionSpec))
+expect_equal(resolved_which_max@value@reduction@empty_policy, "error")
+which_max_type <- tccq_op_signature_result_type(
+  resolved_which_max@value@reduction@signature,
+  list(tccq_type("double", tccq_shape("n")))
+)
+expect_true(which_max_type@success)
+expect_equal(which_max_type@value@base, "integer")
+expect_equal(which_max_type@value@shape@rank, 0L)
 plus_value <- tccq_value(
   "value_plus",
   "+",
@@ -363,14 +374,8 @@ bad_map_contract <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_map_contract, "error"))
-sum_combine <- tccq_reduction_combine(
-  resolved_sum@value@reduction,
-  "accumulator",
-  "current",
-  render_context
-)
-expect_true(sum_combine@success)
-expect_equal(sum_combine@value, "accumulator + current")
+expect_equal(resolved_sum@value@reduction@combine_op, "+")
+expect_equal(resolved_sum@value@reduction@finalize_op, "")
 unrendered_sum <- tccq_op_render(
   resolved_sum@value@implementation,
   "input_0001",

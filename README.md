@@ -65,7 +65,7 @@ cat(c_plan@value@products@attrs$source)
 #>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
 #>     double accumulator_0001 = 0.0;
 #>     for (int axis_0002 = 0; axis_0002 < extent_p; ++axis_0002) {
-#>       accumulator_0001 = accumulator_0001 + (input_0001[axis_0001 + axis_0002 * extent_n] * input_0002[axis_0002]);
+#>       accumulator_0001 = (accumulator_0001 + (input_0001[axis_0001 + axis_0002 * extent_n] * input_0002[axis_0002]));
 #>     }
 #>     output[axis_0001] = accumulator_0001;
 #>   }
@@ -115,12 +115,12 @@ all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
 ```
 
 Programs are no longer limited to one loop nest. A scalar reduction
-feeding later work becomes its own all-reduce nest. Its reducer folds
-through a typed scalar accumulator, then writes a distinct typed
-materialized scalar slot that the final nest reads. The backend
-interface assigns source names to both values; the loop nest contains no
-target names or generic metadata bag. This SAC-style composition is
-visible in the emitted source:
+feeding later work becomes its own all-reduce nest. Its reducer advances
+typed neutral state, then projects a distinct typed materialized scalar
+slot that the final nest reads. The backend interface assigns source
+names to both values; the loop nest contains no target names or generic
+metadata bag. This SAC-style composition is visible in the emitted
+source:
 
 ``` r
 normalize <- function(x) {
@@ -152,7 +152,7 @@ cat(normalize_plan@value@products@attrs$source)
 #>   double intermediate_0001;
 #>   double accumulator_0001 = 0.0;
 #>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
-#>     accumulator_0001 = accumulator_0001 + input_0001[axis_0001];
+#>     accumulator_0001 = (accumulator_0001 + input_0001[axis_0001]);
 #>   }
 #>   intermediate_0001 = accumulator_0001;
 #>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
@@ -248,10 +248,18 @@ unname(vapply(
 #> [1] "/" "/"
 ```
 
-**Reductions and contractions.** `sum` and `mean` fold full rank-N
-domains; `colSums`, `rowSums`, `colMeans`, and `rowMeans` fold selected
-axes. Custom reducers use `TccqReductionSpec`, including an optional
-accumulator finalizer. `%*%`, `crossprod`, and `tcrossprod` use a typed
+**Reductions and contractions.** `TccqReductionSpec` is the common
+reducer protocol rather than a promise that every reduction has one
+scalar accumulator. `TccqFoldReductionSpec` gives `sum`, `mean`,
+`colSums`, `rowSums`, `colMeans`, and `rowMeans` one
+identity/combine/finalize state component. `which.max` uses
+`TccqArgReductionSpec` and a typed `TccqReductionState` containing a
+seen flag, selected value, and one-based selected index. The loop
+planner owns that state; C, TinyCC, and Fortran only render its typed
+transition and result projection. The current scalar ABI cannot
+represent R’s `integer(0)` result, so an empty or all-missing input
+reports the classed `runtime.reduction_has_no_value` diagnostic instead
+of inventing an index. `%*%`, `crossprod`, and `tcrossprod` use a typed
 `TccqContractionSpec`, so contracted dimensions and transposition remain
 axis facts rather than target-source conventions.
 
@@ -391,9 +399,9 @@ temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
 `(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` compile as ordered
 nest sequences. A value consumed twice materializes once. Every nest
 carries the typed storage slot that receives its result, and every
-reducer carries a separate typed scalar accumulator target.
-`TccqBackendFunctionInterface` binds generated names to those values for
-C, TinyCC, and Fortran.
+reducer carries a separate typed scalar state.
+`TccqBackendFunctionInterface` binds generated names to each state
+component for C, TinyCC, and Fortran.
 
 A materialized temporary slot owns a `TccqStorageAllocation`. Two
 same-typed buffer slots share that physical identity only when
@@ -482,6 +490,10 @@ probes <- list(
     eta <- z %*% w
     1 / (1 + exp(-eta))
   },
+  argument_maximum = function(x) {
+    declare(type(x = double(n)))
+    which.max(x)
+  },
   raw_buffer_roundtrip = function(bytes, scratch) {
     declare(type(bytes = raw(n), scratch = buffer(n)))
     bytes
@@ -569,7 +581,7 @@ probes <- list(
 probe_status <- function(fn) {
   compiled <- tccq_compile(fn, strict = FALSE)
   if (compiled@success) {
-    return("compiles through C, Fortran, and TinyCC JIT")
+    return("compiles through at least one configured backend")
   }
   diagnostic <- compiled@diagnostics[[1L]]
   sprintf("`%s`", diagnostic@code)
@@ -581,31 +593,32 @@ knitr::kable(data.frame(
 ))
 ```
 
-| probe                   | status                                      |
-|:------------------------|:--------------------------------------------|
-| map_chain               | compiles through C, Fortran, and TinyCC JIT |
-| map_reduce              | compiles through C, Fortran, and TinyCC JIT |
-| matrix_reduce           | compiles through C, Fortran, and TinyCC JIT |
-| matrix_map              | compiles through C, Fortran, and TinyCC JIT |
-| column_sums             | compiles through C, Fortran, and TinyCC JIT |
-| matrix_vector           | compiles through C, Fortran, and TinyCC JIT |
-| matrix_multiply         | compiles through C, Fortran, and TinyCC JIT |
-| tiled_stencil_1d        | compiles through C, Fortran, and TinyCC JIT |
-| scalar_composition      | compiles through C, Fortran, and TinyCC JIT |
-| array_composition       | compiles through C, Fortran, and TinyCC JIT |
-| column_means_chain      | compiles through C, Fortran, and TinyCC JIT |
-| logistic_forward_pass   | compiles through C, Fortran, and TinyCC JIT |
-| raw_buffer_roundtrip    | `backend.unsupported_type`                  |
-| conditional_map         | compiles through C, Fortran, and TinyCC JIT |
-| nested_conditional_map  | compiles through C, Fortran, and TinyCC JIT |
-| computed_condition_map  | compiles through C, Fortran, and TinyCC JIT |
-| conditional_composition | compiles through C, Fortran, and TinyCC JIT |
-| conditional_reduce      | compiles through C, Fortran, and TinyCC JIT |
-| selected_reduce         | compiles through C, Fortran, and TinyCC JIT |
-| control_flow_probe      | `frontend.unimplemented_call`               |
-| apply_reduce_probe      | `frontend.unimplemented_call`               |
-| logistic_gradient       | compiles through C, Fortran, and TinyCC JIT |
-| viterbi_decode          | `frontend.unimplemented_call`               |
+| probe                   | status                                           |
+|:------------------------|:-------------------------------------------------|
+| map_chain               | compiles through at least one configured backend |
+| map_reduce              | compiles through at least one configured backend |
+| matrix_reduce           | compiles through at least one configured backend |
+| matrix_map              | compiles through at least one configured backend |
+| column_sums             | compiles through at least one configured backend |
+| matrix_vector           | compiles through at least one configured backend |
+| matrix_multiply         | compiles through at least one configured backend |
+| tiled_stencil_1d        | compiles through at least one configured backend |
+| scalar_composition      | compiles through at least one configured backend |
+| array_composition       | compiles through at least one configured backend |
+| column_means_chain      | compiles through at least one configured backend |
+| logistic_forward_pass   | compiles through at least one configured backend |
+| argument_maximum        | compiles through at least one configured backend |
+| raw_buffer_roundtrip    | `backend.unsupported_type`                       |
+| conditional_map         | compiles through at least one configured backend |
+| nested_conditional_map  | compiles through at least one configured backend |
+| computed_condition_map  | compiles through at least one configured backend |
+| conditional_composition | compiles through at least one configured backend |
+| conditional_reduce      | compiles through at least one configured backend |
+| selected_reduce         | compiles through at least one configured backend |
+| control_flow_probe      | `frontend.unimplemented_call`                    |
+| apply_reduce_probe      | `frontend.unimplemented_call`                    |
+| logistic_gradient       | compiles through at least one configured backend |
+| viterbi_decode          | `frontend.unimplemented_call`                    |
 
 The failing rows are the roadmap: every one must move deeper through the
 same typed IR — loop regions and recurrences for Viterbi, general

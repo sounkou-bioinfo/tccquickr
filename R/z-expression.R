@@ -1,4 +1,6 @@
-TCCQ_EXPRESSION_KINDS <- c("reference", "literal", "operation", "branch")
+TCCQ_EXPRESSION_KINDS <- c(
+  "reference", "literal", "operation", "branch", "element"
+)
 TCCQ_LOOP_CALL_NAMES <- c("for", "while", "repeat")
 TCCQ_LOOP_TRANSFER_ACTIONS <- c("break", "next")
 
@@ -190,6 +192,27 @@ TccqExpression <- S7::new_class(
         "branch expressions must have three inputs, a branch payload, and no literal or operation payload"
       )
     }
+    element_has_invalid_payload <- length(self@inputs) != 1L ||
+      !is.null(self@literal) ||
+      !is.null(self@operation) ||
+      !is.null(self@branch) ||
+      !is.null(self@reference)
+    if (identical(self@kind, "element") && element_has_invalid_payload) {
+      problems <- c(
+        problems,
+        "element expressions need one input and no literal, operation, branch, or reference payload"
+      )
+    }
+    if (
+      identical(self@kind, "element") &&
+        all(inputs_are_expressions) &&
+        (
+          self@type@shape@rank != 0L ||
+            !identical(self@type@base, self@inputs[[1L]]@type@base)
+        )
+    ) {
+      problems <- c(problems, "element expressions must project one scalar of the input base type")
+    }
     if (
       !is.null(self@branch) &&
         all(inputs_are_expressions) &&
@@ -333,6 +356,86 @@ tccq_expression <- function(
     operation = operation,
     branch = branch,
     reference = reference
+  )
+}
+
+#' Build a registered elementwise expression
+#'
+#' This transformation resolves one operation through the supplied registry,
+#' applies its signature to typed input expressions, and returns the ordinary
+#' neutral expression consumed by every source backend.
+#'
+#' @param registry Operation registry used for resolution.
+#' @param op Operation name.
+#' @param inputs Ordered scalar or array input expressions.
+#' @param id Stable expression id.
+#' @return A `TccqResult` containing a `TccqExpression`.
+#' @export
+tccq_elementwise_expression <- function(registry, op, inputs, id) {
+  .tccq_check_s7(registry, TccqOpRegistry, "TccqOpRegistry", "registry")
+  .tccq_check_character_scalar(op, "op")
+  .tccq_check_list_of(inputs, TccqExpression, "TccqExpression", "inputs")
+  .tccq_check_character_scalar(id, "id")
+  call_expression <- as.call(c(
+    list(as.name(op)),
+    rep(list(quote(.tccq_operand)), length(inputs))
+  ))
+  resolution <- tccq_resolve_call(
+    registry,
+    tccq_call(op, expr = call_expression),
+    tccq_op_context()
+  )
+  if (!resolution@success) {
+    return(resolution)
+  }
+  resolved_operation <- resolution@value
+  if (!S7::S7_inherits(resolved_operation@elementwise, TccqElementwiseSpec)) {
+    return(tccq_result(
+      success = FALSE,
+      diagnostics = list(tccq_diagnostic(
+        "expression.operation_not_elementwise",
+        "A neutral expression operation must resolve to an elementwise implementation.",
+        phase = "expression",
+        path = "expression.operation",
+        data = list(op = op)
+      ))
+    ))
+  }
+  if (S7::S7_inherits(resolved_operation@body, TccqOpBody)) {
+    return(tccq_result(
+      success = FALSE,
+      diagnostics = list(tccq_diagnostic(
+        "expression.unexpanded_operation_body",
+        "Neutral operation bodies must be expanded before expression construction.",
+        phase = "expression",
+        path = "expression.operation_body",
+        data = list(op = op)
+      ))
+    ))
+  }
+  result_type <- tccq_op_signature_result_type(
+    resolved_operation@elementwise@signature,
+    lapply(inputs, function(input) input@type)
+  )
+  if (!result_type@success) {
+    return(result_type)
+  }
+  tccq_result(
+    success = TRUE,
+    value = tccq_expression(
+      id = id,
+      kind = "operation",
+      value_id = id,
+      op = op,
+      inputs = inputs,
+      type = result_type@value,
+      effect = resolved_operation@effect,
+      operation = tccq_lowered_operation(
+        "elementwise",
+        resolved_operation,
+        elementwise = resolved_operation@elementwise
+      )
+    )
   )
 }
 
@@ -1802,14 +1905,462 @@ tccq_loop_guard <- function(condition, branch, selected) {
   TccqLoopGuard(condition = condition, branch = branch, selected = selected)
 }
 
+#' Reduction-state component
+#'
+#' A component is one typed scalar in a reducer's neutral state. Its semantic
+#' name is a portable identifier so backend interfaces can derive generated
+#' names without sanitizing arbitrary source text.
+#'
+#' @param name Semantic component name.
+#' @param target Neutral local target that stores the component.
+#' @param identity Initial scalar literal.
+#' @export
+TccqReductionStateComponent <- S7::new_class(
+  "TccqReductionStateComponent",
+  package = "tccquickr",
+  properties = list(
+    name = S7::class_character,
+    target = TccqWriteTarget,
+    identity = TccqLiteral
+  ),
+  validator = function(self) {
+    problems <- character()
+    if (
+      length(self@name) != 1L ||
+        is.na(self@name) ||
+        !grepl("^[A-Za-z][A-Za-z0-9_]*$", self@name)
+    ) {
+      problems <- c(problems, "@name must be one portable identifier")
+    }
+    if (!identical(self@target@kind, "local") || self@target@type@shape@rank != 0L) {
+      problems <- c(problems, "@target must be a scalar local target")
+    }
+    if (!identical(self@identity@type, self@target@storage_type)) {
+      problems <- c(problems, "@identity type must match @target storage type")
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Typed neutral reduction state
+#'
+#' @param components Named reduction-state components.
+#' @export
+TccqReductionState <- S7::new_class(
+  "TccqReductionState",
+  package = "tccquickr",
+  properties = list(components = S7::class_list),
+  validator = function(self) {
+    problems <- character()
+    components_are_typed <- vapply(
+      self@components,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqReductionStateComponent
+    )
+    if (length(self@components) == 0L || !all(components_are_typed)) {
+      problems <- c(problems, "@components must contain typed reduction-state components")
+    }
+    if (all(components_are_typed)) {
+      component_names <- vapply(self@components, function(component) component@name, character(1))
+      if (anyDuplicated(component_names)) {
+        problems <- c(problems, "@components must have unique semantic names")
+      }
+      target_ids <- vapply(
+        self@components,
+        function(component) component@target@value_id,
+        character(1)
+      )
+      if (anyDuplicated(target_ids)) {
+        problems <- c(problems, "@components must have unique target identities")
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Closed neutral reduction plan
+#'
+#' A reduction plan owns the reducer, its typed state, the optional condition
+#' guarding each transition, one typed assignment per state component, the
+#' completed-state projection, and an optional validity expression. No target
+#' source appears in this contract.
+#'
+#' @param spec Reduction implementation metadata.
+#' @param state Typed neutral state.
+#' @param condition Optional scalar logical transition condition.
+#' @param updates Ordered state-component assignments.
+#' @param value Scalar result projected from completed state.
+#' @param valid Optional scalar logical expression proving that `value` exists.
+#' @export
+TccqReductionPlan <- S7::new_class(
+  "TccqReductionPlan",
+  package = "tccquickr",
+  properties = list(
+    spec = TccqReductionSpec,
+    state = TccqReductionState,
+    condition = S7::new_union(NULL, TccqExpression),
+    updates = S7::class_list,
+    value = TccqExpression,
+    valid = S7::new_union(NULL, TccqExpression)
+  ),
+  validator = function(self) {
+    problems <- character()
+    components <- self@state@components
+    component_names <- vapply(components, function(component) component@name, character(1))
+    component_targets <- vapply(
+      components,
+      function(component) component@target@value_id,
+      character(1)
+    )
+    updates_are_assignments <- vapply(
+      self@updates,
+      S7::S7_inherits,
+      logical(1),
+      class = TccqAssignment
+    )
+    if (length(self@updates) != length(components) || !all(updates_are_assignments)) {
+      problems <- c(problems, "@updates must contain one typed assignment per state component")
+    } else {
+      update_targets <- vapply(
+        self@updates,
+        function(update) update@target@value_id,
+        character(1)
+      )
+      if (!identical(update_targets, component_targets)) {
+        problems <- c(problems, "@updates must target state components in component order")
+      }
+    }
+    if (!is.null(self@condition) && (
+      !identical(self@condition@type@base, "logical") ||
+        self@condition@type@shape@rank != 0L
+    )) {
+      problems <- c(problems, "@condition must be NULL or a scalar logical expression")
+    }
+    if (self@value@type@shape@rank != 0L) {
+      problems <- c(problems, "@value must be a scalar expression")
+    }
+    if (!is.null(self@valid) && (
+      !identical(self@valid@type@base, "logical") || self@valid@type@shape@rank != 0L
+    )) {
+      problems <- c(problems, "@valid must be NULL or a scalar logical expression")
+    }
+    if (identical(self@spec@empty_policy, "error") != !is.null(self@valid)) {
+      problems <- c(problems, "reducers with an error empty policy must carry one validity expression")
+    }
+    if (S7::S7_inherits(self@spec, TccqFoldReductionSpec)) {
+      if (!identical(component_names, "accumulator") || !is.null(self@condition)) {
+        problems <- c(problems, "fold reductions require one unconditional accumulator component")
+      }
+    }
+    if (S7::S7_inherits(self@spec, TccqArgReductionSpec)) {
+      expected_names <- c("seen", "best_value", "best_index")
+      expected_bases <- c("logical", "double", "integer")
+      component_bases <- vapply(
+        components,
+        function(component) component@target@type@base,
+        character(1)
+      )
+      if (!identical(component_names, expected_names) || !identical(component_bases, expected_bases)) {
+        problems <- c(problems, "argument reductions require seen, best-value, and best-index state")
+      }
+      if (is.null(self@condition)) {
+        problems <- c(problems, "argument reductions require a transition condition")
+      }
+    }
+    if (length(problems) > 0L) problems
+  }
+)
+
+#' Construct a reduction-state component
+#'
+#' @inheritParams TccqReductionStateComponent
+#' @export
+tccq_reduction_state_component <- function(name, target, identity) {
+  .tccq_check_character_scalar(name, "name")
+  .tccq_check_s7(target, TccqWriteTarget, "TccqWriteTarget", "target")
+  .tccq_check_s7(identity, TccqLiteral, "TccqLiteral", "identity")
+  TccqReductionStateComponent(name = name, target = target, identity = identity)
+}
+
+#' Build a neutral reduction plan
+#'
+#' @param spec Reduction metadata.
+#' @param value Scalar input-element expression.
+#' @param axes Ordered reduce axes.
+#' @param result_type Scalar result type.
+#' @param id Stable loop-nest id.
+#' @param registry Operation registry used to build transition expressions.
+#' @export
+tccq_reduction_plan <- S7::new_generic(
+  "tccq_reduction_plan",
+  dispatch_args = "spec",
+  function(spec, value, axes, result_type, id, registry) S7::S7_dispatch()
+)
+
+S7::method(tccq_reduction_plan, TccqFoldReductionSpec) <- function(
+  spec,
+  value,
+  axes,
+  result_type,
+  id,
+  registry
+) {
+  .tccq_check_s7(value, TccqExpression, "TccqExpression", "value")
+  .tccq_check_list_of(axes, TccqLoopAxis, "TccqLoopAxis", "axes")
+  .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(registry, TccqOpRegistry, "TccqOpRegistry", "registry")
+  identity_result <- tccq_reduction_identity(spec, result_type)
+  if (!identity_result@success) {
+    tccq_abort_diagnostic(identity_result@diagnostics[[1L]])
+  }
+  accumulator <- tccq_reduction_state_component(
+    "accumulator",
+    tccq_write_target(sprintf("%s.accumulator", id), result_type, kind = "local"),
+    identity_result@value
+  )
+  state <- TccqReductionState(components = list(accumulator))
+  accumulator_value <- tccq_expression(
+    id = sprintf("%s.accumulator.read", id),
+    kind = "reference",
+    value_id = accumulator@target@value_id,
+    op = "reduction_state",
+    type = accumulator@target@type,
+    effect = tccq_effect(reads = TRUE),
+    reference = tccq_expression_reference(accumulator@target@value_id)
+  )
+  combined <- tccq_elementwise_expression(
+    registry,
+    spec@combine_op,
+    list(accumulator_value, value),
+    sprintf("%s.combine", id)
+  )
+  if (!combined@success) {
+    tccq_abort_diagnostic(combined@diagnostics[[1L]])
+  }
+  projected_value <- accumulator_value
+  if (nzchar(spec@finalize_op)) {
+    extent_expression <- function(axis, position) {
+      dimension <- axis@extent
+      if (identical(dimension@kind, "constant")) {
+        literal <- tccq_literal_finite(as.integer(dimension@value))
+        return(tccq_expression(
+          id = sprintf("%s.count.%04d", id, position),
+          kind = "literal",
+          type = literal@type,
+          literal = literal
+        ))
+      }
+      if (!dimension@kind %in% c("symbol", "affine")) {
+        tccq_abort(
+          "loop_nest.unsupported_reduction_extent",
+          "Reduction finalization requires a constant, symbolic, or affine extent.",
+          phase = "loop_nest",
+          path = "loop_nest.reduction.count",
+          data = list(reducer = spec@name, extent = dimension)
+        )
+      }
+      symbol_dimension <- tccq_dim_symbol(dimension@label)
+      symbol_value <- tccq_expression(
+        id = sprintf("%s.count.%04d.symbol", id, position),
+        kind = "reference",
+        value_id = sprintf("dimension.%s", dimension@label),
+        op = "dimension",
+        type = tccq_type("integer"),
+        effect = tccq_effect(reads = TRUE),
+        reference = tccq_dimension_reference(
+          sprintf("dimension.%s", dimension@label),
+          symbol_dimension
+        )
+      )
+      if (identical(dimension@kind, "symbol") || dimension@value == 0L) {
+        return(symbol_value)
+      }
+      offset <- tccq_literal_finite(as.integer(abs(dimension@value)))
+      offset_value <- tccq_expression(
+        id = sprintf("%s.count.%04d.offset", id, position),
+        kind = "literal",
+        type = offset@type,
+        literal = offset
+      )
+      adjusted <- tccq_elementwise_expression(
+        registry,
+        if (dimension@value < 0L) "-" else "+",
+        list(symbol_value, offset_value),
+        sprintf("%s.count.%04d.affine", id, position)
+      )
+      if (!adjusted@success) {
+        tccq_abort_diagnostic(adjusted@diagnostics[[1L]])
+      }
+      adjusted@value
+    }
+    count_values <- Map(extent_expression, axes, seq_along(axes))
+    reduced_count <- count_values[[1L]]
+    if (length(count_values) > 1L) {
+      for (position in 2:length(count_values)) {
+        product <- tccq_elementwise_expression(
+          registry,
+          "*",
+          list(reduced_count, count_values[[position]]),
+          sprintf("%s.count.product.%04d", id, position)
+        )
+        if (!product@success) {
+          tccq_abort_diagnostic(product@diagnostics[[1L]])
+        }
+        reduced_count <- product@value
+      }
+    }
+    finalized <- tccq_elementwise_expression(
+      registry,
+      spec@finalize_op,
+      list(accumulator_value, reduced_count),
+      sprintf("%s.finalize", id)
+    )
+    if (!finalized@success) {
+      tccq_abort_diagnostic(finalized@diagnostics[[1L]])
+    }
+    projected_value <- finalized@value
+  }
+  TccqReductionPlan(
+    spec = spec,
+    state = state,
+    condition = NULL,
+    updates = list(tccq_assignment(
+      sprintf("%s.accumulator.update", id),
+      accumulator@target,
+      combined@value
+    )),
+    value = projected_value,
+    valid = NULL
+  )
+}
+
+S7::method(tccq_reduction_plan, TccqArgReductionSpec) <- function(
+  spec,
+  value,
+  axes,
+  result_type,
+  id,
+  registry
+) {
+  .tccq_check_s7(value, TccqExpression, "TccqExpression", "value")
+  .tccq_check_list_of(axes, TccqLoopAxis, "TccqLoopAxis", "axes")
+  .tccq_check_s7(result_type, TccqType, "TccqType", "result_type")
+  .tccq_check_character_scalar(id, "id")
+  .tccq_check_s7(registry, TccqOpRegistry, "TccqOpRegistry", "registry")
+  if (
+    value@type@shape@rank != 0L ||
+      !identical(value@type@base, "double") ||
+      result_type@shape@rank != 0L ||
+      !identical(result_type@base, "integer") ||
+      length(axes) != 1L
+  ) {
+    tccq_abort(
+      "loop_nest.invalid_argument_reduction_types",
+      "Argument reductions require one double-valued reduce axis and an integer result.",
+      phase = "loop_nest",
+      path = "loop_nest.reduction_state",
+      data = list(value_type = value@type, result_type = result_type, axes = axes)
+    )
+  }
+  component <- function(name, type, identity) {
+    tccq_reduction_state_component(
+      name,
+      tccq_write_target(sprintf("%s.%s", id, name), type, kind = "local"),
+      identity
+    )
+  }
+  state <- TccqReductionState(
+    components = list(
+      component("seen", tccq_type("logical"), tccq_literal_finite(FALSE)),
+      component("best_value", tccq_type("double"), tccq_literal_finite(0)),
+      component("best_index", tccq_type("integer"), tccq_literal_finite(0L))
+    )
+  )
+  state_value <- function(name) {
+    component_names <- vapply(state@components, function(item) item@name, character(1))
+    state_component <- state@components[[match(name, component_names)]]
+    tccq_expression(
+      id = sprintf("%s.%s.read", id, name),
+      kind = "reference",
+      value_id = state_component@target@value_id,
+      op = "reduction_state",
+      type = state_component@target@type,
+      effect = tccq_effect(reads = TRUE),
+      reference = tccq_expression_reference(state_component@target@value_id)
+    )
+  }
+  operation <- function(name, inputs, suffix) {
+    operation_result <- tccq_elementwise_expression(
+      registry,
+      name,
+      inputs,
+      sprintf("%s.%s", id, suffix)
+    )
+    if (!operation_result@success) {
+      tccq_abort_diagnostic(operation_result@diagnostics[[1L]])
+    }
+    operation_result@value
+  }
+  literal_value <- function(value, suffix) {
+    literal <- tccq_literal_finite(value)
+    tccq_expression(
+      id = sprintf("%s.%s", id, suffix),
+      kind = "literal",
+      type = literal@type,
+      literal = literal
+    )
+  }
+  seen <- state_value("seen")
+  best_value <- state_value("best_value")
+  best_index <- state_value("best_index")
+  not_missing <- operation("!", list(operation("is.na", list(value), "missing")), "not_missing")
+  not_seen <- operation("!", list(seen), "not_seen")
+  preferred <- operation(
+    if (identical(spec@direction, "max")) ">" else "<",
+    list(value, best_value),
+    "preferred"
+  )
+  selectable <- operation("|", list(not_seen, preferred), "selectable")
+  condition <- operation("&", list(not_missing, selectable), "condition")
+  axis_value <- tccq_expression(
+    id = sprintf("%s.index", id),
+    kind = "reference",
+    value_id = axes[[1L]]@name,
+    op = "loop_index",
+    type = tccq_type("integer"),
+    effect = tccq_effect(reads = TRUE),
+    reference = tccq_expression_reference(axes[[1L]]@name)
+  )
+  selected_index <- operation(
+    "+",
+    list(axis_value, literal_value(1L, "one")),
+    "selected_index"
+  )
+  targets <- lapply(state@components, function(item) item@target)
+  TccqReductionPlan(
+    spec = spec,
+    state = state,
+    condition = condition,
+    updates = list(
+      tccq_assignment(sprintf("%s.seen.update", id), targets[[1L]], literal_value(TRUE, "true")),
+      tccq_assignment(sprintf("%s.best_value.update", id), targets[[2L]], value),
+      tccq_assignment(sprintf("%s.best_index.update", id), targets[[3L]], selected_index)
+    ),
+    value = best_index,
+    valid = seen
+  )
+}
+
 #' Loop-nest program plan
 #'
 #' `TccqLoopNest` is the single backend-neutral iteration plan consumed by
 #' source printers, in the spirit of the SAC with-loop. One loop nest carries
 #' ordered typed axes (`map` axes produce output positions, `reduce` axes fold
 #' into an accumulator), a value expression or typed statement block whose
-#' references carry typed affine accesses, an optional reducer with its
-#' identity, and an output access. Elementwise maps, full and per-axis
+#' references carry typed affine accesses, an optional closed reduction plan,
+#' and an output access. Elementwise maps, full and per-axis
 #' reductions, contractions, stencils, and control-valued results are all
 #' instances of this one value; printers must not reintroduce per-family loop
 #' shapes or backend-local control trees.
@@ -1820,9 +2371,7 @@ tccq_loop_guard <- function(condition, branch, selected) {
 #' @param body Body expression or typed statement block with access-carrying
 #'   references.
 #' @param output Output access over map axes, or `NULL` for scalar results.
-#' @param reducer Reduction metadata for reduce axes, or `NULL`.
-#' @param identity Reducer identity literal, or `NULL`.
-#' @param accumulator Typed scalar accumulator target, or `NULL`.
+#' @param reduction Closed neutral reduction plan for reduce axes, or `NULL`.
 #' @param storage Typed storage slot receiving the nest result.
 #' @param guards Ordered `TccqLoopGuard` control path selecting this nest.
 #' @export
@@ -1835,9 +2384,7 @@ TccqLoopNest <- S7::new_class(
     axes = S7::class_list,
     body = S7::new_union(TccqExpression, TccqValueBlock),
     output = S7::new_union(NULL, TccqAccess),
-    reducer = S7::new_union(NULL, TccqReductionSpec),
-    identity = S7::new_union(NULL, TccqLiteral),
-    accumulator = S7::new_union(NULL, TccqWriteTarget),
+    reduction = S7::new_union(NULL, TccqReductionPlan),
     storage = TccqStorageSlot,
     guards = S7::class_list
   ),
@@ -1860,11 +2407,11 @@ TccqLoopNest <- S7::new_class(
       }
       axis_roles <- vapply(self@axes, function(axis) axis@role, character(1))
       has_reduce_axes <- any(axis_roles == "reduce")
-      if (has_reduce_axes && !S7::S7_inherits(self@reducer, TccqReductionSpec)) {
-        problems <- c(problems, "loop nests with reduce axes must carry a reducer")
+      if (has_reduce_axes && !S7::S7_inherits(self@reduction, TccqReductionPlan)) {
+        problems <- c(problems, "loop nests with reduce axes must carry a reduction plan")
       }
-      if (!has_reduce_axes && !is.null(self@reducer)) {
-        problems <- c(problems, "loop nests without reduce axes cannot carry a reducer")
+      if (!has_reduce_axes && !is.null(self@reduction)) {
+        problems <- c(problems, "loop nests without reduce axes cannot carry a reduction plan")
       }
       if (!is.null(self@output)) {
         map_axis_names <- axis_names[axis_roles == "map"]
@@ -1874,24 +2421,12 @@ TccqLoopNest <- S7::new_class(
         }
       }
     }
-    reducer_present <- S7::S7_inherits(self@reducer, TccqReductionSpec)
-    identity_present <- S7::S7_inherits(self@identity, TccqLiteral)
-    if (reducer_present != identity_present) {
-      problems <- c(problems, "@reducer and @identity must be present together")
-    }
-    accumulator_present <- S7::S7_inherits(self@accumulator, TccqWriteTarget)
-    if (reducer_present != accumulator_present) {
-      problems <- c(problems, "@reducer and @accumulator must be present together")
-    }
-    if (accumulator_present) {
-      if (!identical(self@accumulator@kind, "local")) {
-        problems <- c(problems, "@accumulator must be a local write target")
-      }
-      if (self@accumulator@type@shape@rank != 0L) {
-        problems <- c(problems, "@accumulator must have scalar semantic type")
-      }
-      if (!identical(self@accumulator@type@base, self@storage@type@base)) {
-        problems <- c(problems, "@accumulator and @storage must have the same base type")
+    if (!is.null(self@reduction)) {
+      if (
+        self@reduction@value@type@shape@rank != 0L ||
+          !identical(self@reduction@value@type@base, self@storage@type@base)
+      ) {
+        problems <- c(problems, "@reduction must project one scalar element of @storage")
       }
     }
     if (!self@storage@role %in% c("temporary", "output")) {
@@ -1929,10 +2464,8 @@ TccqLoopNest <- S7::new_class(
 #' @param body Body expression or typed statement block with access-carrying
 #'   references.
 #' @param output Output access over map axes, or `NULL` for scalar results.
-#' @param reducer Reduction metadata for reduce axes, or `NULL`.
-#' @param identity Reducer identity literal, or `NULL`.
+#' @param reduction Closed neutral reduction plan for reduce axes, or `NULL`.
 #' @param domain Optional iteration domain. Defaults to one built from `axes`.
-#' @param accumulator Typed scalar accumulator target, or `NULL`.
 #' @param storage Typed storage slot receiving the nest result.
 #' @param guards Ordered `TccqLoopGuard` control path selecting this nest.
 #' @export
@@ -1942,10 +2475,8 @@ tccq_loop_nest <- function(
   body,
   storage,
   output = NULL,
-  reducer = NULL,
-  identity = NULL,
+  reduction = NULL,
   domain = NULL,
-  accumulator = NULL,
   guards = list()
 ) {
   .tccq_check_character_scalar(id, "id")
@@ -1962,9 +2493,12 @@ tccq_loop_nest <- function(
   }
   .tccq_check_s7(storage, TccqStorageSlot, "TccqStorageSlot", "storage")
   .tccq_check_optional_s7(output, TccqAccess, "TccqAccess", "output")
-  .tccq_check_optional_s7(reducer, TccqReductionSpec, "TccqReductionSpec", "reducer")
-  .tccq_check_optional_s7(identity, TccqLiteral, "TccqLiteral", "identity")
-  .tccq_check_optional_s7(accumulator, TccqWriteTarget, "TccqWriteTarget", "accumulator")
+  .tccq_check_optional_s7(
+    reduction,
+    TccqReductionPlan,
+    "TccqReductionPlan",
+    "reduction"
+  )
   .tccq_check_list_of(guards, TccqLoopGuard, "TccqLoopGuard", "guards")
   if (is.null(domain)) {
     domain <- tccq_domain(
@@ -1981,9 +2515,7 @@ tccq_loop_nest <- function(
     axes = axes,
     body = body,
     output = output,
-    reducer = reducer,
-    identity = identity,
-    accumulator = accumulator,
+    reduction = reduction,
     storage = storage,
     guards = guards
   )
@@ -2390,6 +2922,16 @@ tccq_program_loop_nests <- function(program) {
     })
   }
 
+  loop_element <- function(expression, id) {
+    tccq_expression(
+      id = id,
+      kind = "element",
+      inputs = list(expression),
+      type = tccq_type(expression@type@base),
+      effect = expression@effect
+    )
+  }
+
   reduction_nest <- function(expression, nest_id, guards = list()) {
     operation <- expression@operation
     input_shape <- expression@inputs[[1L]]@type@shape
@@ -2441,20 +2983,52 @@ tccq_program_loop_nests <- function(program) {
     } else {
       NULL
     }
+    if (
+      S7::S7_inherits(operation@reduction, TccqArgReductionSpec) &&
+        length(reduction_axes) != 1L
+    ) {
+      tccq_abort_diagnostic(nest_diagnostic(
+        "loop_nest.unsupported_argument_reduction_rank",
+        "Argument reductions currently require exactly one reduce axis.",
+        data = list(reducer = operation@reduction@name, reduce_axes = reduction_axes)
+      ))
+    }
+    reduction_body_value <- if (S7::S7_inherits(body, TccqValueBlock)) {
+      tccq_expression(
+        id = sprintf("%s.body.read", nest_id),
+        kind = "reference",
+        value_id = body@result@value_id,
+        op = "reduction_body",
+        type = body@result@type,
+        effect = tccq_effect(reads = TRUE),
+        reference = tccq_expression_reference(
+          body@result@value_id,
+          access = tccq_access(body@result@value_id, domain, kind = "scalar")
+        )
+      )
+    } else {
+      body
+    }
+    reduction_value <- loop_element(
+      reduction_body_value,
+      sprintf("%s.body.element", nest_id)
+    )
+    reduction_plan <- tccq_reduction_plan(
+      operation@reduction,
+      reduction_value,
+      Filter(function(axis) identical(axis@role, "reduce"), axes),
+      tccq_type(expression@type@base),
+      nest_id,
+      program@attrs$registry %||% tccq_default_op_registry()
+    )
     tccq_loop_nest(
       nest_id,
       axes = axes,
       body = body,
       storage = storage_for(expression@value_id),
       output = output,
-      reducer = operation@reduction,
-      identity = operation@identity,
+      reduction = reduction_plan,
       domain = domain,
-      accumulator = tccq_write_target(
-        sprintf("%s.accumulator", nest_id),
-        tccq_type(expression@type@base),
-        kind = "local"
-      ),
       guards = guards
     )
   }
@@ -2505,37 +3079,28 @@ tccq_program_loop_nests <- function(program) {
       names_by_position[[setdiff(1:2, right_contract)]] <- map_names[[2L]]
       names_by_position
     }
-    combine_call <- str2lang(sprintf("left %s right", contraction_spec@combine_op))
-    combine_resolution <- tccq_resolve_call(
-      program@attrs$registry %||% tccq_default_op_registry(),
-      tccq_call(contraction_spec@combine_op, expr = combine_call),
-      tccq_op_context()
+    left_element <- loop_element(
+      annotate(left, left_axis_names, domain, left_shape@dims),
+      sprintf("%s_left_element", expression@value_id)
     )
-    if (!combine_resolution@success) {
+    right_element <- loop_element(
+      annotate(right, right_axis_names, domain, right_shape@dims),
+      sprintf("%s_right_element", expression@value_id)
+    )
+    combined <- tccq_elementwise_expression(
+      program@attrs$registry %||% tccq_default_op_registry(),
+      contraction_spec@combine_op,
+      list(left_element, right_element),
+      sprintf("%s_combine", expression@value_id)
+    )
+    if (!combined@success) {
       tccq_abort_diagnostic(nest_diagnostic(
         "loop_nest.unresolved_combine",
         "The contraction combine operation has no lowerable implementation.",
         data = list(op = contraction_spec@combine_op)
       ))
     }
-    combine_operation <- tccq_lowered_operation(
-      "elementwise",
-      combine_resolution@value,
-      elementwise = combine_resolution@value@elementwise
-    )
-    body <- tccq_expression(
-      id = sprintf("%s_combine", expression@value_id),
-      kind = "operation",
-      value_id = expression@value_id,
-      op = contraction_spec@combine_op,
-      inputs = list(
-        annotate(left, left_axis_names, domain, left_shape@dims),
-        annotate(right, right_axis_names, domain, right_shape@dims)
-      ),
-      type = tccq_type(expression@type@base),
-      effect = combine_resolution@value@effect,
-      operation = combine_operation
-    )
+    body <- combined@value
     if (expression_contains(body, function(candidate) identical(candidate@kind, "branch"))) {
       body_target <- tccq_write_target(
         sprintf("%s.body_result", nest_id),
@@ -2555,20 +3120,42 @@ tccq_program_loop_nests <- function(program) {
       kind = "identity",
       index_map = lapply(map_names, function(name) tccq_index_expr(name, 0L))
     )
+    reduction_body_value <- if (S7::S7_inherits(body, TccqValueBlock)) {
+      tccq_expression(
+        id = sprintf("%s.body.read", nest_id),
+        kind = "reference",
+        value_id = body@result@value_id,
+        op = "reduction_body",
+        type = body@result@type,
+        effect = tccq_effect(reads = TRUE),
+        reference = tccq_expression_reference(
+          body@result@value_id,
+          access = tccq_access(body@result@value_id, domain, kind = "scalar")
+        )
+      )
+    } else {
+      body
+    }
+    reduction_value <- loop_element(
+      reduction_body_value,
+      sprintf("%s.body.element", nest_id)
+    )
+    reduction_plan <- tccq_reduction_plan(
+      contraction_spec@reducer,
+      reduction_value,
+      Filter(function(axis) identical(axis@role, "reduce"), axes),
+      tccq_type(expression@type@base),
+      nest_id,
+      program@attrs$registry %||% tccq_default_op_registry()
+    )
     tccq_loop_nest(
       nest_id,
       axes = axes,
       body = body,
       storage = storage_for(expression@value_id),
       output = output,
-      reducer = contraction_spec@reducer,
-      identity = operation@identity,
+      reduction = reduction_plan,
       domain = domain,
-      accumulator = tccq_write_target(
-        sprintf("%s.accumulator", nest_id),
-        tccq_type(expression@type@base),
-        kind = "local"
-      ),
       guards = guards
     )
   }
@@ -2719,7 +3306,7 @@ tccq_program_loop_nests <- function(program) {
 
     locals <- list()
     statements <- list()
-    if (identical(expression@kind, "operation")) {
+    if (expression@kind %in% c("operation", "element")) {
       rewritten_inputs <- vector("list", length(expression@inputs))
       for (input_position in seq_along(expression@inputs)) {
         input <- expression@inputs[[input_position]]
@@ -2760,7 +3347,10 @@ tccq_program_loop_nests <- function(program) {
         inputs = rewritten_inputs,
         type = expression@type,
         effect = expression@effect,
-        operation = expression@operation
+        literal = expression@literal,
+        operation = expression@operation,
+        branch = expression@branch,
+        reference = expression@reference
       )
     }
 

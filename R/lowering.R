@@ -771,21 +771,11 @@ tccq_lower_function <- function(
     reduction_axes <- reduction_spec@attrs$reduction_axes %||% seq_len(lowered_arg$type@shape@rank)
     kept_axes <- reduction_spec@attrs$kept_axes %||% integer()
     reduction_kind <- if (length(kept_axes) > 0L) "axis" else "full"
-    accumulator_type <- if (identical(reduction_kind, "axis")) {
-      tccq_type(result_type@base)
-    } else {
-      result_type
-    }
-    identity_result <- tccq_reduction_identity(reduction_spec, accumulator_type)
-    if (!identity_result@success) {
-      return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))
-    }
     value_id <- next_value_id(state)
     operation <- tccq_lowered_operation(
       "reduction",
       resolved_operation,
       reduction = reduction_spec,
-      identity = identity_result@value,
       attrs = list(
         reduction_kind = reduction_kind,
         reduction_axes = as.integer(reduction_axes),
@@ -971,19 +961,11 @@ tccq_lower_function <- function(
       return(list(value_id = NULL, type = NULL, diagnostics = result_type_result@diagnostics))
     }
     result_type <- result_type_result@value
-    identity_result <- tccq_reduction_identity(
-      contraction_spec@reducer,
-      tccq_type(result_type@base)
-    )
-    if (!identity_result@success) {
-      return(list(value_id = NULL, type = NULL, diagnostics = identity_result@diagnostics))
-    }
     value_id <- next_value_id(state)
     operation <- tccq_lowered_operation(
       "contraction",
       resolved_operation,
-      contraction = contraction_spec,
-      identity = identity_result@value
+      contraction = contraction_spec
     )
     add_value(
       state,

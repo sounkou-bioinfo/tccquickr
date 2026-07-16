@@ -11,7 +11,6 @@ tccq_lowered_operation(
   elementwise = NULL,
   reduction = NULL,
   contraction = NULL,
-  identity = NULL,
   attrs = list()
 )
 }
@@ -27,8 +26,6 @@ tccq_lowered_operation(
 \item{reduction}{Optional reduction metadata.}
 
 \item{contraction}{Optional contraction metadata.}
-
-\item{identity}{Optional reduction identity literal.}
 
 \item{attrs}{Structured metadata.}
 }

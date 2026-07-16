@@ -29,7 +29,8 @@ This repo is responsible for:
   and typed source-planning consumers
 - compiler-facing tests for schema validity, frontend diagnostics, and contract
   behavior
-- the known failing apotheosis suite documented in `README.Rmd`
+- the apotheosis probe suite documented in `README.Rmd`, including structured
+  unsupported cases
 
 This repo is not currently responsible for:
 
@@ -330,10 +331,11 @@ For the reset core, keep these rules explicit:
 - Errors are classed conditions carrying `TccqDiagnostic` values.
 - Phase APIs return `TccqResult` or typed program values; they do not smuggle
   failure through messages.
-- The apotheosis examples in `README.Rmd` are expected to fail today, but they
-  must fail with structured diagnostics. Keep both minimal probes and composite
-  targets; minimal probes isolate one higher-level idea, while programs such as
-  logistic-gradient and Viterbi force ideas to compose.
+- Unsupported apotheosis examples in `README.Rmd` must fail with structured
+  diagnostics, while supported examples must exercise a real backend plan. Keep
+  both minimal probes and composite targets; minimal probes isolate one
+  higher-level idea, while programs such as logistic-gradient and Viterbi force
+  ideas to compose.
 - Calls without a current implementation are diagnostics, not implicit fallback
   and not invalid R. Use `frontend.unimplemented_call` style diagnostics to
   say what the current registry/context cannot implement.
@@ -345,8 +347,8 @@ For the reset core, keep these rules explicit:
 - `TccqOpSignature` is the shared operation contract for arity, result-domain
   policy, and result type. `TccqElementwiseSpec`, `TccqReductionSpec`,
   `TccqContractionSpec`, and `TccqIterationSpec` carry signatures; reductions
-  add reducer identity and combine behavior, contractions add contracted axes,
-  and the current iteration spec adds one extent source and affine start. Do
+  refine into typed state protocols, contractions add contracted axes, and the
+  current iteration spec adds one extent source and affine start. Do
   not add another result-type helper, shape predicate, or source-name switch
   when a signature, domain policy, or implementation trait is the actual
   concept.
@@ -393,21 +395,21 @@ For the reset core, keep these rules explicit:
   intermediate mapping, semantic types, ABI, result placement, generated result
   names, iteration domain, per-axis input extent parameters, total input
   element-count parameter, per-axis result extent parameters, result-count
-  parameter, index variable, or reduction accumulator names.
+  parameter, index variable, or reduction-state component names.
 - Source backends consume exactly one data-parallel iteration abstraction:
   `TccqLoopNest`, the SAC-style with-loop, planned as an ordered sequence
   (intermediate nests first, result nest last). A selected-arm intermediate
   extends that same nest with an ordered `TccqLoopGuard` control path rather
   than introducing a second schedule abstraction. Each nest carries ordered `TccqLoopAxis` values
-  (`map` produces output positions, `reduce` folds into an accumulator), a
+  (`map` produces output positions, `reduce` advances reduction state), a
   value-expression or typed-statement-block body whose references carry typed
   `TccqAccess`/`TccqIndexExpr` affine access maps. A recycle access owns its
   typed consumer shape; `TccqAccess` has no `attrs` escape hatch. Each nest
-  also owns an optional reducer with identity and typed scalar accumulator
-  target, a typed materialized
+  also owns an optional reducer with typed `TccqReductionState`, whose
+  `TccqReductionStateComponent` values own scalar targets and identities, plus a typed materialized
   `TccqStorageSlot` owning the result identity and type, and an output access.
-  The accumulator and materialized result are distinct values even when both
-  are scalar. Loop nests and backend function interfaces are closed schemas;
+  Reduction state and the materialized result are distinct values even when
+  the state has one scalar component. Loop nests and backend function interfaces are closed schemas;
   do not restore generic `attrs` bags or duplicate result-type fields to carry
   storage identity or generated names. Scalar programs, maps, full and per-axis
   reductions, `%*%` contractions, interior stencils, control-valued results,
@@ -433,8 +435,9 @@ For the reset core, keep these rules explicit:
   placement; no FFI path may convert or copy a returned buffer before checking
   status.
 - Expression operation families are elementwise (`TccqElementwiseSpec`),
-  reduction (`TccqReductionSpec`, whose optional finalizer transforms the folded
-  accumulator — the mean family divides by the reduced count), and
+  reduction (`TccqReductionSpec`, refined by `TccqFoldReductionSpec` for one
+  identity/combine/finalize component and `TccqArgReductionSpec` for typed
+  selection state), and
   contraction (`TccqContractionSpec`, which owns a signature, a reducer, a
   combine operation, and the contracted operand dimensions — `%*%`,
   `crossprod`, and `tcrossprod` differ only in that typed fact). Programs plan to an ordered

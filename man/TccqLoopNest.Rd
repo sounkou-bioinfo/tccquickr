@@ -10,9 +10,7 @@ TccqLoopNest(
   axes = list(),
   body = TccqExpression(),
   output = NULL,
-  reducer = NULL,
-  identity = NULL,
-  accumulator = NULL,
+  reduction = NULL,
   storage = TccqStorageSlot(),
   guards = list()
 )
@@ -29,11 +27,7 @@ references.}
 
 \item{output}{Output access over map axes, or \code{NULL} for scalar results.}
 
-\item{reducer}{Reduction metadata for reduce axes, or \code{NULL}.}
-
-\item{identity}{Reducer identity literal, or \code{NULL}.}
-
-\item{accumulator}{Typed scalar accumulator target, or \code{NULL}.}
+\item{reduction}{Closed neutral reduction plan for reduce axes, or \code{NULL}.}
 
 \item{storage}{Typed storage slot receiving the nest result.}
 
@@ -44,8 +38,8 @@ references.}
 source printers, in the spirit of the SAC with-loop. One loop nest carries
 ordered typed axes (\code{map} axes produce output positions, \code{reduce} axes fold
 into an accumulator), a value expression or typed statement block whose
-references carry typed affine accesses, an optional reducer with its
-identity, and an output access. Elementwise maps, full and per-axis
+references carry typed affine accesses, an optional closed reduction plan,
+and an output access. Elementwise maps, full and per-axis
 reductions, contractions, stencils, and control-valued results are all
 instances of this one value; printers must not reintroduce per-family loop
 shapes or backend-local control trees.

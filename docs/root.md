@@ -29,9 +29,10 @@ The current useful center is the typed loop-nest path. Elementwise maps,
 reductions, axis reductions, contractions, intermediate materialization,
 dimension symbols, and rank-mixed recycling are represented before printing.
 Each `TccqLoopNest` owns one typed materialized storage slot and reductions own
-a separate typed scalar accumulator target. Generated local and intermediate
-names are backend-interface bindings to those values; parameters and scalar
-locals bind name, value identity, and type together, allocation bindings own
+a closed `TccqReductionPlan`, including typed state with one or more scalar
+components. Generated local and intermediate names are backend-interface
+bindings to those values; parameters and scalar locals bind name, value
+identity, and type together, allocation bindings own
 all slots sharing one physical allocation, and extent bindings pair one
 dimension symbol with one ABI name. None of these mappings is a parallel-array
 convention. The storage slot is the single owner

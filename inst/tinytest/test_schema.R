@@ -282,6 +282,32 @@ operation_expression <- tccq_expression(
   effect = resolved_add@effect,
   operation = lowered_add
 )
+vector_expression <- tccq_expression(
+  "formal_vector",
+  "reference",
+  type = tccq_type("double", tccq_shape("n")),
+  op = "formal",
+  reference = tccq_expression_reference("formal_vector", symbol = "x")
+)
+element_expression <- tccq_expression(
+  "formal_vector_element",
+  "element",
+  type = tccq_type("double"),
+  inputs = list(vector_expression)
+)
+fold_spec <- tccq_reduction_spec(
+  "fold_probe",
+  identity = function(result_type) tccq_literal_finite(0, type = result_type),
+  combine_op = "+"
+)
+fold_plan <- tccq_reduction_plan(
+  fold_spec,
+  element_expression,
+  list(tccq_loop_axis("axis_0001", tccq_dim_symbol("n"), role = "reduce")),
+  tccq_type("double"),
+  "reduction_probe",
+  tccq_default_op_registry()
+)
 logical_scalar <- tccq_type("logical")
 combined_effect <- tccq_effect_union(
   tccq_effect(reads = TRUE, may_warn = TRUE),
@@ -327,6 +353,13 @@ expect_true(S7::S7_inherits(operation_expression@operation, TccqLoweredOperation
 expect_identical(operation_expression@operation@resolved_op, resolved_add)
 expect_identical(operation_expression@effect, resolved_add@effect)
 expect_equal(operation_expression@inputs[[2L]]@literal@value, 1.5)
+expect_equal(element_expression@kind, "element")
+expect_equal(element_expression@type@shape@rank, 0L)
+expect_identical(element_expression@inputs[[1L]], vector_expression)
+expect_true(S7::S7_inherits(fold_plan, TccqReductionPlan))
+expect_identical(fold_plan@spec, fold_spec)
+expect_equal(fold_plan@state@components[[1L]]@name, "accumulator")
+expect_equal(fold_plan@updates[[1L]]@value@op, "+")
 expect_true(S7::S7_inherits(branch_value, TccqBranch))
 expect_true(S7::S7_inherits(branch_value, TccqValue))
 expect_equal(branch_expression@kind, "branch")
@@ -941,7 +974,7 @@ expect_true(S7::S7_inherits(loop_guard, TccqLoopGuard))
 expect_true(loop_guard@selected)
 expect_identical(guarded_statement_nest@guards[[1L]], loop_guard)
 expect_identical(statement_nest@storage, statement_storage)
-expect_null(statement_nest@accumulator)
+expect_null(statement_nest@reduction)
 
 bad_loop_guard <- tryCatch(
   tccq_loop_guard(condition_expression, branch_value, selected = NA),
@@ -1011,6 +1044,35 @@ bad_expression <- tryCatch(
   error = identity
 )
 expect_true(inherits(bad_expression, "error"))
+
+bad_element_expression <- tryCatch(
+  tccq_expression(
+    "bad_element_expression",
+    "element",
+    type = vector_expression@type,
+    inputs = list(vector_expression)
+  ),
+  error = identity
+)
+expect_true(inherits(bad_element_expression, "error"))
+
+bad_reduction_update <- tccq_assignment(
+  "bad_reduction_update",
+  tccq_write_target("other_accumulator", tccq_type("double"), kind = "local"),
+  fold_plan@updates[[1L]]@value
+)
+bad_reduction_plan <- tryCatch(
+  TccqReductionPlan(
+    spec = fold_plan@spec,
+    state = fold_plan@state,
+    condition = fold_plan@condition,
+    updates = list(bad_reduction_update),
+    value = fold_plan@value,
+    valid = fold_plan@valid
+  ),
+  error = identity
+)
+expect_true(inherits(bad_reduction_plan, "error"))
 
 mismatched_expression_operation <- tryCatch(
   tccq_expression(

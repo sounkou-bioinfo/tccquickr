@@ -10,10 +10,8 @@ tccq_loop_nest(
   body,
   storage,
   output = NULL,
-  reducer = NULL,
-  identity = NULL,
+  reduction = NULL,
   domain = NULL,
-  accumulator = NULL,
   guards = list()
 )
 }
@@ -29,13 +27,9 @@ references.}
 
 \item{output}{Output access over map axes, or \code{NULL} for scalar results.}
 
-\item{reducer}{Reduction metadata for reduce axes, or \code{NULL}.}
-
-\item{identity}{Reducer identity literal, or \code{NULL}.}
+\item{reduction}{Closed neutral reduction plan for reduce axes, or \code{NULL}.}
 
 \item{domain}{Optional iteration domain. Defaults to one built from \code{axes}.}
-
-\item{accumulator}{Typed scalar accumulator target, or \code{NULL}.}
 
 \item{guards}{Ordered \code{TccqLoopGuard} control path selecting this nest.}
 }
