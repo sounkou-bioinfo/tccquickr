@@ -4,7 +4,14 @@
 \alias{tccq_diagnostic}
 \title{Create a compiler diagnostic}
 \usage{
-tccq_diagnostic(code, message, phase = "schema", path = "", data = list())
+tccq_diagnostic(
+  code,
+  message,
+  phase = "schema",
+  path = "",
+  data = list(),
+  verdict = NA_character_
+)
 }
 \arguments{
 \item{code}{Stable diagnostic code.}
@@ -16,6 +23,9 @@ tccq_diagnostic(code, message, phase = "schema", path = "", data = list())
 \item{path}{Optional path into the program or schema.}
 
 \item{data}{Structured diagnostic payload.}
+
+\item{verdict}{What the rejection says about the program; see
+\link{TccqDiagnostic}.}
 }
 \description{
 Create a compiler diagnostic

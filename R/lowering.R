@@ -710,6 +710,10 @@ tccq_lower_function <- function(
       ))
     }
 
+    effect <- .tccq_elementwise_effect(resolved_operation, input_types, result_type@value)
+    if (!effect@success) {
+      return(list(value_id = NULL, type = NULL, diagnostics = effect@diagnostics))
+    }
     value_id <- next_value_id(state)
     operation <- tccq_lowered_operation(
       "elementwise",
@@ -723,7 +727,7 @@ tccq_lower_function <- function(
         op = op,
         inputs = input_ids,
         type = result_type@value,
-        effect = resolved_operation@effect,
+        effect = effect@value,
         attrs = list(operation = operation)
       )
     )
@@ -940,7 +944,8 @@ tccq_lower_function <- function(
           "lowering.unproven_scalar_subscript",
           "Every scalar integer subscript requires an active typed iteration proving one-based bounds.",
           expr,
-          data = list(selectors = selector_names, unproven = unproven)
+          data = list(selectors = selector_names, unproven = unproven),
+          verdict = "unproven"
         ))
       }
       semantics <- take_call_semantics(expr, "[", state)
@@ -1084,7 +1089,8 @@ tccq_lower_function <- function(
               source_extent = target$type@shape@dims[[position]],
               iteration_extent = iteration@domain@shape@dims[[1L]],
               message = conditionMessage(proof)
-            )
+            ),
+            verdict = "unproven"
           ))
         }
         index_proofs[[position]] <- proof
@@ -1952,7 +1958,8 @@ tccq_lower_function <- function(
             "lowering.loop_transfer_outside_loop",
             sprintf("Loop transfer `%s` must occur inside a sequential loop.", call_name),
             expr,
-            data = list(action = call_name)
+            data = list(action = call_name),
+            verdict = "refuted"
           ))
         }
         semantics <- take_semantics(expr, call_name)
@@ -2548,7 +2555,21 @@ tccq_lower_function <- function(
     )
   }
 
-  diagnostic_value <- function(code, message, expr, data = list()) {
+  # Lowering rejections are valid R outside the lowered subset unless the
+  # site says otherwise. Contract failures between the frontend, the op
+  # registry and this pass carry no verdict about the user's program.
+  internal_codes <- c(
+    "lowering.missing_call_semantics",
+    "lowering.recursive_op_body",
+    "lowering.op_body_result_type_mismatch",
+    "lowering.op_body_effect_mismatch",
+    "lowering.unbound_op_body_symbol",
+    "lowering.invalid_indexed_value"
+  )
+  diagnostic_value <- function(code, message, expr, data = list(), verdict = NULL) {
+    if (is.null(verdict)) {
+      verdict <- if (code %in% internal_codes) NA_character_ else "unsupported"
+    }
     list(
       value_id = NULL,
       type = NULL,
@@ -2557,7 +2578,8 @@ tccq_lower_function <- function(
         message,
         phase = "lowering",
         path = "expression",
-        data = c(list(expr = deparse1(expr)), data)
+        data = c(list(expr = deparse1(expr)), data),
+        verdict = verdict
       ))
     )
   }
@@ -2643,6 +2665,7 @@ tccq_lower_function <- function(
           call@name
         ),
         phase = "lowering",
+        verdict = "unsupported",
         path = sprintf("call_index.%s", call@id),
         data = list(
           call = call@name,
@@ -2660,6 +2683,7 @@ tccq_lower_function <- function(
           call@name
         ),
         phase = "lowering",
+        verdict = "unsupported",
         path = sprintf("call_index.%s", call@id),
         data = list(
           call = call@name,
@@ -2682,6 +2706,7 @@ tccq_lower_function <- function(
         call@name
       ),
       phase = "lowering",
+      verdict = "unsupported",
       path = sprintf("call_index.%s", call@id),
       data = list(
         call = call@name,

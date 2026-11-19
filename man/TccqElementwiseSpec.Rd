@@ -7,6 +7,7 @@
 TccqElementwiseSpec(
   name = character(0),
   signature = TccqOpSignature(),
+  effect = NULL,
   attrs = list()
 )
 }
@@ -14,6 +15,10 @@ TccqElementwiseSpec(
 \item{name}{Human-readable elementwise operation name.}
 
 \item{signature}{Shared operation signature.}
+
+\item{effect}{\code{NULL}, or a function from input \code{TccqType} list and result
+\code{TccqType} to the \code{TccqEffect} of one typed application. It narrows the
+implementation's declared effect, which stays the upper bound.}
 
 \item{attrs}{Structured elementwise metadata.}
 }

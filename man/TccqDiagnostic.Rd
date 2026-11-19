@@ -9,7 +9,8 @@ TccqDiagnostic(
   message = character(0),
   phase = character(0),
   path = character(0),
-  data = list()
+  data = list(),
+  verdict = NA_character_
 )
 }
 \arguments{
@@ -22,8 +23,25 @@ TccqDiagnostic(
 \item{path}{Optional path into the program or schema.}
 
 \item{data}{Structured diagnostic payload.}
+
+\item{verdict}{One of \code{"refuted"}, \code{"unproven"}, \code{"unsupported"}, or \code{NA}.}
 }
 \description{
 Diagnostics are values first and condition payloads second. Compiler code
 should pass these objects around instead of branching on condition strings.
+}
+\details{
+The verdict states what a rejection says about the R program, independent
+of the code naming the rule that rejected it:
+\itemize{
+\item \code{"refuted"}: R itself fails whenever the rejected expression is
+evaluated with inputs satisfying the declarations, for example \code{\%*\%} over
+contracted extents 3 and 4. Whether that expression is reached is not
+part of the claim.
+\item \code{"unproven"}: R may succeed, but the declared facts do not prove the
+relation the compiler needs, for example \code{n == p} for \code{double(n, p) + double(p, n)}. \code{data$requires} names that relation when one exists.
+\item \code{"unsupported"}: valid R outside the compiled subset.
+\item \code{NA}: no verdict about the program, as for invalid API arguments or
+backend toolchain failures.
+}
 }
