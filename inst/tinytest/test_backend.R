@@ -281,10 +281,37 @@ expect_true(S7::S7_inherits(
   expression_result@value@operation@resolved_op,
   TccqResolvedOp
 ))
-expect_identical(
-  expression_result@value@effect,
-  expression_result@value@operation@resolved_op@effect
+# Double `+` carries its typed effect: the implementation's declared
+# `may_warn` covers integer overflow, which a double sum cannot produce.
+expect_true(expression_result@value@operation@resolved_op@effect@may_warn)
+expect_identical(expression_result@value@effect, tccq_effect(reads = TRUE))
+
+# A fused single-use local runs as one loop with no temporary buffer, and
+# matches R on IEEE special values and overflow to Inf.
+fused_arithmetic <- function(x) {
+  declare(type(x = double(n)))
+  scaled <- x * 2
+  scaled + 1
+}
+fused_arithmetic_program <- tccq_analyze(fused_arithmetic)@value
+fused_arithmetic_source_plan <- tccq_plan_backend(
+  fused_arithmetic_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
 )
+expect_true(fused_arithmetic_source_plan@success)
+fused_arithmetic_source <- backend_source(fused_arithmetic_source_plan)
+expect_equal(lengths(regmatches(fused_arithmetic_source, gregexpr("for \\(", fused_arithmetic_source))), 1L)
+expect_false(grepl("intermediate_", fused_arithmetic_source, fixed = TRUE))
+if (rtinycc_jit_available) {
+  fused_arithmetic_plan <- tccq_plan_backend(fused_arithmetic_program, backend, context)
+  expect_true(fused_arithmetic_plan@success)
+  special_doubles <- c(1.5, -2, NA, NaN, Inf, -Inf, 0, 1e308)
+  expect_identical(
+    backend_callable(fused_arithmetic_plan)(special_doubles),
+    fused_arithmetic(special_doubles)
+  )
+}
 
 c_source_plan <- tccq_plan_backend(
   vector_program@value,

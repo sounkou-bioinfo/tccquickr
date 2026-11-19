@@ -244,6 +244,9 @@ TccqOpSignature <- S7::new_class(
 #'
 #' @param name Human-readable elementwise operation name.
 #' @param signature Shared operation signature.
+#' @param effect `NULL`, or a function from input `TccqType` list and result
+#'   `TccqType` to the `TccqEffect` of one typed application. It narrows the
+#'   implementation's declared effect, which stays the upper bound.
 #' @param attrs Structured elementwise metadata.
 #' @export
 TccqElementwiseSpec <- S7::new_class(
@@ -252,6 +255,7 @@ TccqElementwiseSpec <- S7::new_class(
   properties = list(
     name = S7::class_character,
     signature = TccqOpSignature,
+    effect = S7::new_union(NULL, S7::class_function),
     attrs = S7::class_list
   ),
   validator = function(self) {
@@ -1330,12 +1334,24 @@ tccq_elementwise_domain_policy <- function() {
       ranks <- vapply(non_scalar_shapes, function(shape) shape@rank, integer(1))
       array_positions <- which(ranks >= 2L)
       if (length(unique(shape_labels[array_positions])) > 1L) {
+        # R rejects non-conformable arrays, so a provable difference refutes
+        # the program; an undecided one only lacks the equalities it needs.
+        relations <- unlist(lapply(seq_along(array_positions)[-1L], function(j) {
+          lapply(array_positions[seq_len(j - 1L)], function(i) {
+            .tccq_shape_relation(non_scalar_shapes[[i]], non_scalar_shapes[[array_positions[[j]]]])
+          })
+        }), recursive = FALSE)
+        refuted <- any(vapply(relations, function(r) r$relation == "distinct", logical(1)))
         tccq_abort(
           "ops.incompatible_elementwise_shapes",
           "Array operands of one elementwise operation must share one ordered shape.",
           phase = "ops",
           path = "domain_policy.result_shape",
-          data = list(shapes = shape_labels)
+          data = list(
+            shapes = shape_labels,
+            requires = if (refuted) character() else unique(unlist(lapply(relations, `[[`, "requires")))
+          ),
+          verdict = if (refuted) "refuted" else "unproven"
         )
       }
       host_position <- if (length(array_positions) > 0L) {
@@ -1358,12 +1374,17 @@ tccq_elementwise_domain_policy <- function() {
         big = dim_labels[[host_position]]
       ))
       if (!recycle_is_provable) {
+        # R recycles mismatched lengths, warning when they are not multiples,
+        # so this is never a refutation. With constant lengths nothing is left
+        # to prove: R's behaviour is decided and the subset does not model it.
+        all_constant <- all(grepl("^constant:", unlist(dim_labels)))
         tccq_abort(
           "ops.incompatible_elementwise_shapes",
           "Elementwise inputs must share one shape or recycle operands whose dimensions divide the host shape.",
           phase = "ops",
           path = "domain_policy.result_shape",
-          data = list(shapes = shape_labels)
+          data = list(shapes = shape_labels),
+          verdict = if (all_constant) "unsupported" else "unproven"
         )
       }
       non_scalar_shapes[[host_position]]
@@ -1607,13 +1628,15 @@ S7::method(tccq_op_signature_result_type, TccqOpSignature) <- function(signature
 #' @param result_type Function from input `TccqType` list to result `TccqType`.
 #' @param attrs Structured elementwise metadata.
 #' @param domain_policy Optional result-shape policy.
+#' @param effect Optional typed effect refinement; see [TccqElementwiseSpec].
 #' @export
 tccq_elementwise_spec <- function(
   name,
   arity,
   result_type,
   attrs = list(),
-  domain_policy = NULL
+  domain_policy = NULL,
+  effect = NULL
 ) {
   .tccq_check_character_scalar(name, "name")
   if (!is.function(result_type)) {
@@ -1629,6 +1652,14 @@ tccq_elementwise_spec <- function(
     domain_policy <- tccq_elementwise_domain_policy()
   }
   .tccq_check_optional_s7(domain_policy, TccqDomainPolicy, "TccqDomainPolicy", "domain_policy")
+  if (!is.null(effect) && !is.function(effect)) {
+    tccq_abort(
+      "schema.invalid_elementwise_effect",
+      "`effect` must be NULL or a function.",
+      phase = "schema",
+      path = "elementwise.effect"
+    )
+  }
 
   TccqElementwiseSpec(
     name = name,
@@ -1638,8 +1669,39 @@ tccq_elementwise_spec <- function(
       result_type,
       domain_policy = domain_policy
     ),
+    effect = effect,
     attrs = attrs
   )
+}
+
+# Effect of one typed elementwise application: the spec's refinement when it
+# has one, else the implementation's declared effect. A refinement may only
+# drop effects; adding one would contradict the declared contract.
+.tccq_elementwise_effect <- function(resolved_operation, input_types, result_type) {
+  declared <- resolved_operation@effect
+  refine <- resolved_operation@elementwise@effect
+  if (is.null(refine)) {
+    return(tccq_result(success = TRUE, value = declared))
+  }
+  refined <- refine(input_types, result_type)
+  flags <- c("reads", "writes", "allocates", "boundary", "may_error", "may_warn")
+  widened <- if (S7::S7_inherits(refined, TccqEffect)) {
+    flags[vapply(flags, function(flag) {
+      isTRUE(S7::prop(refined, flag)) && !isTRUE(S7::prop(declared, flag))
+    }, logical(1))]
+  } else {
+    "<not a TccqEffect>"
+  }
+  if (length(widened) > 0L) {
+    return(tccq_result(success = FALSE, diagnostics = list(tccq_diagnostic(
+      "ops.elementwise_effect_widened",
+      sprintf("The typed effect of `%s` must be within its declared effect.", resolved_operation@call@name),
+      phase = "ops",
+      path = "elementwise.effect",
+      data = list(op = resolved_operation@call@name, widened = widened)
+    ))))
+  }
+  tccq_result(success = TRUE, value = refined)
 }
 
 #' Return an elementwise operation result type
@@ -3252,24 +3314,32 @@ tccq_default_op_registry <- function() {
     }
     tccq_type("logical", result_shape)
   }
+  # Integer `+`, `-` and `*` warn on overflow and return NA. Double arithmetic
+  # follows IEEE 754 and never warns, so it is free to reorder and fuse.
+  integer_overflow_effect <- function(input_types, result_type) {
+    tccq_effect(reads = TRUE, may_warn = !identical(result_type@base, "double"))
+  }
   elementwise_specs <- list(
     "+" = tccq_elementwise_spec(
       "+",
       2L,
       numeric_elementwise_result_type(),
-      domain_policy = elementwise_domain_policy
+      domain_policy = elementwise_domain_policy,
+      effect = integer_overflow_effect
     ),
     "-" = tccq_elementwise_spec(
       "-",
       c(1L, 2L),
       numeric_elementwise_result_type(),
-      domain_policy = elementwise_domain_policy
+      domain_policy = elementwise_domain_policy,
+      effect = integer_overflow_effect
     ),
     "*" = tccq_elementwise_spec(
       "*",
       2L,
       numeric_elementwise_result_type(),
-      domain_policy = elementwise_domain_policy
+      domain_policy = elementwise_domain_policy,
+      effect = integer_overflow_effect
     ),
     "/" = tccq_elementwise_spec(
       "/",
@@ -3475,20 +3545,30 @@ tccq_default_op_registry <- function() {
               op_name
             ),
             phase = "ops",
+            verdict = "unsupported",
             path = "domain_policy.result_shape",
             data = list(left_rank = left_shape@rank, right_rank = right_shape@rank)
           )
         }
-        if (!tccq_dim_equal(left_shape@dims[[left_contract]], right_shape@dims[[right_contract]])) {
+        left_dim <- left_shape@dims[[left_contract]]
+        right_dim <- right_shape@dims[[right_contract]]
+        relation <- tccq_dim_relation(left_dim, right_dim)
+        if (!identical(relation, "equal")) {
           tccq_abort(
             "ops.incompatible_contraction_dims",
             sprintf("`%s` inputs must agree on the contracted dimension.", op_name),
             phase = "ops",
             path = "domain_policy.result_shape",
             data = list(
-              left = left_shape@dims[[left_contract]]@label,
-              right = right_shape@dims[[right_contract]]@label
-            )
+              left = left_dim@label,
+              right = right_dim@label,
+              requires = if (identical(relation, "unknown")) {
+                .tccq_dim_requirement(left_dim, right_dim)
+              } else {
+                character()
+              }
+            ),
+            verdict = if (identical(relation, "distinct")) "refuted" else "unproven"
           )
         }
         left_free <- setdiff(1:2, left_contract)
@@ -3961,6 +4041,7 @@ tccq_resolve_call <- function(registry, call, context = tccq_op_context()) {
     "ops.unresolved_call",
     sprintf("Call `%s` has no implementation in the current registry/context.", call@name),
     phase = "ops",
+    verdict = "unsupported",
     path = "call",
     data = list(
       call = call@name,

@@ -10,6 +10,5 @@ tccq_dim_equal(left, right)
 \item{left, right}{\code{TccqDim} values.}
 }
 \description{
-Constant dimensions compare by value, symbolic and affine dimensions by
-symbol and offset. Unknown dimensions never compare equal.
+\code{TRUE} only when \code{\link[=tccq_dim_relation]{tccq_dim_relation()}} proves the dimensions equal.
 }

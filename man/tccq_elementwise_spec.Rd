@@ -9,7 +9,8 @@ tccq_elementwise_spec(
   arity,
   result_type,
   attrs = list(),
-  domain_policy = NULL
+  domain_policy = NULL,
+  effect = NULL
 )
 }
 \arguments{
@@ -22,6 +23,8 @@ tccq_elementwise_spec(
 \item{attrs}{Structured elementwise metadata.}
 
 \item{domain_policy}{Optional result-shape policy.}
+
+\item{effect}{Optional typed effect refinement; see \link{TccqElementwiseSpec}.}
 }
 \description{
 Construct elementwise implementation metadata

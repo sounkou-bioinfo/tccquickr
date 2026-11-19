@@ -8,6 +8,7 @@ TCCQ_BASE_TYPES <- c(
   "buffer"
 )
 TCCQ_DIM_KINDS <- c("constant", "symbol", "affine", "unknown")
+TCCQ_DIAGNOSTIC_VERDICTS <- c("refuted", "unproven", "unsupported")
 TCCQ_AXIS_ROLES <- c("map", "reduce")
 TCCQ_LITERAL_KINDS <- c("finite", "na", "nan", "pos_inf", "neg_inf")
 TCCQ_ACCESS_KINDS <- c(
@@ -1489,22 +1490,89 @@ tccq_dim_affine <- function(name, offset) {
   TccqDim(kind = "affine", label = name, value = offset)
 }
 
+#' Decide the relation between two dimensions
+#'
+#' Returns `"equal"` when the dimensions are provably the same extent,
+#' `"distinct"` when they provably differ for every binding of their symbols,
+#' and `"unknown"` otherwise. Two constants are decided by value. A symbol and
+#' its affine offsets are decided by offset, so `n` and `n - 2` are distinct.
+#' Different symbols, a symbol against a constant, and unknown dimensions are
+#' undecided: `n` and `p` may be bound to equal extents.
+#'
+#' @param left,right `TccqDim` values.
+#' @export
+tccq_dim_relation <- function(left, right) {
+  .tccq_check_s7(left, TccqDim, "TccqDim", "left")
+  .tccq_check_s7(right, TccqDim, "TccqDim", "right")
+  if (identical(left@kind, "unknown") || identical(right@kind, "unknown")) {
+    return("unknown")
+  }
+  if (identical(left@kind, "constant") && identical(right@kind, "constant")) {
+    return(if (left@value == right@value) "equal" else "distinct")
+  }
+  if (identical(left@kind, "constant") || identical(right@kind, "constant")) {
+    return("unknown")
+  }
+  if (!identical(left@label, right@label)) {
+    return("unknown")
+  }
+  offset <- function(dim) if (identical(dim@kind, "affine")) dim@value else 0L
+  if (offset(left) == offset(right)) "equal" else "distinct"
+}
+
 #' Compare two dimensions for semantic equality
 #'
-#' Constant dimensions compare by value, symbolic and affine dimensions by
-#' symbol and offset. Unknown dimensions never compare equal.
+#' `TRUE` only when [tccq_dim_relation()] proves the dimensions equal.
 #'
 #' @param left,right `TccqDim` values.
 #' @export
 tccq_dim_equal <- function(left, right) {
-  .tccq_check_s7(left, TccqDim, "TccqDim", "left")
-  .tccq_check_s7(right, TccqDim, "TccqDim", "right")
-  if (identical(left@kind, "unknown") || identical(right@kind, "unknown")) {
-    return(FALSE)
+  identical(tccq_dim_relation(left, right), "equal")
+}
+
+# Relation between two shapes as list(relation, requires). Different ranks are
+# "distinct"; otherwise any distinct position makes the shapes distinct, all
+# equal positions make them equal, and the rest is "unknown". `requires` holds
+# the undecided pairs as "left == right" strings naming what would make the
+# shapes equal.
+.tccq_shape_relation <- function(left, right) {
+  .tccq_check_s7(left, TccqShape, "TccqShape", "left")
+  .tccq_check_s7(right, TccqShape, "TccqShape", "right")
+  if (left@rank != right@rank) {
+    return(list(relation = "distinct", requires = character()))
   }
-  identical(left@kind, right@kind) &&
-    identical(left@label, right@label) &&
-    identical(left@value, right@value)
+  relations <- vapply(
+    seq_len(left@rank),
+    function(i) tccq_dim_relation(left@dims[[i]], right@dims[[i]]),
+    character(1)
+  )
+  undecided <- which(relations == "unknown")
+  requires <- unique(vapply(
+    undecided,
+    function(i) .tccq_dim_requirement(left@dims[[i]], right@dims[[i]]),
+    character(1)
+  ))
+  relation <- if (any(relations == "distinct")) {
+    "distinct"
+  } else if (length(undecided) > 0L) {
+    "unknown"
+  } else {
+    "equal"
+  }
+  list(relation = relation, requires = if (relation == "unknown") requires else character())
+}
+
+# The undecided equality between two dimensions as R source text, "a == b",
+# with the sides sorted so a relation and its mirror compare equal.
+.tccq_dim_requirement <- function(left, right) {
+  text <- function(dim) switch(
+    dim@kind,
+    constant = as.character(dim@value),
+    symbol = dim@label,
+    affine = sprintf("%s %s %d", dim@label, if (dim@value < 0L) "-" else "+", abs(dim@value)),
+    unknown = "?"
+  )
+  paste(sort(c(text(left), text(right))), collapse = " == ")
 }
 
 #' Construct a shape

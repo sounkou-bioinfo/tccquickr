@@ -1,31 +1,30 @@
 
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
 # tccquickr
 
-`tccquickr` compiles a declared subset of R into typed IR and then into
-C, Fortran, and TinyCC-JIT kernels. Programs enter through
-`declare(type(...))`, become S7 value graphs with symbolic shapes and
-effects, and lower into one or more backend-neutral loop nests —
-SAC-style with-loops — before any target syntax exists. Unsupported R is
-a classed diagnostic, never an implicit fallback.
+Compiles a declared subset of R to C, Fortran and in-memory TinyCC
+kernels.
 
-Every chunk in this README executes when the document is knit, so the
-claims below are checked against the installed package, not maintained
-by hand.
+You declare the types of a function’s arguments with
+`declare(type(...))`. tccquickr infers the type, shape and effects of
+every value from there, and either produces a kernel that matches R or
+tells you why it cannot. It never falls back to calling R.
 
-## Install
+## Installation
 
 ``` r
 install.packages(
   "tccquickr",
   repos = c("https://sounkou-bioinfo.r-universe.dev", getOption("repos"))
 )
-# or
-remotes::install_github("sounkou-bioinfo/tccquickr")
 ```
 
-## From declared R to a running kernel
+## A first kernel
 
-A matrix-vector product, declared with symbolic dimensions:
+Declarations follow quickr: `double(n, p)` is a double matrix with `n`
+rows and `p` columns. Symbols name dimensions, so two arguments that
+share `p` must agree on it.
 
 ``` r
 library(tccquickr)
@@ -36,18 +35,34 @@ matrix_vector <- function(x, w) {
 }
 ```
 
-The analysis lowers this into a typed loop nest — one `map` axis over
-`n`, one `reduce` axis over `p` folding with `sum` — and the C backend
-prints that nest:
+Analysis, backend planning and the product are separate steps. These two
+helpers return the generated C source and a callable compiled in memory
+by TinyCC through Rtinycc:
 
 ``` r
-program <- tccq_analyze(matrix_vector, strict = TRUE)@value
-c_plan <- tccq_plan_backend(
-  program,
-  tccq_c_backend(),
-  tccq_backend_context(mode = "source", target = "c")
-)
-cat(c_plan@value@products@attrs$source)
+c_source <- function(fn) {
+  plan <- tccq_plan_backend(
+    tccq_analyze(fn, strict = TRUE)@value,
+    tccq_c_backend(),
+    tccq_backend_context(mode = "source", target = "c")
+  )
+  plan@value@products@attrs$source
+}
+
+jit <- function(fn, registry = tccq_default_op_registry()) {
+  plan <- tccq_plan_backend(
+    tccq_analyze(fn, registry = registry, strict = TRUE)@value,
+    tccq_rtinycc_backend(),
+    tccq_backend_context(mode = "jit", target = "c")
+  )
+  plan@value@products@attrs$callable
+}
+```
+
+The product is one loop nest: a map over `n` and a sum over `p`.
+
+``` r
+cat(c_source(matrix_vector))
 #> #include <math.h>
 #> #include <limits.h>
 #> #include <stddef.h>
@@ -73,54 +88,129 @@ cat(c_plan@value@products@attrs$source)
 #> }
 ```
 
-The extent parameters come from the declared dimension symbols, so the
-generated boundary knows that `ncol(x)` and `length(w)` are the same `p`
-and checks it. TinyCC compiles the same source in-process and the
-callable agrees with R:
+The compiled function agrees with R:
 
 ``` r
-jit_plan <- tccq_plan_backend(
-  program,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-matvec <- jit_plan@value@products@attrs$callable
-
 set.seed(1)
 x <- matrix(rnorm(12), nrow = 3)
 w <- rnorm(4)
-all.equal(matvec(x, w), drop(x %*% w))
+all.equal(jit(matrix_vector)(x, w), drop(x %*% w))
 #> [1] TRUE
 ```
 
-Stencils work the same way: affine slice bounds become typed affine
-extents (`n - 2` is a dimension fact, not a printed string), and the
-loop nest shifts accesses instead of materializing slices:
+The boundary checks the shared dimension `p`:
 
 ``` r
-tiled_stencil_1d <- function(x) {
+try(jit(matrix_vector)(x, rnorm(5)))
+#> Error : Arguments disagree on a declared extent symbol.
+```
+
+## Shapes are facts
+
+Slice bounds such as `n - 2L` become dimensions of the result, so a
+stencil reads shifted elements in one loop and builds no slice copies.
+Dimension symbols exist only for the compiler: in plain R, `n` is
+unbound, so the comparison spells out the extents.
+
+``` r
+stencil <- function(x) {
   declare(type(x = double(n)))
   x[1:(n - 2L)] + x[2:(n - 1L)] + x[3:n]
 }
-
-stencil_jit <- tccq_plan_backend(
-  tccq_analyze(tiled_stencil_1d, strict = TRUE)@value,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-stencil <- stencil_jit@value@products@attrs$callable
 v <- c(1, 2, 4, 8, 16, 32, 64)
-all.equal(stencil(v), v[1:5] + v[2:6] + v[3:7])
+identical(jit(stencil)(v), v[1:5] + v[2:6] + v[3:7])
 #> [1] TRUE
 ```
 
-Programs are no longer limited to one loop nest. A scalar reduction
-feeding later work becomes its own all-reduce nest. Its reducer advances
-typed neutral state, then projects a distinct typed materialized scalar
-slot that the final nest reads. The backend interface assigns source
-names to both values; the loop nest contains no target names or generic
-metadata bag. This SAC-style composition is visible in the emitted
-source:
+## Fusion
+
+A local used once, by the next statement, is computed in the loop that
+reads it. `scaled` below gets no buffer, and the kernel has one loop:
+
+``` r
+affine <- function(x) {
+  declare(type(x = double(n)))
+  scaled <- x * 2
+  scaled + 1
+}
+cat(c_source(affine))
+#> #include <math.h>
+#> #include <limits.h>
+#> #include <stddef.h>
+#> #include <stdlib.h>
+#> #define TCCQ_NA_LOGICAL INT_MIN
+#> 
+#> double *tccq_c_1218373349(const double *input_0001, int extent_n, int result_count_0001) {
+#>   if (result_count_0001 < 0) {
+#>     return NULL;
+#>   }
+#>   double *output = (double *)malloc(sizeof(double) * (size_t)result_count_0001);
+#>   if (output == NULL) {
+#>     return NULL;
+#>   }
+#>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
+#>     output[axis_0001] = ((input_0001[axis_0001] *                  2.0) +                  1.0);
+#>   }
+#>   return output;
+#> }
+```
+
+Fusion must not change which warnings R raises, or their order. `sqrt()`
+can warn, so a `sqrt()` local gets its own buffer and loop, and is
+computed in full before it is used:
+
+``` r
+root_then_exp <- function(x) {
+  declare(type(x = double(n)))
+  root <- sqrt(x)
+  exp(root)
+}
+cat(c_source(root_then_exp))
+#> #include <math.h>
+#> #include <limits.h>
+#> #include <stddef.h>
+#> #include <stdlib.h>
+#> #define TCCQ_NA_LOGICAL INT_MIN
+#> 
+#> double *tccq_c_756219258(const double *input_0001, int extent_n, int result_count_0001) {
+#>   if (result_count_0001 < 0) {
+#>     return NULL;
+#>   }
+#>   double *output = (double *)malloc(sizeof(double) * (size_t)result_count_0001);
+#>   if (output == NULL) {
+#>     return NULL;
+#>   }
+#>   double *intermediate_0001 = NULL;
+#>   intermediate_0001 = (double *)malloc(sizeof(double) * (size_t)(extent_n));
+#>   if (intermediate_0001 == NULL) {
+#>     free(intermediate_0001);
+#>     free(output);
+#>     return NULL;
+#>   }
+#>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
+#>     intermediate_0001[axis_0001] = sqrt(input_0001[axis_0001]);
+#>   }
+#>   for (int axis_0001 = 0; axis_0001 < extent_n; ++axis_0001) {
+#>     output[axis_0001] = exp(intermediate_0001[axis_0001]);
+#>   }
+#>   free(intermediate_0001);
+#>   return output;
+#> }
+```
+
+Double arithmetic follows IEEE 754 and cannot warn, so the fused kernel
+is bit-identical to R on missing and infinite values:
+
+``` r
+specials <- c(1.5, NA, NaN, Inf, -Inf, 0, 1e308)
+identical(jit(affine)(specials), affine(specials))
+#> [1] TRUE
+```
+
+## Several loop nests
+
+A reduction that later work depends on becomes its own nest, and its
+result is stored in a scalar that the next nest reads.
 
 ``` r
 normalize <- function(x) {
@@ -128,13 +218,7 @@ normalize <- function(x) {
   s <- sum(x)
   x / s
 }
-
-normalize_plan <- tccq_plan_backend(
-  tccq_analyze(normalize, strict = TRUE)@value,
-  tccq_c_backend(),
-  tccq_backend_context(mode = "source", target = "c")
-)
-cat(normalize_plan@value@products@attrs$source)
+cat(c_source(normalize))
 #> #include <math.h>
 #> #include <limits.h>
 #> #include <stddef.h>
@@ -160,56 +244,74 @@ cat(normalize_plan@value@products@attrs$source)
 #>   }
 #>   return output;
 #> }
-```
-
-``` r
-normalize_jit <- tccq_plan_backend(
-  tccq_analyze(normalize, strict = TRUE)@value,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-normalize_kernel <- normalize_jit@value@products@attrs$callable
 v <- c(1, 2, 3, 4)
-all.equal(normalize_kernel(v), v / sum(v))
+all.equal(jit(normalize)(v), v / sum(v))
 #> [1] TRUE
 ```
 
-## The declared subset today
+## Loops, indexing and branches
 
-**Types.** `double` formals may have any rank with symbolic or constant
-dimensions. Scalar `logical` values use R’s three-state integer
-representation through the generated ABI: C `int`, Fortran
-`integer(c_int)`, and TinyCC `i32`. Boundary wrappers reject missing
-logical formals, while computed comparisons preserve missingness until a
-value is returned or consumed by control. Other declared base types
-analyze but do not reach the source backends yet.
+`for` over `seq_len()` of a declared extent compiles to a C loop. An
+index such as `x[index]` is accepted only when the compiler can prove it
+is in bounds.
 
-A generated callable with control carries a typed error channel. When
-its result is an array, the function interface uses caller-owned output
-storage rather than returning an owned pointer: C, Rtinycc, and Fortran
-can inspect the status before exposing the output, and allocation or
-condition failures remain ordered classed diagnostics instead of
-sentinel pointers.
+``` r
+indexed_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) total <- total + x[index]
+  total
+}
+identical(jit(indexed_sum)(c(1, 2, 3)), 6)
+#> [1] TRUE
 
-**Elementwise operations.** `+`, `-`, `*`, `/`, `^`, `sqrt`, and `exp`
-use scalar broadcast over any rank. Scalar numeric `<`, `<=`, `>`, `>=`,
-`==`, and `!=` produce typed logical values for control conditions;
-their current implementation deliberately rejects array operands.
-Registries can add leaf renderers without touching the printers. A
-composite operation instead uses `TccqOpBody`: one parameterized R
-expression that lowering expands through the same registry into ordinary
-typed values. Expansion checks the signature’s result type and verifies
-that the primitive effects fit inside the body’s declared effect
-contract. A body can refer only to its parameters, literals, and calls
-resolved by the registry; free symbols and special-forcing calls are
-structured refusals. Bodies may call other neutral bodies, which expand
-transitively through the same registry. This is typed inline expansion
-for fusion, not a separately linked function mechanism: every composite
-name is gone before expression trees, fusion, loop nests, or source
-backends see the program. Every neutral operation expression then owns
-its complete `TccqLoweredOperation` and typed effect; it does not
-duplicate the selected implementation or hide pass facts in expression
-attributes.
+matrix_sum <- function(x) {
+  declare(type(x = double(n, p)))
+  total <- 0
+  for (row in seq_len(n)) {
+    for (column in seq_len(p)) total <- total + x[row, column]
+  }
+  total
+}
+m <- matrix(1:6 + 0, nrow = 2)
+identical(jit(matrix_sum)(m), sum(m))
+#> [1] TRUE
+```
+
+An index the compiler cannot prove in bounds is refused. The result
+names the unproven fact:
+
+``` r
+shifted_sum <- function(x) {
+  declare(type(x = double(n)))
+  total <- 0
+  for (index in seq_len(n)) total <- total + x[index + 1L]
+  total
+}
+refused <- tccq_analyze(shifted_sum)
+refused@diagnostics[[1L]]@code
+#> [1] "lowering.unproven_affine_subscript"
+refused@diagnostics[[1L]]@verdict
+#> [1] "unproven"
+```
+
+An `if` with a scalar logical condition evaluates only the selected arm,
+as R does:
+
+``` r
+guarded_sum <- function(x, flag) {
+  declare(type(x = double(n), flag = logical()))
+  if (flag) sum(x) else 0
+}
+c(jit(guarded_sum)(c(1, 2), TRUE), jit(guarded_sum)(c(1, 2), FALSE))
+#> [1] 3 0
+```
+
+## New operations
+
+An operation can be defined by an R expression over its parameters. The
+compiler expands it inline and checks that the expansion stays within
+the declared effect, so `sigmoid()` fuses like any built-in:
 
 ``` r
 sigmoid_registry <- tccq_op_registry_add(
@@ -230,511 +332,132 @@ sigmoid_registry <- tccq_op_registry_add(
   )
 )
 
-sigmoid_kernel <- function(x) {
+logistic <- function(x) {
   declare(type(x = double(n)))
   sigmoid(x)
 }
-
-sigmoid_program <- tccq_analyze(sigmoid_kernel, registry = sigmoid_registry)
-sigmoid_plans <- list(
-  c = tccq_plan_backend(sigmoid_program@value, tccq_c_backend()),
-  fortran = tccq_plan_backend(sigmoid_program@value, tccq_fortran_backend())
-)
-unname(vapply(
-  sigmoid_plans,
-  function(plan) plan@value@products@body@op,
-  character(1)
-))
-#> [1] "/" "/"
-```
-
-**Reductions and contractions.** `TccqReductionSpec` is the common
-reducer protocol rather than a promise that every reduction has one
-scalar accumulator. `TccqFoldReductionSpec` gives `sum`, `mean`,
-`colSums`, `rowSums`, `colMeans`, and `rowMeans` one
-identity/combine/finalize state component. `which.max` uses
-`TccqArgReductionSpec` and a typed `TccqReductionState` containing a
-seen flag, selected value, and one-based selected index. The loop
-planner owns that state; C, TinyCC, and Fortran only render its typed
-transition and result projection. The current scalar ABI cannot
-represent R’s `integer(0)` result, so an empty or all-missing input
-reports the classed `runtime.reduction_has_no_value` diagnostic instead
-of inventing an index. `%*%`, `crossprod`, and `tcrossprod` use a typed
-`TccqContractionSpec`, so contracted dimensions and transposition remain
-axis facts rather than target-source conventions.
-
-**Branches.** A pure `if` with a scalar logical condition, an explicit
-`else`, and identical arm types lowers to `TccqBranch`. The branch
-retains the special forcing facts from `TccqCallSemantics`; C and
-Fortran emit conditional statements, so the unselected arm is not
-evaluated, and native call boundaries report a missing computed
-condition through a typed `TccqBackendErrorChannel` as R does. Loop-nest
-lowering represents value-producing control as a typed `TccqValueBlock`
-containing `TccqConditional` and `TccqAssignment` values.
-`TccqConditional` is the value-producing subtype of the general
-procedural `TccqIf`, so printers consume one condition-and-arm shape for
-both expression control and sequential control; arithmetic in each
-assignment remains a neutral `TccqExpression`. Pure branches may nest in
-result arms, directly as another branch’s condition, or under pure
-elementwise operations. The normalizer evaluates each control-valued
-operand into a block-owned write target before its consumer. That target
-retains the full semantic array type while carrying the scalar storage
-type actually written in each loop iteration; the shared function
-interface assigns its generated name through a typed value binding. ABI
-parameters, scalar locals, physical allocations, and symbolic extents
-are bindings rather than parallel name/id/type arrays. Every value block
-names the write target produced by its terminal paths. The general
-`TccqBlock` owns lexical statements and their exact effect without
-claiming to yield a value; `TccqValueBlock` adds the terminal-result
-contract needed by the current expression loop nests. A reducer or
-contraction can therefore consume a conditional element from a
-block-local target while the target is still in scope. A reduction or
-contraction selected inside an arm becomes an intermediate loop nest
-carrying an ordered typed guard path, so nested branches execute and
-materialize only the selected nests. The guard path is the storage
-execution scope: extraction rejects an unscheduled value reached through
-incompatible paths, C uses nullable owned buffers, and Fortran uses
-guarded allocatable arrays. The retained `TccqBranch` effect describes
-the original source computation, while a normalized `TccqConditional`
-effect describes only the work left in its statement arms after guarded
-operations have been extracted.
-
-**Sequential recurrence.** The executable sequential slice uses abstract
-`TccqLoop` as the shared loop contract. `TccqWhile` adds a scalar
-logical header condition; `TccqRepeat` enters its typed body
-unconditionally. Loop-carried variables are mutable `TccqCell` values,
-deliberately distinct from the immutable `TccqLocalBinding` used by the
-top-level SSA schedule. Cell reads remain neutral expressions; writes
-and concrete loop statements live in a typed `TccqValueBlock`. `break`
-and `next` become `TccqLoopTransfer` statements aimed at the nearest
-enclosing loop. They are typed control completion rather than fabricated
-read/write effects. `TccqControlCompletion` records normal, break, and
-continue outcomes separately from `TccqEffect`. Blocks compose those
-outcomes in evaluation order, nested loops consume their own transfers,
-and definite-assignment joins consider only branch arms that can reach
-the next statement. A scalar cell may therefore be introduced by its
-first assignment inside a loop when that assignment dominates every
-normal-path read; unreachable writes never establish dominance, and loop
-writes are not assumed to run after a possibly empty loop. `TccqFor`
-adds a scalar iteration cell and a `TccqIterationPlan` that separates
-one-time source evaluation, the one-dimensional `TccqDomain`, and
-selection of the current element. A stored rank-1 atomic vector selects
-through a neutral expression carrying `TccqAccess`. A virtual unit
-sequence selects through `TccqIndexExpr` when its extent is either a
-declared dimension already present in the ABI or a non-negative integer
-literal. A symbolic source is a `TccqDimensionReference`, distinct from
-an ordinary scalar formal or local that happens to use the same name.
-The registry declares the behavior with `TccqIterationSpec`; C, Fortran,
-and Rtinycc never recognize the `seq_len` spelling. A scalar read with
-exactly one selector per source axis becomes `TccqIndexedValue` only
-when each axis has a `TccqIndexProof`. That proof keeps the iterator
-target and cell reference, iteration domain, source extent, zero-based
-affine access, and any normalized selector operation together. Bare
-`index` has offset zero. The first shifted form is canonical
-`index + 1L`; it is admitted only when the source extent is at least one
-element larger than the complete iteration domain. The retained typed
-`+` implementation and evaluator facts show which operation was
-normalized, while the bounds proof discharges integer overflow and
-subscript warnings for that range. `TccqArity` gives the
-rank-polymorphic subscript an open argument-count contract instead of
-inventing a maximum array rank. The access domain contains the unique
-loop axes, so `x[index, index]` is one loop mapped onto two source axes
-rather than a fabricated two-dimensional iteration. Assigning to an
-iterator invalidates its proof for the complete loop body, and
-stored-vector iteration supplies no such proof. Unproved scalar
-selectors, tagged arguments such as `drop`, and indirect indexed sources
-remain structured diagnostics. The same proof-bearing expression reaches
-C, TinyCC, and Fortran; their shared affine access map accounts for
-target index conventions. The iterator is initialized on entry to the
-body but remains uninitialized after a possibly empty loop, so post-loop
-reads are refused until non-emptiness is proven. A nested procedural
-`if` is a `TccqIf` whose consequent and alternative are general typed
-blocks; omitting `else` produces an explicit empty alternative block.
-Positional statement `switch` is a `TccqSwitch` with one scalar integer
-selector, a typed local selector target, and ordered typed alternative
-blocks. The selector is evaluated exactly once through a local binding
-in the shared backend function interface. Its completion retains normal
-fallthrough for an unmatched position, while an arm’s `break` or `next`
-still targets the surrounding R loop. C therefore emits ordered
-conditional arms instead of a native C `switch`, which would capture
-`break` and change the program’s meaning; Fortran consumes the same
-neutral statement. Character selection, numeric-double coercion and
-warnings, missing alternatives, and value-producing `switch` remain
-structured refusals. C, Fortran, and Rtinycc consume that same
-structured body without encoding recurrence as a `TccqLoopNest`. The
-body is the structured form of `TccqProgramSchedule`, so there is still
-one top-level owner of order; the schedule constructor validates result
-identity, graph references, exact cell and local ownership,
-graph-consistent target types, and initialization dominance over
-normally completing paths. Arbitrary scalar extents, general ranges,
-lists, computed iterables, labeled or nonlocal transfer, and
-array-carried state remain structured refusals rather than emitter
-conventions.
-
-``` r
-extent_sequence_sum <- function(x) {
-  declare(type(x = double(n)))
-  total <- 0
-  for (index in seq_len(n)) total <- total + index
-  total
-}
-
-extent_sequence_plan <- tccq_plan_backend(
-  tccq_analyze(extent_sequence_sum, strict = TRUE)@value,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-extent_sequence <- extent_sequence_plan@value@products@attrs$callable
-identical(extent_sequence(numeric(5)), 15)
+v <- c(-2, 0, 2)
+all.equal(jit(logistic, sigmoid_registry)(v), 1 / (1 + exp(-v)))
 #> [1] TRUE
 ```
 
+## A type checker for R
+
+`tccq_analyze()` needs no backend, so it also works as a checker. Each
+diagnostic carries a verdict:
+
+- `refuted`: R fails as well.
+- `unproven`: R might succeed, but the declarations do not prove what
+  the compiler needs. `data$requires` names the missing fact.
+- `unsupported`: valid R outside the compiled subset.
+
 ``` r
-indexed_sum <- function(x) {
-  declare(type(x = double(n)))
-  total <- 0
-  for (index in seq_len(n)) total <- total + x[index]
-  total
-}
-
-indexed_sum_plan <- tccq_plan_backend(
-  tccq_analyze(indexed_sum, strict = TRUE)@value,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-indexed_sum_kernel <- indexed_sum_plan@value@products@attrs$callable
-identical(indexed_sum_kernel(c(1, 2, 3)), 6)
-#> [1] TRUE
-
-shifted_indexed_sum <- function(x) {
-  declare(type(x = double(4)))
-  total <- 0
-  for (index in seq_len(3L)) total <- total + x[index + 1L]
-  total
-}
-
-shifted_indexed_plan <- tccq_plan_backend(
-  tccq_analyze(shifted_indexed_sum, strict = TRUE)@value,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-shifted_indexed_kernel <- shifted_indexed_plan@value@products@attrs$callable
-identical(shifted_indexed_kernel(c(1, 2, 3, 4)), 9)
-#> [1] TRUE
-
-indexed_matrix_sum <- function(x) {
-  declare(type(x = double(n, p)))
-  total <- 0
-  for (row in seq_len(n)) {
-    for (column in seq_len(p)) total <- total + x[row, column]
+check <- function(fn) {
+  result <- tccq_analyze(fn)
+  if (result@success) {
+    return(data.frame(code = "ok", verdict = "", requires = ""))
   }
-  total
+  d <- result@diagnostics[[1L]]
+  data.frame(
+    code = d@code,
+    verdict = d@verdict,
+    requires = paste(d@data$requires, collapse = ", ")
+  )
 }
 
-indexed_matrix_plan <- tccq_plan_backend(
-  tccq_analyze(indexed_matrix_sum, strict = TRUE)@value,
-  tccq_rtinycc_backend(),
-  tccq_backend_context(mode = "jit", target = "c")
-)
-indexed_matrix_kernel <- indexed_matrix_plan@value@products@attrs$callable
-m <- matrix(as.double(1:6), nrow = 2)
-identical(indexed_matrix_kernel(m), sum(m))
-#> [1] TRUE
-```
-
-**Slices and bindings.** Rank-1 `x[a:b]` accepts bounds affine in
-declared dimension symbols. A `TccqProgramSchedule` owns either
-contiguous `TccqEvaluationStep` values or one structured
-`TccqValueBlock`, never both. In the linear form every executable
-top-level expression has a step, including statements whose values are
-not bound. Assignment steps carry a single-assignment
-`TccqLocalBinding`; the schedule, not value ids or source text, owns R
-evaluation order. Each neutral reference carries one typed
-`TccqExpressionReference` that distinguishes the expression value from
-the logical source value it reads and owns its optional symbol, lexical
-binding, slice offsets, and affine `TccqAccess`. That logical source is
-distinct from a later physical `TccqStorageAllocation`. Each step
-retains the exact local bindings read, because different lexical names
-may alias one lowered value. The loop-nest planner sees those reads as
-`TccqBindingReference` leaves rather than walking back into and
-re-evaluating their definition graphs. It visits schedule steps before
-the returned expression. A reduction defined before a later `if`
-therefore materializes once without that `if`’s guards; when the
-definition itself is conditional, its intermediate nests retain the
-definition’s selected-arm guards. Later consumers reuse that schedule
-rather than moving evaluation to a use site.
-
-The first local fusion rule is intentionally stricter than textual
-`f(g(x))`. A definition is kept as an expression only when it has one
-exact lexical read in the immediately following elementwise step,
-producer and consumer have the same iteration shape, and neither typed
-effect may write, allocate, cross a boundary, error, or warn. The
-resulting `TccqStorageSlot@materialized = FALSE` is consumed by the
-shared loop-nest planner, so C, TinyCC, and Fortran all remove the same
-intermediate. Duplicate reads, later reads, branches, reductions,
-contractions, and warning-capable operations such as `sqrt` remain
-materialized. Purity alone is not treated as a proof that eager R
-evaluation can be reordered.
-
-**Verified program optimization.** `TccqProgramOptimization` is an
-explicit opt-in contract for a typed program transformation and its
-verifier. The first implementation removes assignments only from a
-structured neutral body, only when a compiler-owned local or cell is
-never read or otherwise required, and only when the assigned expression
-cannot write, allocate, cross a boundary, error, or warn. It removes
-newly dead assignment chains to a fixed point, rebuilds typed control
-blocks and region facts, then `tccq_compile()` invokes its verifier
-independently before handing one common body to C, TinyCC, and Fortran.
-The source value graph and storage plan remain intact; graph-level
-dead-value elimination, liveness rewriting, and pass composition are
-deliberately separate future work. Source backends validate executable
-region values together with declared ABI formals and the result, so dead
-provenance does not become target work.
-
-**Composition.** Non-root reductions and contractions become
-intermediate nests — named scalars for rank-0 results and materialized
-temporary buffers otherwise — so `x / sum(x)`, `colSums(x) + 1`,
-`(x %*% w) + y`, and `cs <- colSums(x); cs / sum(cs)` compile as ordered
-nest sequences. A value consumed twice materializes once. Every nest
-carries the typed storage slot that receives its result, and every
-reducer carries a separate typed scalar state.
-`TccqBackendFunctionInterface` binds generated names to each state
-component for C, TinyCC, and Fortran.
-
-A materialized temporary slot owns a `TccqStorageAllocation`. Two
-same-typed buffer slots share that physical identity only when
-schedule-derived, complete expression liveness proves that the first
-dies before the second definition and neither slot is control-dependent.
-A direct consumer therefore overlaps its producer, while a buffer
-reduced to a retained scalar can be reused by a later buffer. The shared
-allocation is consumed by all source paths: C emits one allocation and
-one free, and Fortran emits one automatic array. Non-materialized
-expressions own no allocation, and guarded buffers remain distinct.
-
-**Dimensions and recycling.** A declared dimension symbol is a scalar in
-the body: `colSums(x) / n` reads the extent parameter already carried by
-the ABI. Rank-mixed operands follow R’s recycling rule with GNU-R as the
-oracle. A shorter operand recycles over column-major order through a
-typed modulo-linear access only when divisibility is provable. That
-`TccqAccess` owns the typed consumer shape used to linearize the logical
-axis order; it does not pass dimensions to the printer through metadata.
-Non-conformable arrays are refused as R refuses them.
-
-Compilation succeeds when at least one backend produces a working plan;
-a backend that cannot lower a program reports typed feasibility
-diagnostics without vetoing the suite.
-
-## Apotheosis suite
-
-The targets are explicit probes, each exercising one compiler idea, plus
-composite programs that force the ideas together. The table below is
-computed at knit time by running every probe through `tccq_compile()`; a
-probe either compiles through the core backends or names the diagnostic
-where it stops.
-
-``` r
-probes <- list(
-  map_chain = function(x, y) {
-    declare(type(x = double(n), y = double(n)))
-    exp(sqrt(x) + y)
-  },
-  map_reduce = function(x, y) {
-    declare(type(x = double(n), y = double(n)))
-    sum(exp(x) * y)
-  },
-  matrix_reduce = function(x, y) {
-    declare(type(x = double(n, p), y = double(n, p)))
-    sum(exp(x) * y)
-  },
-  matrix_map = function(x, y) {
-    declare(type(x = double(n, p), y = double(n, p)))
-    sqrt(x) + y
-  },
-  column_sums = function(x) {
-    declare(type(x = double(n, p)))
-    colSums(x)
-  },
-  matrix_vector = function(x, w) {
+programs <- list(
+  conformable = function(x, w) {
     declare(type(x = double(n, p), w = double(p)))
     x %*% w
   },
-  matrix_multiply = function(x, y) {
-    declare(type(x = double(n, p), y = double(p, q)))
-    x %*% y
+  fixed_mismatch = function(x, w) {
+    declare(type(x = double(3, 4), w = double(5)))
+    x %*% w
   },
-  tiled_stencil_1d = function(x) {
+  symbolic_mismatch = function(x, w) {
+    declare(type(x = double(n, p), w = double(q)))
+    x %*% w
+  },
+  transposed = function(x, y) {
+    declare(type(x = double(n, p), y = double(p, n)))
+    x + y
+  },
+  outside_subset = function(x) {
     declare(type(x = double(n)))
-    x[1:(n - 2L)] + x[2:(n - 1L)] + x[3:n]
-  },
-  scalar_composition = function(x, y) {
-    declare(type(x = double(n), y = double(n)))
-    (x - sum(x)) / sum(y * y)
-  },
-  array_composition = function(x, w) {
-    declare(type(x = double(n, p), w = double(p)))
-    cs <- colSums(x) * w
-    cs / sum(cs)
-  },
-  column_means_chain = function(x, y) {
-    declare(type(x = double(n, p), y = double(p, q)))
-    m <- x %*% y
-    sqrt(exp(colSums(m) / n))
-  },
-  logistic_forward_pass = function(x, w) {
-    declare(type(x = double(n, p), w = double(p)))
-    mu <- colSums(x) / n
-    sigma <- sqrt(colSums((x - mu)^2) / (n - 1))
+    paste(x)
+  }
+)
+knitr::kable(cbind(program = names(programs), do.call(rbind, lapply(programs, check))),
+  row.names = FALSE)
+```
+
+| program           | code                                | verdict     | requires |
+|:------------------|:------------------------------------|:------------|:---------|
+| conformable       | ok                                  |             |          |
+| fixed_mismatch    | ops.incompatible_contraction_dims   | refuted     |          |
+| symbolic_mismatch | ops.incompatible_contraction_dims   | unproven    | p == q   |
+| transposed        | ops.incompatible_elementwise_shapes | unproven    | n == p   |
+| outside_subset    | frontend.unimplemented_call         | unsupported |          |
+
+## Where the subset ends
+
+These programs are the current targets. Each one either compiles or
+stops at a named diagnostic. The table is computed when this file is
+knit.
+
+``` r
+targets <- list(
+  logistic_gradient = function(x, y, w, lambda) {
+    declare(type(x = double(n, p), y = double(n), w = double(p), lambda = double()))
+    mu <- colMeans(x)
+    sigma <- sqrt(colSums((x - mu)^2) / (n - 1L))
     z <- (x - mu) / sigma
-    eta <- z %*% w
-    1 / (1 + exp(-eta))
+    prob <- 1 / (1 + exp(-(z %*% w)))
+    w - 0.01 * (crossprod(z, prob - y) / n + lambda * w)
   },
-  argument_maximum = function(x) {
-    declare(type(x = double(n)))
-    which.max(x)
+  raw_roundtrip = function(x) {
+    declare(type(x = raw(n)))
+    x
   },
-  raw_buffer_roundtrip = function(bytes, scratch) {
-    declare(type(bytes = raw(n), scratch = buffer(n)))
-    bytes
-  },
-  conditional_map = function(x, flag) {
-    declare(type(x = double(n), flag = logical()))
-    if (flag) x else -x
-  },
-  nested_conditional_map = function(x, primary, secondary) {
-    declare(type(x = double(n), primary = logical(), secondary = logical()))
-    if (primary) if (secondary) x else -x else x
-  },
-  computed_condition_map = function(x, primary, secondary) {
-    declare(type(x = double(n), primary = logical(), secondary = logical()))
-    if (if (primary) secondary else primary) x else -x
-  },
-  conditional_composition = function(x, flag) {
-    declare(type(x = double(n), flag = logical()))
-    exp((if (flag) x else -x) + 1)
-  },
-  conditional_reduce = function(x, flag) {
-    declare(type(x = double(n), flag = logical()))
-    sum(if (flag) x else -x)
-  },
-  selected_reduce = function(x, flag) {
-    declare(type(x = double(n), flag = logical()))
-    if (flag) sum(x) else 0
-  },
-  control_flow_probe = function(x, flag) {
+  repeat_switch = function(x, flag) {
     declare(type(x = double(n), flag = logical()))
     out <- 0
     i <- 1L
     repeat {
-      if (i > n) {
-        break
-      }
+      if (i > n) break
       out <- out + ifelse(flag, x[i], -x[i])
       i <- i + 1L
     }
     switch(if (flag) "sum" else "neg", sum = out, neg = -out)
   },
-  apply_reduce_probe = function(x) {
+  apply_reduce = function(x) {
     declare(type(x = double(n, p)))
     Reduce(`+`, lapply(seq_len(p), function(j) sum(x[, j])))
-  },
-  logistic_gradient = function(x, y, w, lambda) {
-    declare(type(
-      x = double(n, p),
-      y = double(n),
-      w = double(p),
-      lambda = double()
-    ))
-    mu <- colMeans(x)
-    sigma <- sqrt(colSums((x - mu)^2) / (n - 1L))
-    z <- (x - mu) / sigma
-    eta <- z %*% w
-    prob <- 1 / (1 + exp(-eta))
-    grad <- crossprod(z, prob - y) / n + lambda * w
-    w - 0.01 * grad
-  },
-  viterbi_decode = function(init, trans, emit) {
-    declare(type(
-      init = double(k),
-      trans = double(k, k),
-      emit = double(t, k)
-    ))
-    score <- init + emit[1L, ]
-    back <- matrix(0L, nrow = t, ncol = k)
-    for (step in 2:t) {
-      next_score <- score
-      for (state in 1:k) {
-        candidate <- score + trans[, state]
-        best <- which.max(candidate)
-        next_score[state] <- candidate[best] + emit[step, state]
-        back[step, state] <- best
-      }
-      score <- next_score
-    }
-    list(score = score, back = back)
   }
 )
-```
-
-``` r
-probe_status <- function(fn) {
+status <- function(fn) {
   compiled <- tccq_compile(fn, strict = FALSE)
   if (compiled@success) {
-    return("compiles through at least one configured backend")
+    return(data.frame(status = "compiles", verdict = ""))
   }
-  diagnostic <- compiled@diagnostics[[1L]]
-  sprintf("`%s`", diagnostic@code)
+  d <- compiled@diagnostics[[1L]]
+  data.frame(status = d@code, verdict = d@verdict)
 }
-knitr::kable(data.frame(
-  probe = names(probes),
-  status = vapply(probes, probe_status, character(1)),
-  row.names = NULL
-))
+knitr::kable(cbind(program = names(targets), do.call(rbind, lapply(targets, status))),
+  row.names = FALSE)
 ```
 
-| probe                   | status                                           |
-|:------------------------|:-------------------------------------------------|
-| map_chain               | compiles through at least one configured backend |
-| map_reduce              | compiles through at least one configured backend |
-| matrix_reduce           | compiles through at least one configured backend |
-| matrix_map              | compiles through at least one configured backend |
-| column_sums             | compiles through at least one configured backend |
-| matrix_vector           | compiles through at least one configured backend |
-| matrix_multiply         | compiles through at least one configured backend |
-| tiled_stencil_1d        | compiles through at least one configured backend |
-| scalar_composition      | compiles through at least one configured backend |
-| array_composition       | compiles through at least one configured backend |
-| column_means_chain      | compiles through at least one configured backend |
-| logistic_forward_pass   | compiles through at least one configured backend |
-| argument_maximum        | compiles through at least one configured backend |
-| raw_buffer_roundtrip    | `backend.unsupported_type`                       |
-| conditional_map         | compiles through at least one configured backend |
-| nested_conditional_map  | compiles through at least one configured backend |
-| computed_condition_map  | compiles through at least one configured backend |
-| conditional_composition | compiles through at least one configured backend |
-| conditional_reduce      | compiles through at least one configured backend |
-| selected_reduce         | compiles through at least one configured backend |
-| control_flow_probe      | `frontend.unimplemented_call`                    |
-| apply_reduce_probe      | `frontend.unimplemented_call`                    |
-| logistic_gradient       | compiles through at least one configured backend |
-| viterbi_decode          | `frontend.unimplemented_call`                    |
-
-The failing rows are the roadmap: every one must move deeper through the
-same typed IR — loop regions and recurrences for Viterbi, general
-indexing and access regions, `raw`/`buffer` bridges, and apply-family
-folds. Failures must stay specific enough that the next typed concept to
-add is obvious.
+| program           | status                      | verdict     |
+|:------------------|:----------------------------|:------------|
+| logistic_gradient | compiles                    |             |
+| raw_roundtrip     | backend.unsupported_type    | unsupported |
+| repeat_switch     | frontend.unimplemented_call | unsupported |
+| apply_reduce      | frontend.unimplemented_call | unsupported |
 
 ## Design
 
-The compiler core is typed all the way down: S7 schemas for values,
-shapes, effects, regions, and plans; `s7contract` interfaces between
-phases; classed diagnostics instead of error strings; neutral expression
-and statement values; one `TccqLoopNest` abstraction for data-parallel
-iteration; and structured `TccqBlock`/`TccqIf`/`TccqSwitch`/`TccqLoop`
-values for sequential recurrence, with `TccqIterationPlan` owning
-sequential source and element selection. Every source backend consumes
-the same neutral handoff. The full phase-by-phase story — call
-semantics, operation registries, lowering, loop nests, bridges, backend
-planning, fusion — lives in
-[docs/architecture.md](docs/architecture.md), with the root direction in
-[docs/root.md](docs/root.md) and repo rules in [AGENTS.md](AGENTS.md).
+All compiler stages exchange S7 values: types with symbolic shapes,
+effects, loop nests, storage plans and backend plans. C, TinyCC and
+Fortran render the same backend-neutral loop nests.
+[docs/architecture.md](docs/architecture.md) describes each stage, and
+[docs/roadmap.md](docs/roadmap.md) lists what comes next.

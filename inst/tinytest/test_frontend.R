@@ -398,14 +398,14 @@ expect_equal(bound_storage_slots_by_value$value_0001@lifetime@last_used_at, 6L)
 expect_true(S7::S7_inherits(bound_storage_slots_by_value$value_0004@lifetime, TccqStorageLifetime))
 expect_equal(bound_storage_slots_by_value$value_0004@lifetime@defined_at, 6L)
 expect_equal(bound_storage_slots_by_value$value_0004@lifetime@last_used_at, 8L)
+# `sqrt` may warn, so `shifted` is materialized; double `*` cannot, so the
+# single adjacent use of `weighted` fuses into the result loop.
 expect_true(S7::S7_inherits(
   bound_storage_slots_by_value$value_0001@allocation,
   TccqStorageAllocation
 ))
-expect_true(S7::S7_inherits(
-  bound_storage_slots_by_value$value_0004@allocation,
-  TccqStorageAllocation
-))
+expect_false(bound_storage_slots_by_value$value_0004@materialized)
+expect_null(bound_storage_slots_by_value$value_0004@allocation)
 
 fused_local_chain <- function(x) {
   declare(type(x = double(n)))
@@ -424,6 +424,25 @@ fused_local_slot <- fused_local_slots[[match(
 expect_false(fused_local_slot@materialized)
 expect_null(fused_local_slot@allocation)
 expect_equal(length(tccq_program_loop_nests(fused_local_result@value)@value), 1L)
+
+# Double `+`, `-` and `*` cannot warn, so a single-use arithmetic local fuses
+# like an `exp()` local does, leaving one loop and no temporary.
+arithmetic_local_chain <- function(x) {
+  declare(type(x = double(n)))
+  scaled <- x * 2
+  scaled + 1
+}
+arithmetic_local_result <- tccq_analyze(arithmetic_local_chain, strict = TRUE)
+expect_true(arithmetic_local_result@success)
+arithmetic_local_binding <- arithmetic_local_result@value@schedule@steps[[1L]]@binding
+arithmetic_local_slots <- arithmetic_local_result@value@storage_plan@slots
+arithmetic_local_slot <- arithmetic_local_slots[[match(
+  arithmetic_local_binding@value_id,
+  vapply(arithmetic_local_slots, function(slot) slot@value_id, character(1))
+)]]
+expect_false(arithmetic_local_slot@materialized)
+expect_null(arithmetic_local_slot@allocation)
+expect_equal(length(tccq_program_loop_nests(arithmetic_local_result@value)@value), 1L)
 
 warning_local_chain <- function(x) {
   declare(type(x = double(n)))
@@ -1815,7 +1834,7 @@ underdeclared_effect_registry <- tccq_op_registry_add(
     target = "neutral",
     region_kind = "kernel",
     effect = tccq_effect(reads = TRUE),
-    body = tccq_op_body(function(value) 1 / (1 + exp(-value))),
+    body = tccq_op_body(function(value) 1 / (1 + sqrt(value))),
     elementwise = neutral_double_spec
   )
 )

@@ -3,11 +3,26 @@
 #' Diagnostics are values first and condition payloads second. Compiler code
 #' should pass these objects around instead of branching on condition strings.
 #'
+#' The verdict states what a rejection says about the R program, independent
+#' of the code naming the rule that rejected it:
+#'
+#' * `"refuted"`: R itself fails whenever the rejected expression is
+#'   evaluated with inputs satisfying the declarations, for example `%*%` over
+#'   contracted extents 3 and 4. Whether that expression is reached is not
+#'   part of the claim.
+#' * `"unproven"`: R may succeed, but the declared facts do not prove the
+#'   relation the compiler needs, for example `n == p` for `double(n, p) +
+#'   double(p, n)`. `data$requires` names that relation when one exists.
+#' * `"unsupported"`: valid R outside the compiled subset.
+#' * `NA`: no verdict about the program, as for invalid API arguments or
+#'   backend toolchain failures.
+#'
 #' @param code Stable diagnostic code.
 #' @param message Human-facing message.
 #' @param phase Compiler phase that produced the diagnostic.
 #' @param path Optional path into the program or schema.
 #' @param data Structured diagnostic payload.
+#' @param verdict One of `"refuted"`, `"unproven"`, `"unsupported"`, or `NA`.
 #' @export
 TccqDiagnostic <- S7::new_class(
   "TccqDiagnostic",
@@ -17,7 +32,8 @@ TccqDiagnostic <- S7::new_class(
     message = S7::class_character,
     phase = S7::class_character,
     path = S7::class_character,
-    data = S7::class_list
+    data = S7::class_list,
+    verdict = S7::new_property(S7::class_character, default = NA_character_)
   ),
   validator = function(self) {
     problems <- character()
@@ -32,6 +48,10 @@ TccqDiagnostic <- S7::new_class(
     }
     if (length(self@path) != 1L || is.na(self@path)) {
       problems <- c(problems, "@path must be a single string")
+    }
+    if (length(self@verdict) != 1L ||
+      !(is.na(self@verdict) || self@verdict %in% TCCQ_DIAGNOSTIC_VERDICTS)) {
+      problems <- c(problems, "@verdict must be NA or one supported verdict")
     }
     if (length(problems) > 0L) problems
   }
@@ -76,13 +96,16 @@ TccqResult <- S7::new_class(
 #' @param phase Compiler phase that produced the diagnostic.
 #' @param path Optional path into the program or schema.
 #' @param data Structured diagnostic payload.
+#' @param verdict What the rejection says about the program; see
+#'   [TccqDiagnostic].
 #' @export
 tccq_diagnostic <- function(
   code,
   message,
   phase = "schema",
   path = "",
-  data = list()
+  data = list(),
+  verdict = NA_character_
 ) {
   .tccq_check_character_scalar(code, "code")
   .tccq_check_character_scalar(message, "message")
@@ -102,7 +125,8 @@ tccq_diagnostic <- function(
     message = message,
     phase = phase,
     path = path,
-    data = data
+    data = data,
+    verdict = as.character(verdict)
   )
 }
 
@@ -124,6 +148,7 @@ tccq_abort <- function(
   phase = "schema",
   path = "",
   data = list(),
+  verdict = NA_character_,
   class = character(),
   call = NULL
 ) {
@@ -132,7 +157,8 @@ tccq_abort <- function(
     message = message,
     phase = phase,
     path = path,
-    data = data
+    data = data,
+    verdict = verdict
   )
   tccq_abort_diagnostic(diagnostic, class = class, call = call)
 }

@@ -45,6 +45,7 @@ tccq_analyze <- function(
         "frontend.missing_declaration",
         sprintf("Formal `%s` has no declared type.", name),
         phase = "frontend",
+        verdict = "unsupported",
         path = sprintf("formals.%s", name),
         data = list(name = name)
       )
@@ -63,6 +64,7 @@ tccq_analyze <- function(
       "frontend.unimplemented_call",
       sprintf("Call `%s` has no implementation in the current registry/context.", call_name),
       phase = "frontend",
+      verdict = "unsupported",
       path = "body",
       data = list(call = call_name, global_calls = global_calls)
     )
@@ -200,6 +202,7 @@ tccq_compile <- function(
       "frontend.missing_declare",
       "Function body must contain `declare(type(...))`.",
       phase = "frontend",
+      verdict = "unsupported",
       path = "body"
     )
     return(list(bindings = list(), diagnostics = list(diagnostic)))
