@@ -302,11 +302,13 @@ expect_true(fused_arithmetic_plan@success)
 fused_arithmetic_source <- backend_source(fused_arithmetic_plan)
 expect_equal(lengths(regmatches(fused_arithmetic_source, gregexpr("for \\(", fused_arithmetic_source))), 1L)
 expect_false(grepl("intermediate_", fused_arithmetic_source, fixed = TRUE))
-special_doubles <- c(1.5, -2, NA, NaN, Inf, -Inf, 0, 1e308)
-expect_identical(
-  backend_callable(fused_arithmetic_plan)(special_doubles),
-  fused_arithmetic(special_doubles)
-)
+if (rtinycc_jit_available) {
+  special_doubles <- c(1.5, -2, NA, NaN, Inf, -Inf, 0, 1e308)
+  expect_identical(
+    backend_callable(fused_arithmetic_plan)(special_doubles),
+    fused_arithmetic(special_doubles)
+  )
+}
 
 c_source_plan <- tccq_plan_backend(
   vector_program@value,
