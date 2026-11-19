@@ -795,6 +795,45 @@ TccqOpRegistry <- S7::new_class(
 TccqResolvedOp <- S7::new_class(
   "TccqResolvedOp",
   package = "tccquickr",
+  # S7 1.0.0's new_object() consumes an argument named `call` itself, so the
+  # property values travel as one named list.
+  constructor = function(
+    call,
+    implementation,
+    target,
+    region_kind,
+    memory_space,
+    uses_rapi,
+    boundary,
+    pure,
+    effect,
+    body,
+    elementwise,
+    reduction,
+    contraction,
+    iteration,
+    subscript,
+    attrs
+  ) {
+    S7::new_object(S7::S7_object(), list(
+      call = call,
+      implementation = implementation,
+      target = target,
+      region_kind = region_kind,
+      memory_space = memory_space,
+      uses_rapi = uses_rapi,
+      boundary = boundary,
+      pure = pure,
+      effect = effect,
+      body = body,
+      elementwise = elementwise,
+      reduction = reduction,
+      contraction = contraction,
+      iteration = iteration,
+      subscript = subscript,
+      attrs = attrs
+    ))
+  },
   properties = list(
     call = TccqCall,
     implementation = TccqOpImpl,

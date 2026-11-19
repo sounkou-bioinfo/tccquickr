@@ -5,22 +5,22 @@
 \title{Resolved operation implementation}
 \usage{
 TccqResolvedOp(
-  call = TccqCall(),
-  implementation = TccqOpImpl(),
-  target = character(0),
-  region_kind = character(0),
-  memory_space = character(0),
-  uses_rapi = logical(0),
-  boundary = logical(0),
-  pure = logical(0),
-  effect = TccqEffect(),
-  body = NULL,
-  elementwise = NULL,
-  reduction = NULL,
-  contraction = NULL,
-  iteration = NULL,
-  subscript = NULL,
-  attrs = list()
+  call,
+  implementation,
+  target,
+  region_kind,
+  memory_space,
+  uses_rapi,
+  boundary,
+  pure,
+  effect,
+  body,
+  elementwise,
+  reduction,
+  contraction,
+  iteration,
+  subscript,
+  attrs
 )
 }
 \arguments{

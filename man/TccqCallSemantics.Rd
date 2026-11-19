@@ -5,14 +5,14 @@
 \title{R call evaluator facts}
 \usage{
 TccqCallSemantics(
-  call = TccqCall(),
-  evaluator_kind = character(0),
-  forcing_policy = character(0),
-  dispatch_kind = character(0),
-  lexical_scope = logical(0),
-  replacement = logical(0),
-  control = logical(0),
-  attrs = list()
+  call,
+  evaluator_kind,
+  forcing_policy,
+  dispatch_kind,
+  lexical_scope,
+  replacement,
+  control,
+  attrs
 )
 }
 \arguments{
