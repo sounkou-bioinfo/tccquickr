@@ -146,3 +146,10 @@ expect_identical(first_diagnostic(function(x, y) {
   declare(type(x = double(n)))
   x
 })@verdict, "unsupported")
+raw_compile <- tccq_compile(function(x) {
+  declare(type(x = raw(n)))
+  x
+}, strict = FALSE)
+expect_false(raw_compile@success)
+expect_identical(raw_compile@diagnostics[[1L]]@code, "backend.unsupported_type")
+expect_identical(raw_compile@diagnostics[[1L]]@verdict, "unsupported")

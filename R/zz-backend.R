@@ -1940,6 +1940,7 @@ new_lowered_backend_prepare <- function(source_language, execute_with_rtinycc = 
           "Source backends currently support double values, scalar logical inputs, and scalar logical or integer results.",
           phase = "backend",
           path = sprintf("backend.%s.type", backend@id),
+          verdict = "unsupported",
           data = list(
             types = lapply(unsupported_values, function(value) value@type)
           )
