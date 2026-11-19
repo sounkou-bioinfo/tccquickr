@@ -293,16 +293,19 @@ fused_arithmetic <- function(x) {
   scaled <- x * 2
   scaled + 1
 }
-fused_arithmetic_plan <- tccq_plan_backend(
-  tccq_analyze(fused_arithmetic)@value,
-  backend,
-  context
+fused_arithmetic_program <- tccq_analyze(fused_arithmetic)@value
+fused_arithmetic_source_plan <- tccq_plan_backend(
+  fused_arithmetic_program,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
 )
-expect_true(fused_arithmetic_plan@success)
-fused_arithmetic_source <- backend_source(fused_arithmetic_plan)
+expect_true(fused_arithmetic_source_plan@success)
+fused_arithmetic_source <- backend_source(fused_arithmetic_source_plan)
 expect_equal(lengths(regmatches(fused_arithmetic_source, gregexpr("for \\(", fused_arithmetic_source))), 1L)
 expect_false(grepl("intermediate_", fused_arithmetic_source, fixed = TRUE))
 if (rtinycc_jit_available) {
+  fused_arithmetic_plan <- tccq_plan_backend(fused_arithmetic_program, backend, context)
+  expect_true(fused_arithmetic_plan@success)
   special_doubles <- c(1.5, -2, NA, NaN, Inf, -Inf, 0, 1e308)
   expect_identical(
     backend_callable(fused_arithmetic_plan)(special_doubles),
