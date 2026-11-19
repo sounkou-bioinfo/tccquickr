@@ -153,3 +153,59 @@ raw_compile <- tccq_compile(function(x) {
 expect_false(raw_compile@success)
 expect_identical(raw_compile@diagnostics[[1L]]@code, "backend.unsupported_type")
 expect_identical(raw_compile@diagnostics[[1L]]@verdict, "unsupported")
+
+# A math function that can warn is typed by analysis and has no kernel: the
+# checker accepts the program and the backend reports it as unsupported.
+log_ratio <- tccq_analyze(function(x, y) {
+  declare(type(x = double(n, p), y = double(n, p)))
+  log(x) - log(y)
+})
+expect_true(log_ratio@success)
+log_ratio_result <- log_ratio@value@values[[log_ratio@value@result]]
+expect_identical(log_ratio_result@type@base, "double")
+expect_identical(log_ratio_result@type@shape@rank, 2L)
+log_ratio_ops <- vapply(log_ratio@value@values, function(value) value@op, character(1))
+expect_true(all(vapply(
+  log_ratio@value@values[log_ratio_ops == "log"],
+  function(value) value@effect@may_warn,
+  logical(1)
+)))
+expect_identical(sum(log_ratio_ops == "log"), 2L)
+log_ratio_plan <- tccq_plan_backend(
+  log_ratio@value,
+  tccq_c_backend(),
+  tccq_backend_context(mode = "source", target = "c")
+)
+expect_false(log_ratio_plan@success)
+expect_identical(log_ratio_plan@diagnostics[[1L]]@code, "ops.unrenderable_operation")
+expect_identical(log_ratio_plan@diagnostics[[1L]]@verdict, "unsupported")
+expect_identical(log_ratio_plan@diagnostics[[1L]]@data$op, "log")
+
+# The declared result base matches R for every typed math function.
+typed_math <- c(
+  "abs", "sign", "floor", "ceiling", "trunc", "sinh", "cosh", "tanh", "atan", "asinh",
+  "log", "log2", "log10", "log1p", "expm1", "sin", "cos", "tan", "asin", "acos",
+  "acosh", "atanh"
+)
+for (op in typed_math) {
+  typed_kernel <- function(x) NULL
+  body(typed_kernel) <- bquote({
+    declare(type(x = double(n)))
+    .(as.name(op))(x)
+  })
+  typed <- tccq_analyze(typed_kernel)
+  expect_true(typed@success, info = op)
+  expect_identical(
+    typed@value@values[[typed@value@result]]@type@base,
+    typeof(get(op, envir = baseenv())(1)),
+    info = op
+  )
+}
+
+# `abs()` keeps integer input integer in R; only the double form is modeled.
+integer_abs <- first_diagnostic(function(x) {
+  declare(type(x = integer(n)))
+  abs(x)
+})
+expect_identical(integer_abs@code, "ops.unsupported_elementwise_type")
+expect_identical(integer_abs@verdict, "unsupported")

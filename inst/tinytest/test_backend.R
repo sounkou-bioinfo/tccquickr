@@ -4883,3 +4883,47 @@ if (can_build_shared_library("fortran")) {
   expect_true(completion_sensitive_fortran_shared@success)
   check_completion_sensitive(backend_callable(completion_sensitive_fortran_shared))
 }
+
+# Math functions that cannot warn agree with R bit for bit, signed zeros and
+# the NA/NaN distinction included.
+math_inputs <- c(-2.5, -1, -0.5, -0, 0, 0.5, 1, 2.5, 1e308, -1e308, NA, NaN, Inf, -Inf)
+math_bits <- function(x) list(x, 1 / x)
+math_kernel <- function(op) {
+  kernel <- function(x) NULL
+  body(kernel) <- bquote({
+    declare(type(x = double(n)))
+    .(as.name(op))(x)
+  })
+  tccq_analyze(kernel, strict = TRUE)@value
+}
+fortran_available <- can_build_shared_library("fortran")
+for (op in c("abs", "sign", "floor", "ceiling", "trunc", "cosh")) {
+  math_program <- math_kernel(op)
+  math_expected <- math_bits(get(op, envir = baseenv())(math_inputs))
+  if (rtinycc_jit_available) {
+    math_jit <- tccq_plan_backend(
+      math_program,
+      tccq_rtinycc_backend(),
+      tccq_backend_context(mode = "jit", target = "c")
+    )
+    expect_true(math_jit@success, info = op)
+    expect_identical(
+      math_bits(backend_callable(math_jit)(math_inputs)),
+      math_expected,
+      info = paste(op, "jit")
+    )
+  }
+  if (fortran_available) {
+    math_fortran <- tccq_plan_backend(
+      math_program,
+      tccq_fortran_backend(),
+      tccq_backend_context(mode = "shared_library", target = "fortran")
+    )
+    expect_true(math_fortran@success, info = op)
+    expect_identical(
+      math_bits(backend_callable(math_fortran)(math_inputs)),
+      math_expected,
+      info = paste(op, "fortran")
+    )
+  }
+}
