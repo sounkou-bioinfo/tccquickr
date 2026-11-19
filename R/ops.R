@@ -3278,7 +3278,9 @@ tccq_default_op_registry <- function() {
     },
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
     exp = function(operands, context) sprintf("exp(%s)", operands[[1L]]),
-    abs = math_renderer("fabs(%s)", "abs(%s)"),
+    # Written without fabs(): not every C runtime clears the sign of -0. A NaN
+    # fails the comparison and passes through with its payload.
+    abs = math_renderer("(%1$s <= 0 ? 0.0 - %1$s : %1$s)", "abs(%s)"),
     sign = math_renderer(
       "(isnan(%1$s) ? %1$s : (%1$s > 0 ? 1.0 : (%1$s == 0 ? 0.0 : -1.0)))",
       paste0(

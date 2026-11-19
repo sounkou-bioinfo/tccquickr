@@ -4884,10 +4884,20 @@ if (can_build_shared_library("fortran")) {
   check_completion_sensitive(backend_callable(completion_sensitive_fortran_shared))
 }
 
-# Math functions that cannot warn agree with R bit for bit, signed zeros and
-# the NA/NaN distinction included.
+# The exact math functions agree with R bit for bit, signed zeros and the
+# NA/NaN distinction included. `cosh` is transcendental, so two runtime
+# libraries may round its last bit differently: it agrees within tolerance,
+# with the same NA and NaN positions.
 math_inputs <- c(-2.5, -1, -0.5, -0, 0, 0.5, 1, 2.5, 1e308, -1e308, NA, NaN, Inf, -Inf)
 math_bits <- function(x) list(x, 1 / x)
+expect_same_math <- function(op, value, expected, info) {
+  if (identical(op, "cosh")) {
+    expect_equal(value, expected, info = info)
+    expect_identical(is.na(value) + is.nan(value), is.na(expected) + is.nan(expected), info = info)
+  } else {
+    expect_identical(math_bits(value), math_bits(expected), info = info)
+  }
+}
 math_kernel <- function(op) {
   kernel <- function(x) NULL
   body(kernel) <- bquote({
@@ -4899,7 +4909,7 @@ math_kernel <- function(op) {
 fortran_available <- can_build_shared_library("fortran")
 for (op in c("abs", "sign", "floor", "ceiling", "trunc", "cosh")) {
   math_program <- math_kernel(op)
-  math_expected <- math_bits(get(op, envir = baseenv())(math_inputs))
+  math_expected <- get(op, envir = baseenv())(math_inputs)
   if (rtinycc_jit_available) {
     math_jit <- tccq_plan_backend(
       math_program,
@@ -4907,10 +4917,11 @@ for (op in c("abs", "sign", "floor", "ceiling", "trunc", "cosh")) {
       tccq_backend_context(mode = "jit", target = "c")
     )
     expect_true(math_jit@success, info = op)
-    expect_identical(
-      math_bits(backend_callable(math_jit)(math_inputs)),
+    expect_same_math(
+      op,
+      backend_callable(math_jit)(math_inputs),
       math_expected,
-      info = paste(op, "jit")
+      paste(op, "jit")
     )
   }
   if (fortran_available) {
@@ -4920,10 +4931,11 @@ for (op in c("abs", "sign", "floor", "ceiling", "trunc", "cosh")) {
       tccq_backend_context(mode = "shared_library", target = "fortran")
     )
     expect_true(math_fortran@success, info = op)
-    expect_identical(
-      math_bits(backend_callable(math_fortran)(math_inputs)),
+    expect_same_math(
+      op,
+      backend_callable(math_fortran)(math_inputs),
       math_expected,
-      info = paste(op, "fortran")
+      paste(op, "fortran")
     )
   }
 }
