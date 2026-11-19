@@ -399,6 +399,30 @@ knitr::kable(cbind(program = names(programs), do.call(rbind, lapply(programs, ch
 | transposed        | ops.incompatible_elementwise_shapes | unproven    | n == p   |
 | outside_subset    | frontend.unimplemented_call         | unsupported |          |
 
+The checker types more of R than the backends emit. `log()` can warn
+“NaNs produced”, which no kernel reports yet, so it is typed and has no
+generated code:
+
+``` r
+log_ratio <- function(x, y) {
+  declare(type(x = double(n, p), y = double(n, p)))
+  log(x) - log(y)
+}
+analysis <- tccq_analyze(log_ratio)
+analysis@success
+#> [1] TRUE
+result <- analysis@value@values[[analysis@value@result]]
+c(base = result@type@base, rank = result@type@shape@rank)
+#>     base     rank 
+#> "double"      "2"
+
+compiled <- tccq_compile(log_ratio, strict = FALSE)
+compiled@diagnostics[[1L]]@code
+#> [1] "ops.unrenderable_operation"
+compiled@diagnostics[[1L]]@verdict
+#> [1] "unsupported"
+```
+
 ## Where the subset ends
 
 These programs are the current targets. Each one either compiles or

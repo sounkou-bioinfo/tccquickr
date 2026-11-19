@@ -126,6 +126,29 @@ TccqCall <- S7::new_class(
 TccqCallSemantics <- S7::new_class(
   "TccqCallSemantics",
   package = "tccquickr",
+  # S7 1.0.0's new_object() consumes an argument named `call` itself, so the
+  # property values travel as one named list.
+  constructor = function(
+    call,
+    evaluator_kind,
+    forcing_policy,
+    dispatch_kind,
+    lexical_scope,
+    replacement,
+    control,
+    attrs
+  ) {
+    S7::new_object(S7::S7_object(), list(
+      call = call,
+      evaluator_kind = evaluator_kind,
+      forcing_policy = forcing_policy,
+      dispatch_kind = dispatch_kind,
+      lexical_scope = lexical_scope,
+      replacement = replacement,
+      control = control,
+      attrs = attrs
+    ))
+  },
   properties = list(
     call = TccqCall,
     evaluator_kind = S7::class_character,

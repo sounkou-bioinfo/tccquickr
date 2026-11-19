@@ -795,6 +795,45 @@ TccqOpRegistry <- S7::new_class(
 TccqResolvedOp <- S7::new_class(
   "TccqResolvedOp",
   package = "tccquickr",
+  # S7 1.0.0's new_object() consumes an argument named `call` itself, so the
+  # property values travel as one named list.
+  constructor = function(
+    call,
+    implementation,
+    target,
+    region_kind,
+    memory_space,
+    uses_rapi,
+    boundary,
+    pure,
+    effect,
+    body,
+    elementwise,
+    reduction,
+    contraction,
+    iteration,
+    subscript,
+    attrs
+  ) {
+    S7::new_object(S7::S7_object(), list(
+      call = call,
+      implementation = implementation,
+      target = target,
+      region_kind = region_kind,
+      memory_space = memory_space,
+      uses_rapi = uses_rapi,
+      boundary = boundary,
+      pure = pure,
+      effect = effect,
+      body = body,
+      elementwise = elementwise,
+      reduction = reduction,
+      contraction = contraction,
+      iteration = iteration,
+      subscript = subscript,
+      attrs = attrs
+    ))
+  },
   properties = list(
     call = TccqCall,
     implementation = TccqOpImpl,
@@ -1141,6 +1180,7 @@ S7::method(tccq_op_render, TccqOpImpl) <- function(impl, operands, context) {
       "ops.unrenderable_operation",
       "Operation implementation has no source renderer.",
       phase = "ops",
+      verdict = "unsupported",
       path = "op.render",
       data = list(
         op = impl@op,
@@ -3141,6 +3181,14 @@ tccq_default_op_registry <- function() {
       )
     }
   }
+  math_renderer <- function(c_format, fortran_format = c_format) {
+    force(c_format)
+    force(fortran_format)
+    function(operands, context) {
+      format <- if (identical(context@language, "fortran")) fortran_format else c_format
+      sprintf(format, operands[[1L]])
+    }
+  }
   scalar_renderers <- list(
     "+" = function(operands, context) sprintf("(%s + %s)", operands[[1L]], operands[[2L]]),
     "-" = function(operands, context) {
@@ -3229,7 +3277,29 @@ tccq_default_op_registry <- function() {
       sprintf("(isnan((double)(%s)) ? 1 : 0)", operands[[1L]])
     },
     sqrt = function(operands, context) sprintf("sqrt(%s)", operands[[1L]]),
-    exp = function(operands, context) sprintf("exp(%s)", operands[[1L]])
+    exp = function(operands, context) sprintf("exp(%s)", operands[[1L]]),
+    # Written without fabs(): not every C runtime clears the sign of -0. A NaN
+    # fails the comparison and passes through with its payload.
+    abs = math_renderer("(%1$s <= 0 ? 0.0 - %1$s : %1$s)", "abs(%s)"),
+    sign = math_renderer(
+      "(isnan(%1$s) ? %1$s : (%1$s > 0 ? 1.0 : (%1$s == 0 ? 0.0 : -1.0)))",
+      paste0(
+        "merge(%1$s, merge(1.0_c_double, merge(0.0_c_double, -1.0_c_double, ",
+        "%1$s == 0.0_c_double), %1$s > 0.0_c_double), ieee_is_nan(%1$s))"
+      )
+    ),
+    # Fortran's floor() and ceiling() return integers, so both are written
+    # over aint(). Subtracting keeps the sign of a zero result.
+    floor = math_renderer(
+      "floor(%s)",
+      "(aint(%1$s) - merge(1.0_c_double, 0.0_c_double, %1$s < aint(%1$s)))"
+    ),
+    ceiling = math_renderer(
+      "ceil(%s)",
+      "(aint(%1$s) - merge(-1.0_c_double, 0.0_c_double, %1$s > aint(%1$s)))"
+    ),
+    trunc = math_renderer("trunc(%s)", "aint(%s)"),
+    cosh = math_renderer("cosh(%s)")
   )
   elementwise_domain_policy <- tccq_elementwise_domain_policy()
   numeric_elementwise_result_type <- function(force_double = FALSE) {
@@ -3314,6 +3384,45 @@ tccq_default_op_registry <- function() {
     }
     tccq_type("logical", result_shape)
   }
+  double_math_result_type <- function(input_types, result_shape) {
+    if (!identical(input_types[[1L]]@base, "double")) {
+      tccq_abort(
+        "ops.unsupported_elementwise_type",
+        "This math function is implemented for double values.",
+        phase = "ops",
+        verdict = "unsupported",
+        path = "elementwise.type",
+        data = list(base = input_types[[1L]]@base)
+      )
+    }
+    tccq_type("double", result_shape)
+  }
+  # These return a NaN only for a NaN input, so R never warns for them. The
+  # first six have renderers. The rest are typed for analysis only: R 4.6
+  # returns +0 from `sinh`, `tanh`, `atan`, `asinh` and `expm1` at -0, where
+  # earlier R returns libm's -0, so no one kernel matches every supported R.
+  silent_math <- c(
+    "abs", "sign", "floor", "ceiling", "trunc", "cosh",
+    "sinh", "tanh", "atan", "asinh", "expm1"
+  )
+  # R warns "NaNs produced" when one of these leaves its domain. They are
+  # typed for analysis and carry no renderer.
+  warning_math <- c(
+    "log", "log2", "log10", "log1p", "sin", "cos", "tan", "asin", "acos", "acosh", "atanh"
+  )
+  math_ops <- c(silent_math, warning_math)
+  math_specs <- lapply(math_ops, function(op) {
+    tccq_elementwise_spec(
+      op,
+      1L,
+      double_math_result_type,
+      domain_policy = elementwise_domain_policy
+    )
+  })
+  math_effects <- lapply(math_ops, function(op) {
+    tccq_effect(reads = TRUE, may_warn = op %in% warning_math)
+  })
+  names(math_specs) <- names(math_effects) <- math_ops
   # Integer `+`, `-` and `*` warn on overflow and return NA. Double arithmetic
   # follows IEEE 754 and never warns, so it is free to reorder and fuse.
   integer_overflow_effect <- function(input_types, result_type) {
@@ -3426,6 +3535,7 @@ tccq_default_op_registry <- function() {
       domain_policy = elementwise_domain_policy
     )
   )
+  elementwise_specs <- c(elementwise_specs, math_specs)
   elementwise_effects <- list(
     "+" = tccq_effect(reads = TRUE, may_warn = TRUE),
     "-" = tccq_effect(reads = TRUE, may_warn = TRUE),
@@ -3445,6 +3555,7 @@ tccq_default_op_registry <- function() {
     sqrt = tccq_effect(reads = TRUE, may_warn = TRUE),
     exp = tccq_effect(reads = TRUE)
   )
+  elementwise_effects <- c(elementwise_effects, math_effects)
   sum_identity <- function(type) {
     if (!type@base %in% c("integer", "double")) {
       tccq_abort(
